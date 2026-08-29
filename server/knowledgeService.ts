@@ -1,0 +1,1424 @@
+import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { OfficeParser, type SupportedFileType } from "officeparser";
+import { PDFParse } from "pdf-parse";
+
+export type KnowledgeBaseSummary = {
+  id: string;
+  name: string;
+  source: KnowledgeSource;
+  providerStatus?: KnowledgeProviderStatus;
+  externalId?: string;
+  documentCount: number;
+  createdAt: string;
+};
+
+export type KnowledgeDocumentSummary = {
+  id: string;
+  knowledgeBaseId: string;
+  name: string;
+  type: string;
+  size: number;
+  chunkCount: number;
+  resourceType: KnowledgeResourceType;
+  subject?: string;
+  schoolStage?: string;
+  tags: string[];
+  createdAt: string;
+};
+
+export type KnowledgeResourceType =
+  | "课程标准"
+  | "教材/课件"
+  | "优秀课例"
+  | "课堂证据"
+  | "教研资料"
+  | "其他";
+
+export type KnowledgeDocumentMetadata = {
+  resourceType?: KnowledgeResourceType;
+  subject?: string;
+  schoolStage?: string;
+  tags?: string[];
+};
+
+export type KnowledgeChunkSummary = {
+  id: string;
+  documentId: string;
+  index: number;
+  content: string;
+};
+
+export type KnowledgeCitation = {
+  id: string;
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  documentId: string;
+  documentName: string;
+  snippet: string;
+  source: KnowledgeSource;
+  score: number;
+};
+
+export type KnowledgeSource = "local" | "ima" | "external";
+
+export type KnowledgeProviderStatus =
+  | "connected"
+  | "not_configured"
+  | "error"
+  | "syncing";
+
+export type KnowledgeProviderInfo = {
+  id: KnowledgeSource;
+  name: string;
+  status: KnowledgeProviderStatus;
+  description: string;
+  baseCount?: number;
+  message?: string;
+};
+
+export type StarterKnowledgePack = {
+  id: string;
+  name: string;
+  description: string;
+  recommendedFor: Array<"教案诊断" | "说课陪练" | "模拟课堂" | "实习反思">;
+  documentCount: number;
+};
+
+export type KnowledgeProvider = {
+  listBases(): KnowledgeBaseSummary[];
+  createBase(name: string): KnowledgeBaseSummary;
+  renameBase(knowledgeBaseId: string, name: string): KnowledgeBaseSummary;
+  deleteBase(knowledgeBaseId: string): void;
+  listDocuments(knowledgeBaseId: string): KnowledgeDocumentSummary[];
+  listDocumentChunks(documentId: string): KnowledgeChunkSummary[];
+  addDocument(
+    knowledgeBaseId: string,
+    file: Express.Multer.File,
+    metadata?: KnowledgeDocumentMetadata
+  ): Promise<KnowledgeDocumentSummary>;
+  deleteDocument(knowledgeBaseId: string, documentId: string): void;
+  search(options: {
+    query: string;
+    knowledgeBaseIds: string[];
+    topK?: number;
+  }): KnowledgeCitation[];
+};
+
+export type IMAConnectionTestResult = {
+  ok: boolean;
+  status: KnowledgeProviderStatus;
+  message: string;
+  baseCount?: number;
+};
+
+type ChunkRow = {
+  id: string;
+  base_id: string;
+  base_name: string;
+  document_id: string;
+  document_name: string;
+  content: string;
+  rank?: number;
+  snippet?: string;
+};
+
+const defaultKnowledgeBaseName = "默认知识库";
+const supportedDocumentExtensions = new Set([
+  "pdf",
+  "txt",
+  "md",
+  "csv",
+  "json",
+  "docx",
+  "xlsx",
+  "pptx"
+]);
+const maxKnowledgeDocumentBytes = 10 * 1024 * 1024;
+const chunkSize = 900;
+const chunkOverlap = 140;
+const knowledgeResourceTypes: KnowledgeResourceType[] = [
+  "课程标准",
+  "教材/课件",
+  "优秀课例",
+  "课堂证据",
+  "教研资料",
+  "其他"
+];
+
+const starterKnowledgePacks: Array<StarterKnowledgePack & {
+  documents: Array<{
+    name: string;
+    content: string;
+    metadata: Required<KnowledgeDocumentMetadata>;
+  }>;
+}> = [
+  {
+    id: "lesson-design-demo",
+    name: "教学设计示例包",
+    description: "用一组示例材料体验如何把目标、活动和评价写进教案与说课。",
+    recommendedFor: ["教案诊断", "说课陪练", "模拟课堂"],
+    documentCount: 3,
+    documents: [
+      {
+        name: "示例课程依据：分数的意义.txt",
+        content: "本示例围绕‘分数的意义’设计。学习重点是让学生理解分数表示整体与部分的关系，并能在具体情境中解释分子、分母的含义。教学时应从熟悉的分物、测量和图形情境出发，引导学生用图示、语言和算式多种方式表达理解。",
+        metadata: { resourceType: "课程标准", subject: "数学", schoolStage: "初中", tags: ["示例", "课程依据", "分数"] }
+      },
+      {
+        name: "示例课例：任务驱动与追问.txt",
+        content: "课堂活动可设置为：四人小组把一张纸平均分成四份，用其中三份表示自己的选择。学生需要说清‘谁被平均分’、‘取了几份’和‘分数各部分表示什么’。教师先追问学生的表示理由，再邀请同伴补充，最后用图示归纳。评价关注学生能否解释分数含义，而不只关注是否写对符号。",
+        metadata: { resourceType: "优秀课例", subject: "数学", schoolStage: "初中", tags: ["示例", "活动设计", "追问"] }
+      },
+      {
+        name: "示例评价：目标活动评价对齐.txt",
+        content: "目标、活动和评价需要一一对应：若目标是解释分数意义，活动应让学生在情境中表达整体与部分关系，评价则应记录学生能否说出理由。对回答不完整的学生，使用‘你说的整体是什么’‘还差哪一部分信息’等追问提供支架。",
+        metadata: { resourceType: "教研资料", subject: "数学", schoolStage: "初中", tags: ["示例", "评价", "教学设计"] }
+      }
+    ]
+  },
+  {
+    id: "reflection-demo",
+    name: "实习反思示例包",
+    description: "用课堂片段、学生回应和改进行动体验证据驱动的实习反思。",
+    recommendedFor: ["实习反思", "模拟课堂", "说课陪练"],
+    documentCount: 3,
+    documents: [
+      {
+        name: "示例课堂记录：学生沉默后的追问.txt",
+        content: "课堂提问后，多名学生没有立即回应。教师没有直接给出答案，而是把问题拆分为‘先找整体，再看分成几份’，并请学生用手势表示。随后一名学生能够说出分母表示平均分成的份数。该片段可作为分析提问难度与支架是否合适的证据。",
+        metadata: { resourceType: "课堂证据", subject: "数学", schoolStage: "初中", tags: ["示例", "课堂观察", "学生回应"] }
+      },
+      {
+        name: "示例反思框架：证据原因行动.txt",
+        content: "反思先写清观察到的事实，再分析可能原因，最后提出下一次可验证的行动。不要只写‘课堂气氛不够活跃’，应写成‘第一次开放提问后约十秒无人回应；下次先提供图示和同伴讨论一分钟，再邀请学生表达理由’。",
+        metadata: { resourceType: "教研资料", subject: "通用", schoolStage: "通用", tags: ["示例", "实习反思", "改进行动"] }
+      },
+      {
+        name: "示例育人表达：公平参与与鼓励性反馈.txt",
+        content: "课堂评价应兼顾不同基础学生。对暂未完整回答的学生，先肯定其已说出的线索，再通过追问帮助补全；对表达积极的学生，邀请其说明理由而非只给出结论。这样能让公平参与和尊重差异落实为可观察的课堂行为。",
+        metadata: { resourceType: "教研资料", subject: "通用", schoolStage: "通用", tags: ["示例", "师德育人", "评价"] }
+      }
+    ]
+  }
+];
+
+export class LocalKnowledgeProvider implements KnowledgeProvider {
+  private readonly db: Database.Database;
+
+  constructor(dbPath = path.resolve("data", "knowledge.db")) {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+    this.db = new Database(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
+    this.initialize();
+  }
+
+  listBases(): KnowledgeBaseSummary[] {
+    return this.db
+      .prepare(
+        `
+        SELECT
+          bases.id,
+          bases.name,
+          bases.source,
+          bases.created_at AS createdAt,
+          COUNT(documents.id) AS documentCount
+        FROM knowledge_bases AS bases
+        LEFT JOIN knowledge_documents AS documents
+          ON documents.base_id = bases.id
+        GROUP BY bases.id
+        ORDER BY bases.created_at ASC
+        `
+      )
+      .all() as KnowledgeBaseSummary[];
+  }
+
+  createBase(name: string): KnowledgeBaseSummary {
+    const trimmedName = name.trim() || defaultKnowledgeBaseName;
+    const existing = this.db
+      .prepare("SELECT id FROM knowledge_bases WHERE name = ?")
+      .get(trimmedName) as { id: string } | undefined;
+
+    if (existing) {
+      return this.listBases().find((base) => base.id === existing.id)!;
+    }
+
+    const id = `kb_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+
+    this.db
+      .prepare(
+        "INSERT INTO knowledge_bases (id, name, source, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .run(id, trimmedName, "local", createdAt);
+
+    return {
+      id,
+      name: trimmedName,
+      source: "local",
+      documentCount: 0,
+      createdAt
+    };
+  }
+
+  listStarterPacks(): StarterKnowledgePack[] {
+    return starterKnowledgePacks.map(({ documents: _documents, ...pack }) => pack);
+  }
+
+  importStarterPack(packId: string): KnowledgeBaseSummary {
+    const pack = starterKnowledgePacks.find((item) => item.id === packId);
+
+    if (!pack) {
+      throw new KnowledgeError("示例资料包不存在。", 404);
+    }
+
+    const base = this.createBase(`我的资料包：${pack.name}`);
+    const existingNames = new Set(this.listDocuments(base.id).map((document) => document.name));
+
+    for (const document of pack.documents) {
+      if (!existingNames.has(document.name)) {
+        this.addTextDocument(base.id, document.name, document.content, document.metadata);
+      }
+    }
+
+    return this.listBases().find((item) => item.id === base.id)!;
+  }
+
+  listDocuments(knowledgeBaseId: string): KnowledgeDocumentSummary[] {
+    return (
+      this.db
+        .prepare(
+        `
+        SELECT
+          documents.id,
+          documents.base_id AS knowledgeBaseId,
+          documents.name,
+          documents.type,
+          documents.size,
+          documents.created_at AS createdAt,
+          documents.resource_type AS resourceType,
+          documents.subject,
+          documents.school_stage AS schoolStage,
+          documents.tags,
+          COUNT(chunks.id) AS chunkCount
+        FROM knowledge_documents AS documents
+        LEFT JOIN knowledge_chunks AS chunks
+          ON chunks.document_id = documents.id
+        WHERE documents.base_id = ?
+        GROUP BY documents.id
+        ORDER BY documents.created_at DESC
+        `
+        )
+        .all(knowledgeBaseId)
+        .map((row) => normalizeDocumentSummary(row as Record<string, unknown>))
+    ) as KnowledgeDocumentSummary[];
+  }
+
+  listDocumentChunks(documentId: string): KnowledgeChunkSummary[] {
+    return this.db
+      .prepare(
+        `
+        SELECT
+          id,
+          document_id AS documentId,
+          chunk_index AS "index",
+          content
+        FROM knowledge_chunks
+        WHERE document_id = ?
+        ORDER BY chunk_index ASC
+        LIMIT 24
+        `
+      )
+      .all(documentId) as KnowledgeChunkSummary[];
+  }
+
+  renameBase(knowledgeBaseId: string, name: string) {
+    this.ensureBase(knowledgeBaseId);
+    const trimmedName = name.trim();
+
+    if (!trimmedName) {
+      throw new KnowledgeError("资料库名称不能为空。", 400);
+    }
+
+    try {
+      this.db
+        .prepare("UPDATE knowledge_bases SET name = ? WHERE id = ?")
+        .run(trimmedName, knowledgeBaseId);
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new KnowledgeError("已存在同名资料库，请换一个名称。", 409);
+      }
+      throw error;
+    }
+
+    return this.listBases().find((base) => base.id === knowledgeBaseId)!;
+  }
+
+  deleteBase(knowledgeBaseId: string) {
+    this.ensureBase(knowledgeBaseId);
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM knowledge_chunks_fts WHERE base_id = ?").run(knowledgeBaseId);
+      this.db.prepare("DELETE FROM knowledge_chunks WHERE base_id = ?").run(knowledgeBaseId);
+      this.db.prepare("DELETE FROM knowledge_documents WHERE base_id = ?").run(knowledgeBaseId);
+      this.db.prepare("DELETE FROM knowledge_bases WHERE id = ?").run(knowledgeBaseId);
+    });
+
+    transaction();
+
+    if (this.listBases().length === 0) {
+      this.createBase(defaultKnowledgeBaseName);
+    }
+  }
+
+  async addDocument(
+    knowledgeBaseId: string,
+    file: Express.Multer.File,
+    metadata: KnowledgeDocumentMetadata = {}
+  ) {
+    this.ensureBase(knowledgeBaseId);
+    validateKnowledgeFile(file);
+
+    const extractedText = await extractKnowledgeText(file);
+    const chunks = splitTextIntoChunks(extractedText);
+
+    if (chunks.length === 0) {
+      throw new KnowledgeError("文件没有提取到可用于知识库的文本。", 400);
+    }
+
+    const documentId = `doc_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const extension = getFileExtension(file.originalname);
+    const normalizedMetadata = normalizeDocumentMetadata(metadata);
+
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          INSERT INTO knowledge_documents
+            (id, base_id, name, type, size, resource_type, subject, school_stage, tags, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          documentId,
+          knowledgeBaseId,
+          file.originalname,
+          extension,
+          file.size,
+          normalizedMetadata.resourceType,
+          normalizedMetadata.subject,
+          normalizedMetadata.schoolStage,
+          JSON.stringify(normalizedMetadata.tags),
+          createdAt
+        );
+
+      const insertChunk = this.db.prepare(
+        `
+        INSERT INTO knowledge_chunks
+          (id, base_id, document_id, document_name, chunk_index, content)
+        VALUES (?, ?, ?, ?, ?, ?)
+        `
+      );
+      const insertFts = this.db.prepare(
+        `
+        INSERT INTO knowledge_chunks_fts
+          (chunk_id, base_id, document_id, document_name, content)
+        VALUES (?, ?, ?, ?, ?)
+        `
+      );
+
+      chunks.forEach((content, index) => {
+        const chunkId = `chunk_${randomUUID()}`;
+        insertChunk.run(
+          chunkId,
+          knowledgeBaseId,
+          documentId,
+          file.originalname,
+          index,
+          content
+        );
+        insertFts.run(
+          chunkId,
+          knowledgeBaseId,
+          documentId,
+          file.originalname,
+          content
+        );
+      });
+    });
+
+    transaction();
+
+    return {
+      id: documentId,
+      knowledgeBaseId,
+      name: file.originalname,
+      type: extension,
+      size: file.size,
+      chunkCount: chunks.length,
+      ...normalizedMetadata,
+      createdAt
+    };
+  }
+
+  private addTextDocument(
+    knowledgeBaseId: string,
+    name: string,
+    content: string,
+    metadata: KnowledgeDocumentMetadata
+  ) {
+    const chunks = splitTextIntoChunks(content);
+    const documentId = `doc_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const normalizedMetadata = normalizeDocumentMetadata(metadata);
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare(
+        `INSERT INTO knowledge_documents
+          (id, base_id, name, type, size, resource_type, subject, school_stage, tags, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        documentId,
+        knowledgeBaseId,
+        name,
+        "txt",
+        Buffer.byteLength(content, "utf8"),
+        normalizedMetadata.resourceType,
+        normalizedMetadata.subject,
+        normalizedMetadata.schoolStage,
+        JSON.stringify(normalizedMetadata.tags),
+        createdAt
+      );
+      const insertChunk = this.db.prepare(
+        `INSERT INTO knowledge_chunks
+          (id, base_id, document_id, document_name, chunk_index, content)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      const insertFts = this.db.prepare(
+        `INSERT INTO knowledge_chunks_fts
+          (chunk_id, base_id, document_id, document_name, content)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+
+      chunks.forEach((chunk, index) => {
+        const chunkId = `chunk_${randomUUID()}`;
+        insertChunk.run(chunkId, knowledgeBaseId, documentId, name, index, chunk);
+        insertFts.run(chunkId, knowledgeBaseId, documentId, name, chunk);
+      });
+    });
+
+    transaction();
+  }
+
+  deleteDocument(knowledgeBaseId: string, documentId: string) {
+    this.ensureBase(knowledgeBaseId);
+
+    const existing = this.db
+      .prepare("SELECT id FROM knowledge_documents WHERE id = ? AND base_id = ?")
+      .get(documentId, knowledgeBaseId);
+
+    if (!existing) {
+      throw new KnowledgeError("文档不存在。", 404);
+    }
+
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM knowledge_chunks_fts WHERE document_id = ?")
+        .run(documentId);
+      this.db
+        .prepare("DELETE FROM knowledge_chunks WHERE document_id = ?")
+        .run(documentId);
+      this.db
+        .prepare("DELETE FROM knowledge_documents WHERE id = ? AND base_id = ?")
+        .run(documentId, knowledgeBaseId);
+    });
+
+    transaction();
+  }
+
+  search({
+    query,
+    knowledgeBaseIds,
+    topK = 6
+  }: {
+    query: string;
+    knowledgeBaseIds: string[];
+    topK?: number;
+  }): KnowledgeCitation[] {
+    const trimmedQuery = query.trim();
+
+    if (!trimmedQuery || knowledgeBaseIds.length === 0) {
+      return [];
+    }
+
+    const uniqueBaseIds = [...new Set(knowledgeBaseIds)];
+    const ftsRows = this.searchWithFts(trimmedQuery, uniqueBaseIds, topK);
+    const fallbackRows =
+      ftsRows.length >= topK
+        ? []
+        : this.searchWithFallback(trimmedQuery, uniqueBaseIds, topK);
+    const rowsById = new Map<string, KnowledgeCitation>();
+
+    for (const row of [...ftsRows, ...fallbackRows]) {
+      if (!rowsById.has(row.id)) {
+        rowsById.set(row.id, row);
+      }
+    }
+
+    return [...rowsById.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  private initialize() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS knowledge_bases (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_documents (
+        id TEXT PRIMARY KEY,
+        base_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        resource_type TEXT NOT NULL DEFAULT '其他',
+        subject TEXT,
+        school_stage TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id TEXT PRIMARY KEY,
+        base_id TEXT NOT NULL,
+        document_id TEXT NOT NULL,
+        document_name TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        FOREIGN KEY (base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+        chunk_id UNINDEXED,
+        base_id UNINDEXED,
+        document_id UNINDEXED,
+        document_name,
+        content,
+        tokenize = 'unicode61'
+      );
+    `);
+
+    this.ensureDocumentColumn("resource_type", "TEXT NOT NULL DEFAULT '其他'");
+    this.ensureDocumentColumn("subject", "TEXT");
+    this.ensureDocumentColumn("school_stage", "TEXT");
+    this.ensureDocumentColumn("tags", "TEXT NOT NULL DEFAULT '[]'");
+
+    if (this.listBases().length === 0) {
+      this.createBase(defaultKnowledgeBaseName);
+    }
+  }
+
+  private ensureBase(knowledgeBaseId: string) {
+    const base = this.db
+      .prepare("SELECT id FROM knowledge_bases WHERE id = ?")
+      .get(knowledgeBaseId);
+
+    if (!base) {
+      throw new KnowledgeError("知识库不存在。", 404);
+    }
+  }
+
+  private ensureDocumentColumn(name: string, definition: string) {
+    const columns = this.db.prepare("PRAGMA table_info(knowledge_documents)").all() as Array<{
+      name: string;
+    }>;
+
+    if (!columns.some((column) => column.name === name)) {
+      this.db.exec(`ALTER TABLE knowledge_documents ADD COLUMN ${name} ${definition}`);
+    }
+  }
+
+  private searchWithFts(query: string, baseIds: string[], topK: number) {
+    const ftsQuery = buildFtsQuery(query);
+
+    if (!ftsQuery) {
+      return [];
+    }
+
+    const basePlaceholders = baseIds.map(() => "?").join(", ");
+
+    try {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT
+            chunk_id AS id,
+            base_id,
+            (SELECT name FROM knowledge_bases WHERE id = base_id) AS base_name,
+            document_id,
+            document_name,
+            snippet(knowledge_chunks_fts, 4, '', '', '...', 18) AS snippet,
+            bm25(knowledge_chunks_fts) AS rank
+          FROM knowledge_chunks_fts
+          WHERE knowledge_chunks_fts MATCH ?
+            AND base_id IN (${basePlaceholders})
+          ORDER BY rank
+          LIMIT ?
+          `
+        )
+        .all(ftsQuery, ...baseIds, topK) as ChunkRow[];
+
+      return rows.map((row) => rowToCitation(row, scoreFromRank(row.rank)));
+    } catch {
+      return [];
+    }
+  }
+
+  private searchWithFallback(query: string, baseIds: string[], topK: number) {
+    const basePlaceholders = baseIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          id,
+          base_id,
+          (SELECT name FROM knowledge_bases WHERE id = base_id) AS base_name,
+          document_id,
+          document_name,
+          content
+        FROM knowledge_chunks
+        WHERE base_id IN (${basePlaceholders})
+        ORDER BY rowid DESC
+        LIMIT 600
+        `
+      )
+      .all(...baseIds) as ChunkRow[];
+
+    return rows
+      .map((row) => ({
+        row,
+        score: scoreChunk(query, row.content)
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .map((item) =>
+        rowToCitation(
+          {
+            ...item.row,
+            snippet: makeSnippet(query, item.row.content)
+          },
+          item.score
+        )
+      );
+  }
+}
+
+export class IMAKnowledgeProvider {
+  private readonly baseUrl: string;
+  private cachedBases: KnowledgeBaseSummary[] = [];
+  private lastError = "";
+
+  constructor() {
+    this.baseUrl = trimTrailingSlash(
+      process.env.IMA_BASE_URL || "https://ima.qq.com/openapi/wiki/v1"
+    );
+  }
+
+  isConfigured() {
+    return Boolean(process.env.IMA_API_KEY && process.env.IMA_CLIENT_ID);
+  }
+
+  getStatus(): KnowledgeProviderInfo {
+    if (!this.isConfigured()) {
+      return {
+        id: "ima",
+        name: "IMA 知识库",
+        status: "not_configured",
+        description: "配置 IMA_API_KEY 与 IMA_CLIENT_ID 后可连接外部知识库。",
+        message: "未配置 IMA 凭据"
+      };
+    }
+
+    return {
+      id: "ima",
+      name: "IMA 知识库",
+      status: this.lastError ? "error" : "connected",
+      description: "从 IMA 同步知识库列表，并在聊天与教案生成中引用。",
+      baseCount: this.cachedBases.length,
+      message: this.lastError || "已配置 IMA 凭据"
+    };
+  }
+
+  async testConnection(): Promise<IMAConnectionTestResult> {
+    if (!this.isConfigured()) {
+      return {
+        ok: false,
+        status: "not_configured",
+        message: "未配置 IMA_API_KEY 或 IMA_CLIENT_ID。"
+      };
+    }
+
+    try {
+      const bases = await this.fetchBases();
+      this.cachedBases = bases;
+      this.lastError = "";
+
+      return {
+        ok: true,
+        status: "connected",
+        message: `IMA 连接成功，发现 ${bases.length} 个知识库。`,
+        baseCount: bases.length
+      };
+    } catch (error) {
+      this.lastError =
+        error instanceof Error ? error.message : "IMA 连接失败。";
+
+      return {
+        ok: false,
+        status: "error",
+        message: this.lastError
+      };
+    }
+  }
+
+  async syncBases() {
+    const result = await this.testConnection();
+
+    return {
+      ...result,
+      bases: this.cachedBases
+    };
+  }
+
+  async listBases() {
+    if (!this.isConfigured()) {
+      return [];
+    }
+
+    if (this.cachedBases.length) {
+      return this.cachedBases;
+    }
+
+    try {
+      this.cachedBases = await this.fetchBases();
+      this.lastError = "";
+    } catch (error) {
+      this.lastError =
+        error instanceof Error ? error.message : "IMA 知识库列表加载失败。";
+      return [];
+    }
+
+    return this.cachedBases;
+  }
+
+  listDocuments(_knowledgeBaseId: string): KnowledgeDocumentSummary[] {
+    return [];
+  }
+
+  listDocumentChunks(_documentId: string): KnowledgeChunkSummary[] {
+    return [];
+  }
+
+  async search({
+    query,
+    knowledgeBaseIds,
+    topK = 6
+  }: {
+    query: string;
+    knowledgeBaseIds: string[];
+    topK?: number;
+  }): Promise<KnowledgeCitation[]> {
+    const trimmedQuery = query.trim();
+
+    if (!this.isConfigured() || !trimmedQuery || knowledgeBaseIds.length === 0) {
+      return [];
+    }
+
+    const citations: KnowledgeCitation[] = [];
+
+    for (const baseId of knowledgeBaseIds) {
+      const externalBaseId = getExternalImaBaseId(baseId);
+
+      if (!externalBaseId) {
+        continue;
+      }
+
+      try {
+        citations.push(
+          ...(await this.searchOneBase(trimmedQuery, baseId, externalBaseId, topK))
+        );
+      } catch (error) {
+        this.lastError =
+          error instanceof Error ? error.message : "IMA 检索失败。";
+      }
+    }
+
+    return citations
+      .sort((left, right) => right.score - left.score)
+      .slice(0, topK);
+  }
+
+  private async fetchBases(): Promise<KnowledgeBaseSummary[]> {
+    const payload = await this.request("search_knowledge_base", {
+      query: "",
+      query_user: true,
+      cursor: "",
+      limit: 20
+    });
+    const items = readImaItems(payload);
+
+    return items
+      .map((item, index): KnowledgeBaseSummary | undefined => {
+        const externalId = readFirstString(item, [
+          "kb_id",
+          "knowledge_base_id",
+          "knowledgeBaseId",
+          "id",
+          "resource_id",
+          "base_id"
+        ]);
+        const name =
+          readFirstString(item, [
+            "kb_name",
+            "name",
+            "title",
+            "knowledge_base_name",
+            "knowledgeBaseName"
+          ]) || `IMA 知识库 ${index + 1}`;
+
+        if (!externalId) {
+          return undefined;
+        }
+
+        return {
+          id: formatImaBaseId(externalId),
+          externalId,
+          name,
+          source: "ima" as const,
+          providerStatus: "connected" as const,
+          documentCount:
+            Number(
+              readFirstValue(item, [
+                "content_count",
+                "document_count",
+                "doc_count",
+                "count"
+              ])
+            ) || 0,
+          createdAt:
+            readFirstString(item, ["created_at", "create_time", "updated_at"]) ||
+            new Date().toISOString()
+        };
+      })
+      .filter((item): item is KnowledgeBaseSummary => Boolean(item));
+  }
+
+  private async searchOneBase(
+    query: string,
+    baseId: string,
+    externalBaseId: string,
+    topK: number
+  ) {
+    if (this.cachedBases.length === 0) {
+      await this.listBases();
+    }
+
+    const payload = await this.request("search_knowledge", {
+      query,
+      knowledge_base_id: externalBaseId,
+      cursor: "",
+      limit: Math.max(1, Math.min(topK, 10))
+    });
+    const baseName =
+      this.cachedBases.find((base) => base.id === baseId)?.name || "IMA 知识库";
+
+    return readImaItems(payload)
+      .map((item, index) => {
+        const documentId =
+          readFirstString(item, [
+            "media_id",
+            "id",
+            "resource_id",
+            "doc_id",
+            "document_id"
+          ]) ||
+          `${externalBaseId}_${index}`;
+        const documentName =
+          readFirstString(item, ["title", "name", "document_name", "file_name"]) ||
+          "IMA 资料";
+        const snippet =
+          readFirstString(item, [
+            "snippet",
+            "highlight_content",
+            "content",
+            "summary",
+            "text"
+          ]) ||
+          documentName ||
+          JSON.stringify(item).slice(0, 180);
+        const scoreValue = Number(readFirstValue(item, ["score", "rank"]));
+
+        return {
+          id: `ima_${documentId}_${index}`,
+          knowledgeBaseId: baseId,
+          knowledgeBaseName: baseName,
+          documentId,
+          documentName,
+          snippet: snippet.replace(/\s+/g, " ").trim(),
+          source: "ima" as const,
+          score: Number.isFinite(scoreValue) ? scoreValue : 0.7 - index * 0.03
+        };
+      })
+      .filter((item) => item.snippet)
+      .slice(0, topK);
+  }
+
+  private async request(pathname: string, body: Record<string, unknown>) {
+    const response = await fetch(`${this.baseUrl}/${pathname}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "ima-openapi-apikey": process.env.IMA_API_KEY || "",
+        "ima-openapi-clientid": process.env.IMA_CLIENT_ID || ""
+      },
+      body: JSON.stringify(body)
+    });
+
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
+
+    if (!response.ok) {
+      throw new KnowledgeError(
+        readFirstString(payload, ["message", "msg", "error"]) ||
+          `IMA 请求失败（${response.status}）。`,
+        response.status
+      );
+    }
+
+    const code = readFirstValue(payload, ["code", "errcode", "status"]);
+
+    if (code !== undefined && code !== 0 && code !== "0" && code !== "success") {
+      throw new KnowledgeError(
+        readFirstString(payload, ["message", "msg", "error"]) || "IMA 返回异常。",
+        502
+      );
+    }
+
+    return payload;
+  }
+}
+
+export class KnowledgeProviderRegistry {
+  constructor(
+    private readonly localProvider: LocalKnowledgeProvider,
+    private readonly imaProvider: IMAKnowledgeProvider
+  ) {}
+
+  async listBases() {
+    const localBases = this.localProvider.listBases();
+    const imaBases = await this.imaProvider.listBases();
+
+    return [...localBases, ...imaBases];
+  }
+
+  createBase(name: string) {
+    return this.localProvider.createBase(name);
+  }
+
+  listStarterPacks() {
+    return this.localProvider.listStarterPacks();
+  }
+
+  importStarterPack(packId: string) {
+    return this.localProvider.importStarterPack(packId);
+  }
+
+  renameBase(knowledgeBaseId: string, name: string) {
+    if (isImaBaseId(knowledgeBaseId)) {
+      throw new KnowledgeError("IMA 资料库请在 IMA 平台中管理。", 400);
+    }
+
+    return this.localProvider.renameBase(knowledgeBaseId, name);
+  }
+
+  deleteBase(knowledgeBaseId: string) {
+    if (isImaBaseId(knowledgeBaseId)) {
+      throw new KnowledgeError("IMA 资料库请在 IMA 平台中管理。", 400);
+    }
+
+    this.localProvider.deleteBase(knowledgeBaseId);
+  }
+
+  async listDocuments(knowledgeBaseId: string) {
+    return isImaBaseId(knowledgeBaseId)
+      ? this.imaProvider.listDocuments(knowledgeBaseId)
+      : this.localProvider.listDocuments(knowledgeBaseId);
+  }
+
+  async listDocumentChunks(documentId: string) {
+    return documentId.startsWith("ima:")
+      ? this.imaProvider.listDocumentChunks(documentId)
+      : this.localProvider.listDocumentChunks(documentId);
+  }
+
+  async addDocument(
+    knowledgeBaseId: string,
+    file: Express.Multer.File,
+    metadata?: KnowledgeDocumentMetadata
+  ) {
+    if (isImaBaseId(knowledgeBaseId)) {
+      throw new KnowledgeError("IMA 知识库暂不支持从本平台上传资料。", 400);
+    }
+
+    return this.localProvider.addDocument(knowledgeBaseId, file, metadata);
+  }
+
+  deleteDocument(knowledgeBaseId: string, documentId: string) {
+    if (isImaBaseId(knowledgeBaseId)) {
+      throw new KnowledgeError("IMA 知识库资料请在 IMA 平台中管理。", 400);
+    }
+
+    this.localProvider.deleteDocument(knowledgeBaseId, documentId);
+  }
+
+  async search({
+    query,
+    knowledgeBaseIds,
+    topK = 6
+  }: {
+    query: string;
+    knowledgeBaseIds: string[];
+    topK?: number;
+  }) {
+    const localIds = knowledgeBaseIds.filter((id) => !isImaBaseId(id));
+    const imaIds = knowledgeBaseIds.filter(isImaBaseId);
+    const [localCitations, imaCitations] = await Promise.all([
+      Promise.resolve(
+        this.localProvider.search({
+          query,
+          knowledgeBaseIds: localIds,
+          topK
+        })
+      ),
+      this.imaProvider.search({
+        query,
+        knowledgeBaseIds: imaIds,
+        topK
+      })
+    ]);
+
+    return [...localCitations, ...imaCitations]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, topK);
+  }
+
+  listProviderInfos(): KnowledgeProviderInfo[] {
+    const localCount = this.localProvider.listBases().length;
+
+    return [
+      {
+        id: "local",
+        name: "本地知识库",
+        status: "connected",
+        description: "上传到本机 SQLite/FTS 的教学资料。",
+        baseCount: localCount
+      },
+      this.imaProvider.getStatus()
+    ];
+  }
+
+  testImaConnection() {
+    return this.imaProvider.testConnection();
+  }
+
+  syncImaBases() {
+    return this.imaProvider.syncBases();
+  }
+}
+
+export class KnowledgeError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+    this.name = "KnowledgeError";
+  }
+}
+
+function validateKnowledgeFile(file: Express.Multer.File) {
+  const extension = getFileExtension(file.originalname);
+
+  if (!supportedDocumentExtensions.has(extension)) {
+    throw new KnowledgeError(
+      "教学资料库支持 PDF、Word、Excel、PPT、TXT、MD、CSV、JSON。",
+      415
+    );
+  }
+
+  if (file.size > maxKnowledgeDocumentBytes) {
+    throw new KnowledgeError("知识库单个文件不能超过 10MB。", 413);
+  }
+}
+
+async function extractKnowledgeText(file: Express.Multer.File) {
+  const extension = getFileExtension(file.originalname);
+
+  if (extension === "pdf") {
+    const parser = new PDFParse({ data: file.buffer });
+
+    try {
+      const result = await parser.getText();
+      const text = result.text.replace(/\u0000/g, "").trim();
+
+      if (!text) {
+        throw new KnowledgeError(
+          "PDF 未提取到文字，可能是扫描件；本期暂不支持 OCR，请上传可复制文字的 PDF。",
+          422
+        );
+      }
+
+      return text;
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  if (["docx", "xlsx", "pptx"].includes(extension)) {
+    try {
+      const ast = await OfficeParser.parseOffice(file.buffer, {
+        fileType: extension as SupportedFileType,
+        ocr: false
+      });
+      const text = ast.toText().replace(/\u0000/g, "").trim();
+
+      if (!text) {
+        throw new KnowledgeError("文件没有提取到可用于知识库的文字。", 422);
+      }
+
+      return text;
+    } catch (error) {
+      if (error instanceof KnowledgeError) {
+        throw error;
+      }
+
+      throw new KnowledgeError("Office 文件解析失败，请确认文件未损坏或加密。", 422);
+    }
+  }
+
+  if (["txt", "md", "csv", "json"].includes(extension)) {
+    return file.buffer.toString("utf8").replace(/\u0000/g, "").trim();
+  }
+
+  throw new KnowledgeError("不支持的资料格式。", 415);
+}
+
+function normalizeDocumentMetadata(
+  metadata: KnowledgeDocumentMetadata
+): Required<KnowledgeDocumentMetadata> {
+  const resourceType = knowledgeResourceTypes.includes(metadata.resourceType || "其他")
+    ? (metadata.resourceType || "其他")
+    : "其他";
+  const tags = Array.from(
+    new Set(
+      (metadata.tags || [])
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .slice(0, 8)
+    )
+  );
+
+  return {
+    resourceType,
+    subject: metadata.subject?.trim() || "",
+    schoolStage: metadata.schoolStage?.trim() || "",
+    tags
+  };
+}
+
+function normalizeDocumentSummary(row: Record<string, unknown>): KnowledgeDocumentSummary {
+  let tags: string[] = [];
+
+  if (typeof row.tags === "string") {
+    try {
+      const parsed = JSON.parse(row.tags);
+      tags = Array.isArray(parsed)
+        ? parsed.filter((tag): tag is string => typeof tag === "string" && Boolean(tag.trim()))
+        : [];
+    } catch {
+      tags = [];
+    }
+  }
+
+  return {
+    id: String(row.id),
+    knowledgeBaseId: String(row.knowledgeBaseId),
+    name: String(row.name),
+    type: String(row.type),
+    size: Number(row.size) || 0,
+    chunkCount: Number(row.chunkCount) || 0,
+    resourceType: knowledgeResourceTypes.includes(row.resourceType as KnowledgeResourceType)
+      ? (row.resourceType as KnowledgeResourceType)
+      : "其他",
+    subject: typeof row.subject === "string" ? row.subject : "",
+    schoolStage: typeof row.schoolStage === "string" ? row.schoolStage : "",
+    tags,
+    createdAt: String(row.createdAt)
+  };
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
+function splitTextIntoChunks(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const chunks: string[] = [];
+
+  for (let index = 0; index < normalized.length; index += chunkSize - chunkOverlap) {
+    const chunk = normalized.slice(index, index + chunkSize).trim();
+
+    if (chunk.length > 30) {
+      chunks.push(chunk);
+    }
+  }
+
+  return chunks;
+}
+
+function buildFtsQuery(query: string) {
+  return extractSearchTerms(query)
+    .slice(0, 8)
+    .map((term) => `"${term.replace(/"/g, '""')}"`)
+    .join(" OR ");
+}
+
+function extractSearchTerms(query: string) {
+  const terms = query.match(/[\p{L}\p{N}]{2,}/gu) || [];
+  const shortChineseTerms = [...query.matchAll(/[\u4e00-\u9fa5]{2,6}/g)].map(
+    (match) => match[0]
+  );
+
+  return [...new Set([...terms, ...shortChineseTerms])]
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function scoreChunk(query: string, content: string) {
+  const lowerContent = content.toLowerCase();
+  const terms = extractSearchTerms(query.toLowerCase());
+  let score = 0;
+
+  for (const term of terms) {
+    if (lowerContent.includes(term.toLowerCase())) {
+      score += Math.min(6, term.length);
+    }
+  }
+
+  const queryChars = [...new Set(query.replace(/\s+/g, "").split(""))].filter(
+    (char) => /[\u4e00-\u9fa5\p{L}\p{N}]/u.test(char)
+  );
+  const matchedChars = queryChars.filter((char) => content.includes(char)).length;
+
+  return score + matchedChars / Math.max(queryChars.length, 1);
+}
+
+function makeSnippet(query: string, content: string) {
+  const terms = extractSearchTerms(query);
+  const index = terms
+    .map((term) => content.indexOf(term))
+    .filter((value) => value >= 0)
+    .sort((a, b) => a - b)[0];
+  const start = Math.max(0, (index ?? 0) - 70);
+  const snippet = content.slice(start, start + 180).trim();
+
+  return snippet || content.slice(0, 180).trim();
+}
+
+function rowToCitation(row: ChunkRow, score: number): KnowledgeCitation {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.base_id,
+    knowledgeBaseName: row.base_name,
+    documentId: row.document_id,
+    documentName: row.document_name,
+    snippet: (row.snippet || row.content || "").replace(/\s+/g, " ").trim(),
+    source: "local",
+    score
+  };
+}
+
+function scoreFromRank(rank = 0) {
+  return Math.max(0.01, 1 / (1 + Math.abs(rank)));
+}
+
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
+function formatImaBaseId(externalId: string) {
+  return `ima:${externalId}`;
+}
+
+function isImaBaseId(value: string) {
+  return value.startsWith("ima:");
+}
+
+function getExternalImaBaseId(value: string) {
+  return isImaBaseId(value) ? value.replace(/^ima:/, "") : "";
+}
+
+function readImaItems(payload: unknown) {
+  const record = isRecord(payload) ? payload : {};
+  const data = isRecord(record.data) ? record.data : record;
+  const candidate =
+    readFirstValue(data, [
+      "info_list",
+      "knowledge_bases",
+      "knowledgeBases",
+      "list",
+      "items",
+      "records",
+      "results"
+    ]) || [];
+
+  return Array.isArray(candidate)
+    ? candidate.filter((item): item is Record<string, unknown> => isRecord(item))
+    : [];
+}
+
+function readFirstString(value: unknown, keys: string[]) {
+  const found = readFirstValue(value, keys);
+
+  return typeof found === "string" && found.trim() ? found.trim() : "";
+}
+
+function readFirstValue(value: unknown, keys: string[]) {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    if (value[key] !== undefined && value[key] !== null) {
+      return value[key];
+    }
+  }
+
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getFileExtension(fileName: string) {
+  return path.extname(fileName).replace(".", "").toLowerCase();
+}

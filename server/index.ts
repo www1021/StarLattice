@@ -1,0 +1,3482 @@
+import "dotenv/config";
+import express from "express";
+import multer from "multer";
+import { randomUUID } from "node:crypto";
+import http from "node:http";
+import path from "node:path";
+import { PDFParse } from "pdf-parse";
+import { WebSocket, WebSocketServer } from "ws";
+import {
+  type ArtifactRequest,
+  generateArtifacts,
+  getGeneratedFilePath
+} from "./artifactService.js";
+import {
+  createTrainingEvaluation,
+  inferTrainingType
+} from "./evaluationService.js";
+import {
+  ClassroomService,
+  ClassroomServiceError
+} from "./classroom/classroomService.js";
+import type {
+  ClassroomActionType,
+  ClassroomReport,
+  ClassroomState
+} from "./classroom/classroomTypes.js";
+import {
+  buildInternshipReflectionArtifact,
+  buildInternshipReflectionSearchQuery,
+  diagnoseInternshipReflectionDraft,
+  generateInternshipReflectionDraft,
+  internshipDiagnosticToEvaluation,
+  normalizeInternshipEvidence,
+  normalizeInternshipReflectionInput,
+  refineInternshipReflectionDraft,
+  renderInternshipReflectionText,
+  type InternshipEvidenceItem,
+  type InternshipReflectionDraft,
+  type InternshipReflectionInput
+} from "./internshipReflectionService.js";
+import {
+  buildLessonPlanArtifact,
+  buildLessonPlanSearchQuery,
+  compareLessonPlanDrafts,
+  diagnoseLessonPlanDraft,
+  generateLessonPlanDraft,
+  lessonDiagnosticToEvaluation,
+  normalizeLessonPlanInput,
+  refineLessonPlanDraft,
+  renderLessonPlanText,
+  type LessonPlanComparison,
+  type LessonPlanDraft,
+  type LessonPlanInput
+} from "./lessonPlanService.js";
+import {
+  type ChatMessage,
+  type ImageContentBlock,
+  isQwenConfigured,
+  streamQwenChat,
+  type TextContentBlock,
+  UpstreamModelError
+} from "./qwenOpenAiClient.js";
+import {
+  generateMiniMaxLessonPlanDraft,
+  generateStreamingMiniMaxLessonPlanDraft,
+  isMiniMaxLessonPlanConfigured,
+  MiniMaxLessonPlanError
+} from "./minimaxLessonPlanClient.js";
+import {
+  IMAKnowledgeProvider,
+  type KnowledgeCitation,
+  type KnowledgeDocumentMetadata,
+  KnowledgeError,
+  KnowledgeProviderRegistry,
+  LocalKnowledgeProvider
+} from "./knowledgeService.js";
+import {
+  normalizeTrainingType,
+  SQLiteChatRepository,
+  type StoredArtifact,
+  type StoredCitation,
+  type StoredChatMessage,
+  type TrainingEvaluation
+} from "./storage/chatRepository.js";
+import {
+  answerPendingSpeakQuestion,
+  buildSpeakConversationMessages,
+  buildSpeakSessionSnapshot,
+  createSpeakTrainingEvaluation,
+  getSpeakTrainingConfig,
+  processSpeakTrainingTurn,
+  renderSpeakTrainingAssistantMessage,
+  SpeakTrainingSession,
+  type SpeakRealtimeClientEvent,
+  type SpeakRealtimeServerEvent,
+  type SpeakStageId,
+  type SpeakTrainingTurnResult
+} from "./speakTrainingService.js";
+import {
+  enhanceDefenseOptimizationWithAi,
+  generateSpeakAiEnhancement
+} from "./speakTrainingAiService.js";
+import {
+  getXfyunSpeechConfig,
+  isXfyunSpeechConfigured,
+  synthesizeXfyunSpeech,
+  XfyunIatStream,
+  XfyunSpeechError
+} from "./xfyunSpeechService.js";
+import {
+  observeOperation,
+  recordTrainingEvaluationScores,
+  summarizeText
+} from "./observability.js";
+
+type ChatStreamRequest = {
+  conversationId?: string;
+  enableThinking?: boolean | string;
+  knowledgeBaseIds?: unknown;
+  messages?: unknown;
+  trainingType?: unknown;
+};
+
+type StreamPhaseStep = {
+  id: string;
+  label: string;
+  detail: string;
+};
+
+const lessonPlanStreamGenerateSteps: StreamPhaseStep[] = [
+  {
+    id: "lesson-context",
+    label: "理解课程信息",
+    detail: "服务端已读取教案输入字段，准备进入知识库检索。"
+  },
+  {
+    id: "lesson-knowledge",
+    label: "检索知识库证据",
+    detail: "服务端正在检索课程标准、教材片段和优秀课例。"
+  },
+  {
+    id: "lesson-structure",
+    label: "流式生成教案草稿",
+    detail: "模型可用时正在输出教案 JSON token；不可用时会回退本地模板。"
+  },
+  {
+    id: "lesson-diagnosis",
+    label: "诊断薄弱维度",
+    detail: "服务端正在计算目标、学情、活动、互动、反思和育人维度。"
+  },
+  {
+    id: "lesson-artifact",
+    label: "保存训练结果",
+    detail: "服务端正在保存历史记录、评价和知识库引用。"
+  }
+];
+
+const lessonPlanStreamRefineSteps: StreamPhaseStep[] = [
+  {
+    id: "lesson-refine-issues",
+    label: "读取诊断建议",
+    detail: "服务端已读取上一版教案和诊断问题。"
+  },
+  {
+    id: "lesson-refine-evidence",
+    label: "复核证据来源",
+    detail: "服务端正在重新检索并对齐知识库引用。"
+  },
+  {
+    id: "lesson-refine-draft",
+    label: "流式生成优化稿",
+    detail: "模型可用时正在输出优化稿 token；不可用时会回退本地优化规则。"
+  },
+  {
+    id: "lesson-refine-score",
+    label: "重新诊断评分",
+    detail: "服务端正在检查优化稿是否回应薄弱维度。"
+  },
+  {
+    id: "lesson-refine-artifact",
+    label: "保存优化结果",
+    detail: "服务端正在更新历史记录、评价和最终结果。"
+  }
+];
+
+const reflectionStreamGenerateSteps: StreamPhaseStep[] = [
+  {
+    id: "reflection-context",
+    label: "还原课堂事实",
+    detail: "服务端正在读取实习班级、课题、日期、课堂片段和观察重点。"
+  },
+  {
+    id: "reflection-evidence",
+    label: "整理证据材料",
+    detail: "服务端正在解析上传材料并检索知识库证据。"
+  },
+  {
+    id: "reflection-model",
+    label: "生成反思结构",
+    detail: "服务端正在组织观察证据、问题诊断、原因分析和改进行动。"
+  },
+  {
+    id: "reflection-diagnosis",
+    label: "评估反思质量",
+    detail: "服务端正在计算证据、理论连接、改进闭环和育人意识维度。"
+  },
+  {
+    id: "reflection-artifact",
+    label: "保存反思结果",
+    detail: "服务端正在保存历史记录、评价和证据链。"
+  }
+];
+
+const reflectionStreamRefineSteps: StreamPhaseStep[] = [
+  {
+    id: "reflection-refine-issues",
+    label: "读取诊断建议",
+    detail: "服务端已读取上一版反思和诊断问题。"
+  },
+  {
+    id: "reflection-refine-evidence",
+    label: "复核证据链",
+    detail: "服务端正在对齐课堂事实、上传材料和知识库依据。"
+  },
+  {
+    id: "reflection-refine-draft",
+    label: "生成优化反思",
+    detail: "服务端正在让改写内容对应具体证据和后续行动。"
+  },
+  {
+    id: "reflection-refine-score",
+    label: "重新诊断评分",
+    detail: "服务端正在复核优化稿是否适合提交和归档。"
+  },
+  {
+    id: "reflection-refine-artifact",
+    label: "保存优化结果",
+    detail: "服务端正在更新历史记录、评价和证据摘要。"
+  }
+];
+
+const app = express();
+const httpServer = http.createServer(app);
+const speakTrainingSessions = new SpeakTrainingSession();
+const classroomService = new ClassroomService();
+const chatRepository = new SQLiteChatRepository();
+const knowledgeProvider = new KnowledgeProviderRegistry(
+  new LocalKnowledgeProvider(),
+  new IMAKnowledgeProvider()
+);
+const port = Number(process.env.PORT || 8787);
+const defaultLessonPlanAiTimeoutMs = 15_000;
+const maxUploadCount = 5;
+const maxUploadTotalBytes = 10 * 1024 * 1024;
+const maxExtractedTextCharacters = 60000;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: maxUploadCount,
+    fileSize: maxUploadTotalBytes
+  }
+});
+const supportedImageTypes = new Map([
+  ["png", "image/png"],
+  ["jpg", "image/jpeg"],
+  ["jpeg", "image/jpeg"],
+  ["webp", "image/webp"],
+  ["gif", "image/gif"]
+]);
+const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
+
+app.use(express.json({ limit: "1mb" }));
+
+async function searchKnowledge(options: {
+  query: string;
+  knowledgeBaseIds: string[];
+  topK?: number;
+}) {
+  return observeOperation(
+    "knowledge.search",
+    {
+      input: {
+        query: summarizeText(options.query, 800),
+        knowledgeBaseCount: options.knowledgeBaseIds.length,
+        topK: options.topK
+      },
+      metadata: {
+        operation: "knowledge.search"
+      }
+    },
+    async (observation) => {
+      const citations = await knowledgeProvider.search(options);
+
+      observation.update({
+        output: {
+          citationCount: citations.length,
+          sources: [...new Set(citations.map((citation) => citation.source))],
+          documents: citations.slice(0, 6).map((citation) => ({
+            knowledgeBaseName: citation.knowledgeBaseName,
+            documentName: citation.documentName,
+            source: citation.source,
+            score: citation.score,
+            snippet: summarizeText(citation.snippet, 240)
+          }))
+        }
+      });
+
+      return citations;
+    },
+    { asType: "retriever" }
+  );
+}
+
+app.get("/api/health", (_request, response) => {
+  response.json({ ok: true });
+});
+
+app.post("/api/classroom/create", (request, response) => {
+  try {
+    response.status(201).json(classroomService.createClassroom(request.body || {}));
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.get("/api/classroom/:sessionId", (request, response) => {
+  try {
+    const classroomState = classroomService.getClassroom(request.params.sessionId);
+
+    if (!classroomState) {
+      throw new ClassroomServiceError(404, "虚拟课堂会话不存在，请重新生成课堂。");
+    }
+
+    response.json({
+      sessionId: classroomState.sessionId,
+      classroomState
+    });
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.post("/api/classroom/restore", (request, response) => {
+  try {
+    response.json(classroomService.restoreClassroom(request.body?.classroomState));
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.post("/api/classroom/teacher-speak", async (request, response) => {
+  try {
+    const sessionId =
+      typeof request.body?.sessionId === "string" ? request.body.sessionId : "";
+    const teacherText =
+      typeof request.body?.teacherText === "string" ? request.body.teacherText : "";
+
+    response.json(await classroomService.teacherSpeak(sessionId, teacherText));
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.post("/api/classroom/action", async (request, response) => {
+  try {
+    response.json(
+      await classroomService.classroomAction({
+        sessionId:
+          typeof request.body?.sessionId === "string" ? request.body.sessionId : "",
+        actionType: normalizeClassroomActionType(request.body?.actionType),
+        targetStudentId:
+          typeof request.body?.targetStudentId === "string"
+            ? request.body.targetStudentId
+            : undefined,
+        teacherText:
+          typeof request.body?.teacherText === "string"
+            ? request.body.teacherText
+            : undefined
+      })
+    );
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.post("/api/classroom/report", async (request, response) => {
+  try {
+    const sessionId =
+      typeof request.body?.sessionId === "string" ? request.body.sessionId : "";
+    const report = await classroomService.generateReport(sessionId);
+    const classroomState = classroomService.getClassroom(sessionId);
+    const citations = classroomState
+      ? await searchKnowledge({
+          query: `${classroomState.subject} ${classroomState.grade} ${classroomState.topic} ${classroomState.trainingGoal}`,
+          knowledgeBaseIds: classroomState.knowledgeBaseIds || [],
+          topK: 3
+        })
+      : [];
+    let saveError: string | undefined;
+    let artifact: StoredArtifact | undefined;
+
+    if (classroomState) {
+      try {
+        const result = await saveClassroomTrainingResult(
+          classroomState,
+          report,
+          citations.map(toStoredCitation)
+        );
+        const conversationId = result.conversationId;
+        artifact = result.artifact;
+        classroomService.markSaved(sessionId, conversationId);
+        report.savedConversationId = conversationId;
+      } catch (error) {
+        saveError = error instanceof Error ? error.message : "课堂报告已生成，但保存历史记录失败。";
+      }
+    }
+
+    response.json({ report, citations, saveError, artifact });
+  } catch (error) {
+    handleClassroomError(error, response);
+  }
+});
+
+app.get("/api/files/:id", (request, response) => {
+  const id = path.basename(request.params.id);
+  response.download(getGeneratedFilePath(id));
+});
+
+app.get("/api/conversations", (_request, response) => {
+  response.json({ conversations: chatRepository.listConversations() });
+});
+
+app.get("/api/conversations/:id", (request, response) => {
+  const conversation = chatRepository.getConversation(request.params.id);
+
+  if (!conversation) {
+    response.status(404).json({ message: "训练记录不存在。" });
+    return;
+  }
+
+  response.json({ conversation });
+});
+
+app.post("/api/evaluations", express.json({ limit: "1mb" }), async (request, response) => {
+  const conversationId =
+    typeof request.body?.conversationId === "string"
+      ? request.body.conversationId
+      : "";
+  const conversation = chatRepository.getConversation(conversationId);
+
+  if (!conversation) {
+    response.status(404).json({ message: "训练记录不存在，无法生成评价。" });
+    return;
+  }
+
+  await observeOperation(
+    "training.evaluation.create",
+    {
+      input: {
+        conversationId: conversation.id,
+        trainingType: conversation.trainingType,
+        messageCount: conversation.messages.length,
+        citationCount: conversation.citations.length
+      }
+    },
+    async (observation) => {
+      const evaluation = createTrainingEvaluation({
+        conversationId: conversation.id,
+        trainingType: conversation.trainingType,
+        messages: conversation.messages,
+        citations: conversation.citations
+      });
+      await chatRepository.saveEvaluation(evaluation);
+      observation.update({
+        output: {
+          overallScore: evaluation.overallScore,
+          dimensionCount: evaluation.dimensions.length
+        }
+      });
+      recordTrainingEvaluationScores(observation, evaluation);
+      response.status(201).json({ evaluation });
+    }
+  );
+});
+
+app.get("/api/growth/summary", (_request, response) => {
+  response.json({ summary: chatRepository.getGrowthSummary() });
+});
+
+app.post("/api/growth/report", express.json({ limit: "1mb" }), async (request, response) => {
+  const type = request.body?.type === "docx" ? "docx" : "md";
+  const summary = chatRepository.getGrowthSummary();
+  chatRepository.saveGrowthSnapshot(summary);
+  const [artifact] = await generateArtifacts([
+    buildGrowthReportArtifact(summary, type)
+  ]);
+
+  response.status(201).json({ artifact });
+});
+
+app.post("/api/lesson-plans/generate", async (request, response) => {
+  try {
+    const input = normalizeLessonPlanInput(request.body);
+    await observeOperation(
+      "lesson.plan.generate",
+      {
+        input: {
+          subject: input.subject,
+          grade: input.grade,
+          topic: input.topic,
+          knowledgeBaseCount: input.knowledgeBaseIds.length
+        },
+        metadata: {
+          mode: "generate"
+        }
+      },
+      async (observation) => {
+        const citations = (
+          await searchKnowledge({
+            query: buildLessonPlanSearchQuery(input),
+            knowledgeBaseIds: input.knowledgeBaseIds,
+            topK: 4
+          })
+        ).map(toStoredCitation);
+        const draft = await createLessonPlanDraftWithOptionalAi({
+          input,
+          citations,
+          mode: "generate"
+        });
+        const diagnostic = diagnoseLessonPlanDraft(draft, citations);
+        const comparison = compareLessonPlanDrafts({
+          currentDraft: draft,
+          diagnostic,
+          citations
+        });
+        const conversationId = randomUUID();
+        const evaluation = lessonDiagnosticToEvaluation(
+          conversationId,
+          diagnostic,
+          citations
+        );
+
+        await saveLessonPlanTraining({
+          conversationId,
+          input,
+          draft,
+          citations,
+          evaluation,
+          action: "生成教案",
+          comparison
+        });
+
+        observation.update({
+          output: {
+            conversationId,
+            title: draft.title,
+            citationCount: citations.length,
+            overallScore: evaluation.overallScore,
+            weakestDimension: evaluation.dimensions.at(-1)?.name
+          }
+        });
+        recordTrainingEvaluationScores(observation, evaluation);
+
+        response.status(201).json({
+          conversationId,
+          draft,
+          diagnostic,
+          citations,
+          evaluation,
+          comparison
+        });
+      },
+      { asType: "chain" }
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "教案生成失败，请稍后重试。";
+    response.status(400).json({ message });
+  }
+});
+
+app.post("/api/lesson-plans/refine", async (request, response) => {
+  try {
+    const input = normalizeLessonPlanInput(request.body?.input || request.body);
+    const currentDraft = isRecord(request.body?.draft)
+      ? (request.body.draft as LessonPlanDraft)
+      : undefined;
+    await observeOperation(
+      "lesson.plan.refine",
+      {
+        input: {
+          subject: input.subject,
+          grade: input.grade,
+          topic: input.topic,
+          knowledgeBaseCount: input.knowledgeBaseIds.length,
+          hasCurrentDraft: Boolean(currentDraft)
+        },
+        metadata: {
+          mode: "refine"
+        }
+      },
+      async (observation) => {
+        const citations = (
+          await searchKnowledge({
+            query: buildLessonPlanSearchQuery(input),
+            knowledgeBaseIds: input.knowledgeBaseIds,
+            topK: 4
+          })
+        ).map(toStoredCitation);
+        const draft = await createLessonPlanDraftWithOptionalAi({
+          input,
+          citations,
+          currentDraft,
+          mode: "refine"
+        });
+        const diagnostic = diagnoseLessonPlanDraft(draft, citations);
+        const comparison = compareLessonPlanDrafts({
+          previousDraft: currentDraft,
+          currentDraft: draft,
+          diagnostic,
+          citations
+        });
+        const conversationId =
+          typeof request.body?.conversationId === "string"
+            ? request.body.conversationId
+            : randomUUID();
+        const evaluation = lessonDiagnosticToEvaluation(
+          conversationId,
+          diagnostic,
+          citations
+        );
+
+        await saveLessonPlanTraining({
+          conversationId,
+          input,
+          draft,
+          citations,
+          evaluation,
+          action: "按建议优化教案",
+          comparison
+        });
+
+        observation.update({
+          output: {
+            conversationId,
+            title: draft.title,
+            citationCount: citations.length,
+            overallScore: evaluation.overallScore,
+            version: draft.version
+          }
+        });
+        recordTrainingEvaluationScores(observation, evaluation);
+
+        response.status(201).json({
+          conversationId,
+          draft,
+          diagnostic,
+          citations,
+          evaluation,
+          comparison
+        });
+      },
+      { asType: "chain" }
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "教案优化失败，请稍后重试。";
+    response.status(400).json({ message });
+  }
+});
+
+app.post("/api/lesson-plans/generate/stream", async (request, response) => {
+  await streamLessonPlanRequest(request, response, "generate");
+});
+
+app.post("/api/lesson-plans/refine/stream", async (request, response) => {
+  await streamLessonPlanRequest(request, response, "refine");
+});
+
+app.post("/api/lesson-plans/export", async (request, response) => {
+  const draft = isRecord(request.body?.draft)
+    ? (request.body.draft as LessonPlanDraft)
+    : undefined;
+
+  if (!draft) {
+    response.status(400).json({ message: "缺少可导出的教案内容。" });
+    return;
+  }
+
+  try {
+    const [artifact] = await generateArtifacts([buildLessonPlanArtifact(draft)]);
+    response.status(201).json({ artifact });
+  } catch {
+    response.status(400).json({ message: "教案 Word 导出失败，请稍后重试。" });
+  }
+});
+
+app.post("/api/internship-reflections/generate", parseReflectionUpload, async (request, response) => {
+  try {
+    const input = normalizeInternshipReflectionInput(parseJsonField(request.body?.input) || request.body);
+    const uploadedEvidence = await summarizeInternshipEvidence(getUploadedFiles(request));
+    const evidence = [
+      ...normalizeInternshipEvidence(parseJsonField(request.body?.evidence)),
+      ...uploadedEvidence
+    ];
+    const citations = (
+      await searchKnowledge({
+        query: buildInternshipReflectionSearchQuery(input),
+        knowledgeBaseIds: input.knowledgeBaseIds,
+        topK: 4
+      })
+    ).map(toStoredCitation);
+    const priorTrainingLinks = buildReflectionPriorTrainingLinks();
+    const draft = generateInternshipReflectionDraft({
+      input,
+      evidence,
+      citations,
+      priorTrainingLinks
+    });
+    const savedEvidence = draft.evidence;
+    const diagnostic = diagnoseInternshipReflectionDraft(draft, citations);
+    const conversationId =
+      typeof request.body?.conversationId === "string"
+        ? request.body.conversationId
+        : randomUUID();
+    const evaluation = internshipDiagnosticToEvaluation(
+      conversationId,
+      diagnostic,
+      citations
+    );
+
+    await saveInternshipReflectionTraining({
+      conversationId,
+      input,
+      draft,
+      citations,
+      evidence: savedEvidence,
+      evaluation,
+      action: "生成实习日志与反思"
+    });
+
+    response.status(201).json({
+      conversationId,
+      draft,
+      diagnostic,
+      citations,
+      evidence: savedEvidence,
+      evaluation
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "实习反思生成失败，请稍后重试。";
+    response.status(400).json({ message });
+  }
+});
+
+app.post("/api/internship-reflections/generate/stream", parseReflectionUpload, async (request, response) => {
+  await streamInternshipReflectionRequest(request, response, "generate");
+});
+
+app.post("/api/internship-reflections/refine/stream", parseReflectionUpload, async (request, response) => {
+  await streamInternshipReflectionRequest(request, response, "refine");
+});
+
+app.post("/api/internship-reflections/refine", parseReflectionUpload, async (request, response) => {
+  try {
+    const input = normalizeInternshipReflectionInput(
+      parseJsonField(request.body?.input) || request.body
+    );
+    const currentDraft = isRecord(parseJsonField(request.body?.draft))
+      ? (parseJsonField(request.body?.draft) as InternshipReflectionDraft)
+      : isRecord(request.body?.draft)
+        ? (request.body.draft as InternshipReflectionDraft)
+        : undefined;
+    const uploadedEvidence = await summarizeInternshipEvidence(getUploadedFiles(request));
+    const evidence = [
+      ...normalizeInternshipEvidence(parseJsonField(request.body?.evidence)),
+      ...uploadedEvidence
+    ];
+    const citations = (
+      await searchKnowledge({
+        query: buildInternshipReflectionSearchQuery(input),
+        knowledgeBaseIds: input.knowledgeBaseIds,
+        topK: 4
+      })
+    ).map(toStoredCitation);
+    const priorTrainingLinks = buildReflectionPriorTrainingLinks();
+    const draft = refineInternshipReflectionDraft({
+      input,
+      currentDraft,
+      evidence: evidence.length ? evidence : currentDraft?.evidence || [],
+      citations,
+      priorTrainingLinks
+    });
+    const savedEvidence = draft.evidence;
+    const diagnostic = diagnoseInternshipReflectionDraft(draft, citations);
+    const conversationId =
+      typeof request.body?.conversationId === "string"
+        ? request.body.conversationId
+        : randomUUID();
+    const evaluation = internshipDiagnosticToEvaluation(
+      conversationId,
+      diagnostic,
+      citations
+    );
+
+    await saveInternshipReflectionTraining({
+      conversationId,
+      input,
+      draft,
+      citations,
+      evidence: savedEvidence,
+      evaluation,
+      action: "按建议优化实习反思"
+    });
+
+    response.status(201).json({
+      conversationId,
+      draft,
+      diagnostic,
+      citations,
+      evidence: savedEvidence,
+      evaluation
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "实习反思优化失败，请稍后重试。";
+    response.status(400).json({ message });
+  }
+});
+
+app.post("/api/internship-reflections/export", async (request, response) => {
+  const draft = isRecord(request.body?.draft)
+    ? (request.body.draft as InternshipReflectionDraft)
+    : undefined;
+
+  if (!draft) {
+    response.status(400).json({ message: "缺少可导出的实习反思内容。" });
+    return;
+  }
+
+  try {
+    const [artifact] = await generateArtifacts([
+      buildInternshipReflectionArtifact(draft)
+    ]);
+    response.status(201).json({ artifact });
+  } catch {
+    response.status(400).json({ message: "实习反思 Word 导出失败，请稍后重试。" });
+  }
+});
+
+app.get("/api/knowledge/providers", (_request, response) => {
+  response.json({ providers: knowledgeProvider.listProviderInfos() });
+});
+
+app.post("/api/knowledge/providers/ima/test", async (_request, response) => {
+  const result = await knowledgeProvider.testImaConnection();
+  response.status(result.ok ? 200 : 400).json({ result });
+});
+
+app.post("/api/knowledge/providers/ima/sync", async (_request, response) => {
+  const result = await knowledgeProvider.syncImaBases();
+  response.status(result.ok ? 200 : 400).json({ result });
+});
+
+app.get("/api/knowledge/bases", async (_request, response) => {
+  response.json({ bases: await knowledgeProvider.listBases() });
+});
+
+app.get("/api/knowledge/starter-packs", (_request, response) => {
+  response.json({ packs: knowledgeProvider.listStarterPacks() });
+});
+
+app.post("/api/knowledge/starter-packs/:id/import", (request, response) => {
+  try {
+    response.status(201).json({ base: knowledgeProvider.importStarterPack(request.params.id) });
+  } catch (error) {
+    const status = error instanceof KnowledgeError ? error.status : 400;
+    const message = error instanceof Error ? error.message : "示例资料包导入失败。";
+    response.status(status).json({ message });
+  }
+});
+
+app.post("/api/knowledge/bases", (request, response) => {
+  const name =
+    typeof request.body?.name === "string" ? request.body.name : "默认知识库";
+  response.status(201).json({ base: knowledgeProvider.createBase(name) });
+});
+
+app.patch("/api/knowledge/bases/:id", (request, response) => {
+  try {
+    const name = typeof request.body?.name === "string" ? request.body.name : "";
+    response.json({ base: knowledgeProvider.renameBase(request.params.id, name) });
+  } catch (error) {
+    const status = error instanceof KnowledgeError ? error.status : 400;
+    const message = error instanceof Error ? error.message : "资料库重命名失败。";
+    response.status(status).json({ message });
+  }
+});
+
+app.delete("/api/knowledge/bases/:id", (request, response) => {
+  try {
+    knowledgeProvider.deleteBase(request.params.id);
+    response.status(204).end();
+  } catch (error) {
+    const status = error instanceof KnowledgeError ? error.status : 400;
+    const message = error instanceof Error ? error.message : "资料库删除失败。";
+    response.status(status).json({ message });
+  }
+});
+
+app.get("/api/knowledge/bases/:id/documents", async (request, response) => {
+  response.json({
+    documents: await knowledgeProvider.listDocuments(request.params.id)
+  });
+});
+
+app.delete("/api/knowledge/bases/:baseId/documents/:documentId", (request, response) => {
+  try {
+    knowledgeProvider.deleteDocument(
+      request.params.baseId,
+      request.params.documentId
+    );
+    response.status(204).end();
+  } catch (error) {
+    const status = error instanceof KnowledgeError ? error.status : 400;
+    const message =
+      error instanceof Error ? error.message : "知识库文档删除失败";
+    response.status(status).json({ message });
+  }
+});
+
+app.get("/api/knowledge/documents/:id/chunks", async (request, response) => {
+  response.json({
+    chunks: await knowledgeProvider.listDocumentChunks(request.params.id)
+  });
+});
+
+app.post("/api/knowledge/bases/:id/documents", (request, response) => {
+  upload.single("file")(request, response, async (error) => {
+    if (error) {
+      respondToUploadError(response, error);
+      return;
+    }
+
+    if (!request.file) {
+      response.status(400).json({ message: "file is required" });
+      return;
+    }
+
+    try {
+      const document = await knowledgeProvider.addDocument(
+        request.params.id,
+        request.file,
+        parseKnowledgeDocumentMetadata(request.body)
+      );
+      response.status(201).json({ document });
+    } catch (knowledgeError) {
+      const status =
+        knowledgeError instanceof KnowledgeError ? knowledgeError.status : 400;
+      const message =
+        knowledgeError instanceof Error
+          ? knowledgeError.message
+          : "知识库文件解析失败";
+      response.status(status).json({ message });
+    }
+  });
+});
+
+app.post("/api/knowledge/search", async (request, response) => {
+  const query = typeof request.body?.query === "string" ? request.body.query : "";
+  const citations = await searchKnowledge({
+    query,
+    knowledgeBaseIds: parseStringArray(request.body?.knowledgeBaseIds),
+    topK: Number(request.body?.topK || 6)
+  });
+  response.json({ citations });
+});
+
+app.get("/api/speak-training/config", (_request, response) => {
+  response.json({
+    config: {
+      ...getSpeakTrainingConfig(),
+      iflytekConfigured: isXfyunSpeechConfigured()
+    }
+  });
+});
+
+app.post("/api/speak-training/oralize-material", async (request, response) => {
+  const body = request.body as {
+    materialTitle?: unknown;
+    materialText?: unknown;
+    currentStageId?: unknown;
+    currentStageName?: unknown;
+    existingDraft?: unknown;
+    examPaper?: unknown;
+  };
+  const materialText = typeof body.materialText === "string" ? body.materialText.trim() : "";
+  const materialTitle =
+    typeof body.materialTitle === "string" ? body.materialTitle.trim() : "参考素材";
+  const currentStageName =
+    typeof body.currentStageName === "string" ? body.currentStageName.trim() : "当前说课环节";
+  const existingDraft =
+    typeof body.existingDraft === "string" ? body.existingDraft.trim().slice(0, 1200) : "";
+  const examPaper =
+    body.examPaper && typeof body.examPaper === "object"
+      ? (body.examPaper as {
+          grade?: unknown;
+          subject?: unknown;
+          topic?: unknown;
+          textbookHint?: unknown;
+          studentHint?: unknown;
+        })
+      : undefined;
+
+  if (!materialText) {
+    response.status(400).json({ message: "请选择需要转化的参考素材。" });
+    return;
+  }
+
+  if (!isQwenConfigured()) {
+    response.status(503).json({ message: "口语表达生成功能暂不可用，请配置模型服务后重试。" });
+    return;
+  }
+
+  const examContext = examPaper
+    ? [
+        `套卷课题：${typeof examPaper.topic === "string" ? examPaper.topic : "未提供"}`,
+        `学段学科：${typeof examPaper.grade === "string" ? examPaper.grade : ""}${
+          typeof examPaper.subject === "string" ? examPaper.subject : ""
+        }`,
+        `教材提示：${typeof examPaper.textbookHint === "string" ? examPaper.textbookHint : "未提供"}`,
+        `学情提示：${typeof examPaper.studentHint === "string" ? examPaper.studentHint : "未提供"}`
+      ].join("\n")
+    : "未选择套卷，请按当前说课环节生成通用但具体的表达。";
+
+  try {
+    const result = await streamQwenChat({
+      system: [
+        "你是师范生说课训练助手，负责把备课参考资料转化为考场上自然、连贯、可直接说出口的中文表达。",
+        "只输出一段 80 至 180 字的第一人称说课稿，不要 Markdown、标题、序号、引号或解释。",
+        "保留资料中的关键教学依据，但不要出现‘课标依据’‘教材提示’‘学情提示’等资料标签，也不要逐字复述参考资料。",
+        "表达要贴合指定说课环节和套卷情境；如已有我的文稿，避免与它重复。"
+      ].join("\n"),
+      messages: [
+        {
+          role: "user",
+          content: [
+            `参考素材名称：${materialTitle.slice(0, 120)}`,
+            `当前环节：${currentStageName.slice(0, 80)}`,
+            `参考素材：${materialText.slice(0, 1800)}`,
+            examContext,
+            existingDraft ? `我的已有文稿：${existingDraft}` : "我的已有文稿：暂无"
+          ].join("\n\n")
+        }
+      ],
+      maxTokens: 360,
+      onDelta() {},
+      onThinkingDelta() {}
+    });
+    const oralDraft = result.visibleAssistantContent.trim();
+
+    if (!oralDraft) {
+      throw new Error("模型未返回可用的口语表达。");
+    }
+
+    response.json({ oralDraft });
+  } catch (error) {
+    const message =
+      error instanceof UpstreamModelError
+        ? "口语表达生成服务暂不可用，请稍后重试。"
+        : error instanceof Error
+          ? error.message
+          : "口语表达生成失败，请稍后重试。";
+    response.status(502).json({ message });
+  }
+});
+
+app.post("/api/speak-training/turn", parseSpeakAudioUpload, async (request, response) => {
+  const body = request.body as {
+    conversationId?: string;
+    transcript?: string;
+    text?: string;
+    source?: string;
+    currentStageId?: string;
+    knowledgeBaseIds?: unknown;
+    pauseDurationMs?: string;
+    durationSec?: string;
+    segmentStartedAt?: string;
+    reRecordOfSegmentId?: string;
+    retrainTargetStageId?: string;
+    retrainTitle?: string;
+  };
+  const transcript = String(body.transcript || body.text || "").trim();
+  const audioUploaded = Boolean(request.file);
+  const requestedStageId = body.currentStageId
+    ? normalizeSpeakStageId(body.currentStageId)
+    : undefined;
+  const session = speakTrainingSessions.getOrCreate(
+    body.conversationId,
+    requestedStageId
+  );
+  const knowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
+
+  try {
+    await observeOperation(
+      "speak.training.turn",
+      {
+        input: {
+          conversationId: session.conversationId,
+          transcript: summarizeText(transcript),
+          source: normalizeSpeakSource(body.source, audioUploaded),
+          currentStageId: requestedStageId || "完整说课",
+          knowledgeBaseCount: knowledgeBaseIds.length,
+          audioUploaded
+        }
+      },
+      async (observation) => {
+        const citations = transcript
+          ? await searchKnowledge({
+              query: transcript,
+              knowledgeBaseIds,
+              topK: 5
+            })
+          : [];
+        const storedCitations = citations.map(toStoredCitation);
+
+        const result = processSpeakTrainingTurn({
+          session,
+          transcript,
+          source: normalizeSpeakSource(body.source, audioUploaded),
+          currentStageId: requestedStageId,
+          pauseDurationMs: Number(body.pauseDurationMs || 0),
+          durationSec: parseOptionalNumber(body.durationSec),
+          segmentStartedAt: body.segmentStartedAt,
+          reRecordOfSegmentId: body.reRecordOfSegmentId,
+          retrainTargetStageId: body.retrainTargetStageId
+            ? normalizeSpeakStageId(body.retrainTargetStageId)
+            : undefined,
+          retrainTitle: body.retrainTitle,
+          citations: storedCitations,
+          audioUploaded
+        });
+
+        await applySpeakAiEnhancement(result, storedCitations);
+
+        speakTrainingSessions.update(result.session);
+        let saveError: string | undefined;
+
+        try {
+          await saveSpeakTrainingResult(result, knowledgeBaseIds, storedCitations);
+        } catch (error) {
+          saveError = error instanceof Error ? error.message : "说课训练结果保存失败。";
+          console.warn(`[speak:training] save skipped: ${saveError}`);
+        }
+
+        observation.update({
+          output: {
+            conversationId: result.conversationId,
+            currentStage: result.currentStage.name,
+            roleCommentCount: result.roleComments.length,
+            shouldInterrupt: result.interruption.shouldInterrupt,
+            triggerType: result.interruption.triggerType,
+            citationCount: citations.length,
+            overallScore: result.evaluation.overallScore,
+            saveError
+          }
+        });
+        recordTrainingEvaluationScores(observation, result.evaluation);
+        response.json({ ...result, saveError });
+      },
+      { asType: "chain" }
+    );
+  } catch (error) {
+    console.warn("[speak:training] turn failed:", error instanceof Error ? error.message : error);
+    if (!response.headersSent) {
+      response.status(500).json({
+        message: error instanceof Error ? error.message : "说课训练提交失败。"
+      });
+    }
+  }
+});
+
+app.post("/api/speak-training/answer", async (request, response) => {
+  const conversationId =
+    typeof request.body?.conversationId === "string" ? request.body.conversationId : "";
+  const questionId =
+    typeof request.body?.questionId === "string" ? request.body.questionId : undefined;
+  const text = typeof request.body?.text === "string" ? request.body.text : "";
+  const knowledgeBaseIds = parseStringArray(request.body?.knowledgeBaseIds);
+
+  if (!conversationId || !text.trim()) {
+    response.status(400).json({ message: "缺少训练会话或答辩内容。" });
+    return;
+  }
+
+  let session = speakTrainingSessions.getOrCreate(conversationId);
+  session = answerPendingSpeakQuestion(session, text, questionId);
+  try {
+    const aiOptimization = await enhanceDefenseOptimizationWithAi({
+      session,
+      plan: session.defenseOptimization
+    });
+    if (aiOptimization) {
+      session.defenseOptimization = aiOptimization;
+    }
+  } catch (error) {
+    console.warn("[speak:ai] optimization fallback:", error instanceof Error ? error.message : error);
+  }
+  speakTrainingSessions.update(session);
+  const answeredQuestion = questionId
+    ? [...session.questions, ...session.defenseQuestions].find(
+        (question) => question.id === questionId && question.status === "answered"
+      )
+    : [...session.questions, ...session.defenseQuestions]
+        .filter((question) => question.status === "answered")
+        .at(-1);
+  const citations = text.trim()
+    ? await searchKnowledge({
+        query: text,
+        knowledgeBaseIds,
+        topK: 3
+      })
+    : [];
+  const evaluation = createSpeakTrainingEvaluation({
+    conversationId: session.conversationId,
+    session,
+    citations: citations.map(toStoredCitation)
+  });
+
+  await saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, citations.map(toStoredCitation));
+  response.json({
+    session,
+    questions: session.questions,
+    defenseQuestions: session.defenseQuestions,
+    answeredQuestion: answeredQuestion
+      ? {
+          id: answeredQuestion.id,
+          roleName: answeredQuestion.roleName,
+          score: answeredQuestion.score,
+          feedback: answeredQuestion.feedback
+        }
+      : undefined,
+    evaluation,
+    report: session.report,
+    defenseOptimization: session.defenseOptimization
+  });
+});
+
+app.post("/api/speak-training/tts", async (request, response) => {
+  const text = typeof request.body?.text === "string" ? request.body.text : "";
+  const role =
+    request.body?.role === "researcher" ||
+    request.body?.role === "teacher" ||
+    request.body?.role === "expert" ||
+    request.body?.role === "system"
+      ? request.body.role
+      : "system";
+
+  try {
+    const audio = await synthesizeXfyunSpeech({ text, role });
+    response.json(audio);
+  } catch (error) {
+    const message =
+      error instanceof XfyunSpeechError || error instanceof Error
+        ? error.message
+        : "讯飞语音合成失败。";
+    response.status(400).json({ message });
+  }
+});
+
+app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
+  const body = request.body as ChatStreamRequest;
+  const messages = normalizeMessages(body.messages);
+  const enableThinking = parseBoolean(body.enableThinking);
+  const knowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
+  const requestedTrainingType = normalizeTrainingType(body.trainingType);
+  const isKnowledgeBaseOverview = isKnowledgeBaseOverviewRequest(
+    getLastUserText(messages)
+  );
+
+  if (messages.length === 0) {
+    response.status(400).json({ message: "messages is required" });
+    return;
+  }
+
+  await observeOperation(
+    "chat.stream",
+    {
+      input: {
+        messageCount: messages.length,
+        lastUserText: summarizeText(getLastUserText(messages)),
+        trainingType: requestedTrainingType,
+        knowledgeBaseCount: knowledgeBaseIds.length,
+        attachmentCount: getUploadedFiles(request).length
+      },
+      metadata: {
+        enableThinking
+      }
+    },
+    async (observation) => {
+  let modelMessages: ChatMessage[];
+  let citations: KnowledgeCitation[] = [];
+
+  try {
+    modelMessages = await attachUploadedFilesToMessages(
+      messages,
+      getUploadedFiles(request)
+    );
+    if (!isKnowledgeBaseOverview) {
+      citations = await searchKnowledge({
+        query: getLastUserText(messages),
+        knowledgeBaseIds,
+        topK: 6
+      });
+      modelMessages = attachKnowledgeContextToMessages(modelMessages, citations);
+    }
+  } catch (error) {
+    const status =
+      error instanceof UploadPreparationError ? error.status : 400;
+    const message =
+      error instanceof Error ? error.message : "上传文件解析失败，请稍后重试";
+    response.status(status).json({ message });
+    return;
+  }
+
+  const conversationId = body.conversationId || randomUUID();
+  const abortController = new AbortController();
+  let assistantContent = "";
+  let thinkingContent = "";
+  let evaluation: TrainingEvaluation | undefined;
+  let metricsSent = false;
+  const requestStartedAt = Date.now();
+
+  response.on("close", () => {
+    if (!response.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no"
+  });
+  response.flushHeaders?.();
+
+  for (const citation of citations) {
+    writeSse(response, "citation", citation);
+  }
+
+  try {
+    let artifactRequests: unknown[] = [];
+
+    if (isKnowledgeBaseOverview) {
+      assistantContent = await buildKnowledgeBaseOverview(knowledgeBaseIds);
+      writeSse(response, "delta", { content: assistantContent });
+    } else {
+      const streamResult = await streamQwenChat({
+        messages: modelMessages,
+        enableThinking,
+        signal: abortController.signal,
+        onDelta(content) {
+          if (!metricsSent) {
+            metricsSent = true;
+            if (enableThinking) {
+              writeSse(response, "metrics", {
+                thinkingSeconds: roundSeconds(Date.now() - requestStartedAt)
+              });
+            }
+          }
+
+          assistantContent += content;
+          writeSse(response, "delta", { content });
+        },
+        onThinkingDelta(content) {
+          if (!enableThinking) {
+            return;
+          }
+
+          thinkingContent += content;
+          writeSse(response, "thinking_delta", { content });
+        }
+      });
+      artifactRequests = streamResult.artifactRequests;
+    }
+    const artifacts = await generateArtifacts(
+      coerceArtifactRequests(artifactRequests)
+    );
+
+    for (const artifact of artifacts) {
+      writeSse(response, "artifact", artifact);
+    }
+
+    const storedMessages: StoredChatMessage[] = [
+      ...messages.map((message) => ({
+        role: message.role,
+        content: contentToStoredString(message.content)
+      })),
+      { role: "assistant", content: assistantContent }
+    ];
+    const trainingType =
+      requestedTrainingType ||
+      inferTrainingType(storedMessages.map((message) => message.content).join("\n"));
+
+    await chatRepository.saveConversation({
+      conversationId,
+      title: buildConversationTitle(storedMessages),
+      trainingType,
+      messages: storedMessages,
+      knowledgeBaseIds,
+      attachmentNames: getUploadedFiles(request).map((file) => file.originalname),
+      artifacts: artifacts.map(toStoredArtifact),
+      citations: citations.map(toStoredCitation)
+    });
+    evaluation = createTrainingEvaluation({
+      conversationId,
+      trainingType,
+      messages: storedMessages,
+      citations: citations.map(toStoredCitation)
+    });
+    await chatRepository.saveEvaluation(evaluation);
+    observation.update({
+      output: {
+        conversationId,
+        trainingType,
+        citationCount: citations.length,
+        artifactCount: artifacts.length,
+        assistantCharacterCount: assistantContent.length,
+        thinkingCharacterCount: thinkingContent.length,
+        overallScore: evaluation.overallScore
+      }
+    });
+    recordTrainingEvaluationScores(observation, evaluation);
+    writeSse(response, "evaluation", evaluation);
+    writeSse(response, "done", {
+      conversationId,
+      evaluation,
+      thinkingText: enableThinking ? thinkingContent || undefined : undefined
+    });
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      return;
+    }
+
+    const message =
+      error instanceof UpstreamModelError && error.status === undefined
+        ? error.message
+        : "模型服务暂时不可用，请稍后重试";
+    observation.update({
+      level: "ERROR",
+      statusMessage: message,
+      output: {
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+    writeSse(response, "error", { message });
+  } finally {
+    response.end();
+  }
+    },
+    { asType: "chain" }
+  );
+});
+
+const speakRealtimeServer = new WebSocketServer({
+  server: httpServer,
+  path: "/api/speak-training/realtime"
+});
+
+speakRealtimeServer.on("connection", (socket) => {
+  let session = speakTrainingSessions.getOrCreate();
+  let knowledgeBaseIds: string[] = [];
+  let lastCitations: StoredCitation[] = [];
+  let xfyunIat: XfyunIatStream | undefined;
+  let xfyunBuffer = "";
+  let receivedAudioFrameCount = 0;
+
+  async function handleRealtimeTranscript(
+    text: string,
+    pauseDurationMs?: number,
+    durationSec?: number
+  ) {
+    const trimmedText = text.trim();
+
+    if (!trimmedText) {
+      return;
+    }
+
+    const latestSegment = session.segments.at(-1);
+    const isDuplicateTranscript =
+      latestSegment &&
+      normalizeRealtimeTranscript(latestSegment.text) ===
+        normalizeRealtimeTranscript(trimmedText) &&
+      Date.now() - new Date(latestSegment.endedAt).getTime() < 10000;
+
+    if (isDuplicateTranscript) {
+      return;
+    }
+
+    await observeOperation(
+      "speak.training.realtime_turn",
+      {
+        input: {
+          conversationId: session.conversationId,
+          transcript: summarizeText(trimmedText),
+          pauseDurationMs,
+          knowledgeBaseCount: knowledgeBaseIds.length
+        }
+      },
+      async (observation) => {
+        sendSpeakRealtimeEvent(socket, { type: "transcript_delta", text: trimmedText });
+
+        const citations = await searchKnowledge({
+          query: trimmedText,
+          knowledgeBaseIds,
+          topK: 5
+        });
+        lastCitations = citations.map(toStoredCitation);
+        const result = processSpeakTrainingTurn({
+          session,
+          transcript: trimmedText,
+          source: "realtime",
+          pauseDurationMs,
+          durationSec,
+          citations: lastCitations
+        });
+        await applySpeakAiEnhancement(result, lastCitations);
+        session = speakTrainingSessions.update(result.session);
+        sendSpeakRealtimeEvent(socket, { type: "session", session });
+        sendSpeakRealtimeEvent(socket, {
+          type: "stage_update",
+          currentStage: result.currentStage,
+          stageProgress: result.stageProgress,
+          report: result.report
+        });
+        sendSpeakRealtimeEvent(socket, {
+          type: "interruption_candidate",
+          interruption: result.interruption
+        });
+
+        if (result.interruption.shouldInterrupt) {
+          const question = result.questions.at(-1);
+          sendSpeakRealtimeEvent(socket, {
+            type: "interrupt",
+            interruption: result.interruption
+          });
+
+          if (question) {
+            sendSpeakRealtimeEvent(socket, {
+              type: "role_question",
+              question
+            });
+          }
+        }
+
+        for (const item of result.tts) {
+          sendSpeakRealtimeEvent(socket, {
+            type: "tts_instruction",
+            role: item.role,
+            voiceStyle: item.voiceStyle,
+            text: item.text
+          });
+        }
+
+        sendSpeakRealtimeEvent(socket, {
+          type: "final_evaluation",
+          evaluation: result.evaluation,
+          report: result.report
+        });
+        await saveSpeakTrainingResult(result, knowledgeBaseIds, lastCitations);
+        observation.update({
+          output: {
+            conversationId: result.conversationId,
+            currentStage: result.currentStage.name,
+            shouldInterrupt: result.interruption.shouldInterrupt,
+            triggerType: result.interruption.triggerType,
+            citationCount: citations.length,
+            overallScore: result.evaluation.overallScore
+          }
+        });
+        recordTrainingEvaluationScores(observation, result.evaluation);
+      },
+      { asType: "chain" }
+    );
+  }
+
+  function getOrCreateXfyunIat() {
+    if (xfyunIat) {
+      return xfyunIat;
+    }
+
+    const config = getXfyunSpeechConfig();
+
+    if (!config) {
+      throw new XfyunSpeechError("讯飞实时听写未配置，请补充 AppID、APIKey 和 APISecret。");
+    }
+
+    xfyunIat = new XfyunIatStream(config, {
+      onTranscript(text, isFinal) {
+        xfyunBuffer += text;
+        sendSpeakRealtimeEvent(socket, {
+          type: "asr_delta",
+          text,
+          final: isFinal,
+          provider: "iflytek"
+        });
+
+        if (isFinal || /[。！？；]$/.test(xfyunBuffer)) {
+          const transcript = xfyunBuffer;
+          xfyunBuffer = "";
+          void handleRealtimeTranscript(transcript);
+        }
+
+        if (isFinal) {
+          xfyunIat = undefined;
+        }
+      },
+      onError(message) {
+        sendSpeakRealtimeEvent(socket, { type: "error", message });
+      }
+    });
+    console.info("[speak:realtime] xfyun iat stream created");
+    return xfyunIat;
+  }
+
+  sendSpeakRealtimeEvent(socket, { type: "session", session });
+
+  socket.on("message", async (rawMessage) => {
+    try {
+      const event = JSON.parse(String(rawMessage)) as SpeakRealtimeClientEvent & {
+        knowledgeBaseIds?: unknown;
+      };
+
+      if (event.type === "start") {
+        session = speakTrainingSessions.getOrCreate(
+          event.conversationId,
+          normalizeSpeakStageId(event.currentStageId)
+        );
+        knowledgeBaseIds = parseStringArray(event.knowledgeBaseIds);
+        sendSpeakRealtimeEvent(socket, { type: "session", session });
+        return;
+      }
+
+      if (event.type === "user_response") {
+        session = answerPendingSpeakQuestion(session, event.text, event.questionId);
+        speakTrainingSessions.update(session);
+        sendSpeakRealtimeEvent(socket, { type: "session", session });
+        await saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, lastCitations);
+        return;
+      }
+
+      if (event.type === "transcript_delta") {
+        const text = event.text.trim();
+
+        if (!text) {
+          return;
+        }
+
+        if (!event.final && !event.pauseDurationMs) {
+          sendSpeakRealtimeEvent(socket, { type: "transcript_delta", text });
+          return;
+        }
+
+        await handleRealtimeTranscript(text, event.pauseDurationMs, event.durationSec);
+        return;
+      }
+
+      if (event.type === "audio_frame") {
+        if (getSpeakTrainingConfig().asrProvider !== "iflytek") {
+          sendSpeakRealtimeEvent(socket, {
+            type: "error",
+            message: "当前未启用讯飞实时听写，请设置 SPEAK_ASR_PROVIDER=iflytek。"
+          });
+          return;
+        }
+
+        receivedAudioFrameCount += 1;
+
+        if (receivedAudioFrameCount === 1 || receivedAudioFrameCount % 50 === 0) {
+          console.info(
+            `[speak:realtime] received audio frames=${receivedAudioFrameCount}`
+          );
+        }
+
+        await getOrCreateXfyunIat().sendAudioFrame(event.audio);
+        return;
+      }
+
+      if (event.type === "audio_end") {
+        console.info(
+          `[speak:realtime] audio_end received frames=${receivedAudioFrameCount}`
+        );
+
+        if (!xfyunIat) {
+          sendSpeakRealtimeEvent(socket, {
+            type: "error",
+            message: "没有收到可识别的音频帧，请确认麦克风权限已允许，并重新录制。"
+          });
+          return;
+        }
+
+        const segmentCountBeforeFinish = session.segments.length;
+        await xfyunIat?.finish();
+        xfyunIat = undefined;
+
+        if (xfyunBuffer.trim()) {
+          const transcript = xfyunBuffer;
+          xfyunBuffer = "";
+          await handleRealtimeTranscript(transcript, 2600);
+          return;
+        }
+
+        if (session.segments.length === segmentCountBeforeFinish) {
+          sendSpeakRealtimeEvent(socket, {
+            type: "error",
+            message: "讯飞没有返回识别文本。请说满 3 秒以上，确认麦克风音量条有输入后再结束。"
+          });
+        }
+
+        return;
+      }
+
+      if (event.type === "pause") {
+        const lastSegment = session.segments.at(-1);
+
+        if (!lastSegment) {
+          return;
+        }
+
+        const result = processSpeakTrainingTurn({
+          session,
+          transcript: lastSegment.text,
+          source: "realtime",
+          pauseDurationMs: event.durationMs,
+          durationSec: Math.round(event.durationMs / 1000),
+          citations: lastCitations
+        });
+        session = speakTrainingSessions.update(result.session);
+        sendSpeakRealtimeEvent(socket, {
+          type: "interruption_candidate",
+          interruption: result.interruption
+        });
+        await saveSpeakTrainingResult(result, knowledgeBaseIds, lastCitations);
+        return;
+      }
+
+      if (event.type === "finish") {
+        await saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, lastCitations);
+        const evaluation = createSpeakTrainingEvaluation({
+          conversationId: session.conversationId,
+          session,
+          citations: lastCitations
+        });
+        sendSpeakRealtimeEvent(socket, {
+          type: "final_evaluation",
+          evaluation,
+          report: session.report
+        });
+        socket.close(1000, "finished");
+      }
+    } catch (error) {
+      sendSpeakRealtimeEvent(socket, {
+        type: "error",
+        message: error instanceof Error ? error.message : "实时说课事件处理失败。"
+      });
+    }
+  });
+
+  socket.on("close", () => {
+    xfyunIat?.close();
+    void saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, lastCitations);
+  });
+});
+
+httpServer.listen(port, "127.0.0.1", () => {
+  console.log(`AI chat server listening on http://127.0.0.1:${port}`);
+});
+
+function parseSpeakAudioUpload(
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction
+) {
+  if (!request.is("multipart/form-data")) {
+    next();
+    return;
+  }
+
+  upload.single("audio")(request, response, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
+
+    response.status(400).json({ message: "说课音频解析失败，请稍后重试" });
+  });
+}
+
+async function saveSpeakTrainingResult(
+  result: SpeakTrainingTurnResult,
+  knowledgeBaseIds: string[],
+  citations: StoredCitation[]
+) {
+  const assistantContent = renderSpeakTrainingAssistantMessage(result);
+  const messages = [
+    ...buildSpeakConversationMessages(result.session),
+    {
+      role: "assistant" as const,
+      content: assistantContent
+    }
+  ];
+
+  await chatRepository.saveConversation({
+    conversationId: result.conversationId,
+    title: buildSpeakConversationTitle(result.session.segments[0]?.text),
+    trainingType: "说课陪练",
+    messages,
+    knowledgeBaseIds,
+    attachmentNames: [],
+    artifacts: [],
+    citations
+  });
+  await chatRepository.saveSpeakTrainingSession(
+    result.conversationId,
+    buildSpeakSessionSnapshot(result.session)
+  );
+  await chatRepository.saveEvaluation(result.evaluation);
+}
+
+async function applySpeakAiEnhancement(
+  result: SpeakTrainingTurnResult,
+  citations: StoredCitation[]
+) {
+  try {
+    const enhancement = await generateSpeakAiEnhancement({
+      session: result.session,
+      report: result.report,
+      citations
+    });
+
+    if (!enhancement) {
+      return;
+    }
+
+    const answeredAiQuestions = result.session.defenseQuestions.filter(
+      (question) => question.source === "ai" && question.status === "answered"
+    );
+    result.session.defenseQuestions = [
+      ...answeredAiQuestions,
+      ...enhancement.questions
+    ].slice(0, 3);
+    result.session.aiFocusHints = enhancement.focusHints;
+    result.defenseQuestions = result.session.defenseQuestions;
+  } catch (error) {
+    console.warn("[speak:ai] question fallback:", error instanceof Error ? error.message : error);
+  }
+}
+
+async function saveClassroomTrainingResult(
+  state: ClassroomState,
+  report: ClassroomReport,
+  citations: StoredCitation[]
+) {
+  const conversationId = state.savedConversationId || `classroom_${randomUUID()}`;
+  let artifacts: StoredArtifact[] = [];
+  const messages: StoredChatMessage[] = [
+    {
+      role: "user",
+      content: `虚拟课堂配置：${state.grade}${state.subject}《${state.topic}》，${state.classType}，训练目标：${state.trainingGoal}，难度：${state.difficulty}，专项：${state.specialTrainingMode || "综合训练"}。`
+    },
+    ...state.timeline.map((item) => ({
+      role: item.role === "teacher" ? ("user" as const) : ("assistant" as const),
+      content: `${item.speaker}：${item.content}`
+    })),
+    {
+      role: "assistant",
+      content: renderClassroomReportText(report)
+    }
+  ];
+  const evaluation: TrainingEvaluation = {
+    id: `eval_${randomUUID()}`,
+    conversationId,
+    trainingType: "模拟课堂",
+    overallScore: report.overallScore,
+    dimensions: report.dimensionScores,
+    diagnosis: report.issues,
+    suggestions: report.suggestions,
+    nextTask: report.nextTrainingTask,
+    citations,
+    createdAt: new Date(report.generatedAt).toISOString()
+  };
+
+  try {
+    const generatedArtifacts = await generateArtifacts([
+      buildClassroomReportArtifact(state, report)
+    ]);
+    artifacts = generatedArtifacts.map(toStoredArtifact);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown classroom report export error";
+    console.warn(`Classroom report artifact skipped: ${message}`);
+  }
+
+  await chatRepository.saveConversation({
+    conversationId,
+    title: buildClassroomConversationTitle(state),
+    trainingType: "模拟课堂",
+    messages,
+    knowledgeBaseIds: state.knowledgeBaseIds || [],
+    attachmentNames: [],
+    artifacts,
+    citations
+  });
+  await chatRepository.saveEvaluation(evaluation);
+
+  return {
+    conversationId,
+    artifact: artifacts[0]
+  };
+}
+
+function buildClassroomReportArtifact(
+  state: ClassroomState,
+  report: ClassroomReport
+): ArtifactRequest {
+  return {
+    name: `${state.subject}-${state.topic}-模拟课堂诊断报告.docx`,
+    type: "docx",
+    title: `${state.grade}${state.subject}《${state.topic}》模拟课堂诊断报告`,
+    content: [
+      `课堂类型：${state.classType}`,
+      `训练目标：${state.trainingGoal}`,
+      `专项模式：${state.specialTrainingMode || "综合训练"}`,
+      `总分：${report.overallScore}`,
+      `生成方式：${report.providerMode === "llm" ? "LLM 增强诊断" : "规则增强诊断"}`
+    ].join("\n"),
+    sections: [
+      {
+        heading: "一、课堂报告摘要",
+        body: report.summary
+      },
+      {
+        heading: "二、能力维度评分",
+        bullets: report.dimensionScores.map(
+          (dimension) => `${dimension.name} ${dimension.score}分：${dimension.comment}`
+        )
+      },
+      {
+        heading: "三、课堂事件复盘",
+        bullets: report.eventReview.length
+          ? report.eventReview.map(
+              (event) =>
+                `${event.type}：${event.description}；${event.handled ? "已处理" : "待改进"}；${event.comment}`
+            )
+          : ["本轮未触发明显突发事件。"]
+      },
+      {
+        heading: "四、课堂证据链",
+        bullets: report.evidenceChains.map(
+          (chain) =>
+            `${chain.studentAgent}：教师行为“${chain.teacherMove}”；学生反应“${chain.studentResponse}”；证据：${chain.eventOrMetric}；建议：${chain.observerAdvice}`
+        )
+      },
+      {
+        heading: "五、Agent 决策依据",
+        bullets: report.agentDecisionEvidence.map(
+          (item) => `${item.agentName}：${item.decision}；依据：${item.basis}；影响：${item.impact}`
+        )
+      },
+      {
+        heading: "六、优势与问题",
+        bullets: [
+          ...report.strengths.map((item) => `优势：${item}`),
+          ...report.issues.map((item) => `问题：${item}`)
+        ]
+      },
+      {
+        heading: "七、改进建议与下一轮任务",
+        bullets: [...report.suggestions, `下一轮任务：${report.nextTrainingTask}`]
+      }
+    ]
+  };
+}
+
+function renderClassroomReportText(report: ClassroomReport) {
+  return [
+    `总体评分：${report.overallScore}`,
+    report.summary,
+    `维度评分：${report.dimensionScores
+      .map((dimension) => `${dimension.name}${dimension.score}分：${dimension.comment}`)
+      .join("；")}`,
+    `事件复盘：${
+      report.eventReview.length
+        ? report.eventReview
+            .map(
+              (event) =>
+                `${event.description}（${event.handled ? "已处理" : "待处理"}）：${event.comment}`
+            )
+            .join("；")
+        : "本轮未触发明显课堂事件。"
+    }`,
+    `Agent协作：${report.agentCollaboration.map((step) => `${step.agentName}：${step.output}`).join("；")}`,
+    `证据链：${report.evidenceChains
+      .map(
+        (chain, index) =>
+          `${index + 1}. 教师行为“${chain.teacherMove}” -> ${chain.studentAgent}：“${chain.studentResponse}” -> ${chain.eventOrMetric} -> ${chain.observerAdvice}`
+      )
+      .join("；")}`,
+    `决策证据：${report.agentDecisionEvidence.map((item) => `${item.agentName}：${item.decision}；依据：${item.basis}；影响：${item.impact}`).join("；")}`,
+    `优点：${report.strengths.join("；")}`,
+    `问题：${report.issues.join("；")}`,
+    `建议：${report.suggestions.join("；")}`,
+    `下一轮任务：${report.nextTrainingTask}`
+  ].join("\n");
+}
+
+function buildClassroomConversationTitle(state: ClassroomState) {
+  const title = `虚拟课堂：${state.grade}${state.subject}《${state.topic}》`;
+  return title.length > 28 ? `${title.slice(0, 28)}...` : title;
+}
+
+function normalizeClassroomActionType(value: unknown): ClassroomActionType {
+  const actionTypes: ClassroomActionType[] = [
+    "call_on_student",
+    "follow_up_student",
+    "start_group_activity",
+    "pause_and_manage",
+    "compress_summary"
+  ];
+
+  return actionTypes.includes(value as ClassroomActionType)
+    ? (value as ClassroomActionType)
+    : "call_on_student";
+}
+
+async function saveSpeakTrainingSessionOnly(
+  session: SpeakTrainingTurnResult["session"],
+  knowledgeBaseIds: string[],
+  citations: StoredCitation[]
+) {
+  if (session.segments.length === 0) {
+    return;
+  }
+
+  const evaluation = createSpeakTrainingEvaluation({
+    conversationId: session.conversationId,
+    session,
+    citations
+  });
+  const messages = buildSpeakConversationMessages(session);
+
+  await chatRepository.saveConversation({
+    conversationId: session.conversationId,
+    title: buildSpeakConversationTitle(session.segments[0]?.text),
+    trainingType: "说课陪练",
+    messages,
+    knowledgeBaseIds,
+    attachmentNames: [],
+    artifacts: [],
+    citations
+  });
+  await chatRepository.saveSpeakTrainingSession(
+    session.conversationId,
+    buildSpeakSessionSnapshot(session)
+  );
+  await chatRepository.saveEvaluation(evaluation);
+}
+
+function buildSpeakConversationTitle(text?: string) {
+  const compact = (text || "说课训练").replace(/\s+/g, " ").trim();
+  return compact.length > 24 ? `${compact.slice(0, 24)}...` : compact;
+}
+
+function normalizeSpeakStageId(value: unknown): SpeakStageId | undefined {
+  const stageIds: SpeakStageId[] = [
+    "textbook",
+    "student",
+    "objective",
+    "keyPoint",
+    "method",
+    "process",
+    "activity",
+    "assessment",
+    "reflection"
+  ];
+
+  return stageIds.includes(value as SpeakStageId)
+    ? (value as SpeakStageId)
+    : undefined;
+}
+
+function normalizeRealtimeTranscript(text: string) {
+  return text.replace(/\s+/g, "").replace(/[，。！？、；：,.!?;:]/g, "");
+}
+
+function normalizeSpeakSource(
+  value: unknown,
+  audioUploaded: boolean
+): SpeakTrainingTurnResult["session"]["segments"][number]["source"] {
+  if (
+    value === "text" ||
+    value === "browser_asr" ||
+    value === "audio_upload" ||
+    value === "realtime"
+  ) {
+    return value;
+  }
+
+  return audioUploaded ? "audio_upload" : "text";
+}
+
+function sendSpeakRealtimeEvent(
+  socket: WebSocket,
+  event: SpeakRealtimeServerEvent
+) {
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(event));
+  }
+}
+
+function parseChatUpload(
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction
+) {
+  if (!request.is("multipart/form-data")) {
+    next();
+    return;
+  }
+
+  upload.array("files", maxUploadCount)(request, response, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
+
+    response.status(400).json({ message: "上传文件解析失败，请稍后重试" });
+  });
+}
+
+function parseReflectionUpload(
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction
+) {
+  if (!request.is("multipart/form-data")) {
+    next();
+    return;
+  }
+
+  upload.array("files", maxUploadCount)(request, response, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
+
+    response.status(400).json({ message: "实习证据材料上传失败，请稍后重试。" });
+  });
+}
+
+function respondToUploadError(response: express.Response, error: unknown) {
+  if (error instanceof multer.MulterError) {
+    const isTooLarge = error.code === "LIMIT_FILE_SIZE";
+    response.status(isTooLarge ? 413 : 400).json({
+      message: isTooLarge
+        ? `文件大小不能超过 ${formatFileSize(maxUploadTotalBytes)}。`
+        : `最多一次上传 ${maxUploadCount} 个文件。`
+    });
+    return;
+  }
+
+  response.status(400).json({ message: "上传文件解析失败，请稍后重试" });
+}
+
+function normalizeMessages(messages: ChatStreamRequest["messages"]): ChatMessage[] {
+  const values = parseMessages(messages);
+
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values
+    .filter(
+      (message): message is { role: "user" | "assistant"; content: string } =>
+        isRecord(message) &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string"
+    )
+    .map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
+}
+
+function parseMessages(messages: unknown) {
+  if (typeof messages !== "string") {
+    return messages;
+  }
+
+  try {
+    return JSON.parse(messages) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJsonField(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseBoolean(value: ChatStreamRequest["enableThinking"]) {
+  return value === true || value === "true";
+}
+
+function parseStringArray(value: unknown) {
+  if (typeof value === "string") {
+    try {
+      return parseStringArray(JSON.parse(value) as unknown);
+    } catch {
+      return value ? [value] : [];
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function parseKnowledgeDocumentMetadata(value: unknown): KnowledgeDocumentMetadata {
+  const body = isRecord(value) ? value : {};
+  const resourceType =
+    typeof body.resourceType === "string" ? body.resourceType : undefined;
+  const subject = typeof body.subject === "string" ? body.subject : undefined;
+  const schoolStage =
+    typeof body.schoolStage === "string" ? body.schoolStage : undefined;
+
+  return {
+    resourceType: resourceType as KnowledgeDocumentMetadata["resourceType"],
+    subject,
+    schoolStage,
+    tags: parseStringArray(body.tags)
+  };
+}
+
+function parseOptionalNumber(value: unknown) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : undefined;
+}
+
+function getUploadedFiles(request: express.Request) {
+  const files = request.files;
+
+  if (!files) {
+    return [];
+  }
+
+  if (Array.isArray(files)) {
+    return files;
+  }
+
+  return Object.values(files).flat();
+}
+
+async function summarizeInternshipEvidence(files: Express.Multer.File[]) {
+  if (files.length === 0) {
+    return [];
+  }
+
+  validateUploadedFiles(files);
+
+  const evidence: InternshipEvidenceItem[] = [];
+
+  for (const [index, file] of files.entries()) {
+    const extension = getFileExtension(file.originalname);
+    const imageMediaType = supportedImageTypes.get(extension);
+    const id = `evidence_${randomUUID()}`;
+
+    if (imageMediaType) {
+      evidence.push({
+        id,
+        name: file.originalname,
+        type: "image",
+        summary:
+          "已上传课堂图片证据，可用于观察板书呈现、课堂活动、学生作品或听课记录中的教学线索。",
+        observationPoints: [
+          "提取图片中的课堂情境和教学材料信息",
+          "结合反思文本判断可改进的教学行为",
+          "建议对包含学生正脸或个人信息的图片进行脱敏后归档"
+        ],
+        privacyNote: "若图片包含学生正脸、姓名或学号，建议脱敏后再长期保存。"
+      });
+      continue;
+    }
+
+    const text =
+      extension === "pdf"
+        ? await extractPdfText(file)
+        : file.buffer.toString("utf8");
+    const normalized = text.replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+    const summary = normalized
+      ? normalized.slice(0, 180)
+      : "该材料未提取到可读文本，可作为课堂证据附件记录。";
+
+    evidence.push({
+      id,
+      name: file.originalname,
+      type: extension === "pdf" ? "document" : "text",
+      summary,
+      observationPoints: [
+        `材料${index + 1}可作为课堂观察和课后反思依据`,
+        "从材料中提取问题现象、学生反应或教学改进线索"
+      ]
+    });
+  }
+
+  return evidence;
+}
+
+async function attachUploadedFilesToMessages(
+  messages: ChatMessage[],
+  files: Express.Multer.File[]
+) {
+  if (files.length === 0) {
+    return messages;
+  }
+
+  validateUploadedFiles(files);
+
+  const lastUserIndex = findLastUserMessageIndex(messages);
+
+  if (lastUserIndex < 0) {
+    throw new UploadPreparationError("上传文件需要和用户消息一起发送。", 400);
+  }
+
+  const currentUserMessage = messages[lastUserIndex];
+  const contentBlocks: Array<TextContentBlock | ImageContentBlock> = [
+    {
+      type: "text",
+      text:
+        typeof currentUserMessage.content === "string" &&
+        currentUserMessage.content.trim()
+          ? currentUserMessage.content
+          : "请分析我上传的文件。"
+    }
+  ];
+
+  for (const file of files) {
+    contentBlocks.push(...(await fileToContentBlocks(file)));
+  }
+
+  return messages.map((message, index) =>
+    index === lastUserIndex ? { ...message, content: contentBlocks } : message
+  );
+}
+
+function validateUploadedFiles(files: Express.Multer.File[]) {
+  if (files.length > maxUploadCount) {
+    throw new UploadPreparationError(`最多一次上传 ${maxUploadCount} 个文件。`, 400);
+  }
+
+  const totalSize = files.reduce((total, file) => total + file.size, 0);
+
+  if (totalSize > maxUploadTotalBytes) {
+    throw new UploadPreparationError(
+      `附件总大小不能超过 ${formatFileSize(maxUploadTotalBytes)}。`,
+      413
+    );
+  }
+
+  for (const file of files) {
+    const extension = getFileExtension(file.originalname);
+
+    if (
+      !supportedImageTypes.has(extension) &&
+      extension !== "pdf" &&
+      !supportedTextExtensions.has(extension)
+    ) {
+      throw new UploadPreparationError(
+        `暂不支持 ${file.originalname}，请上传图片、PDF、TXT、MD、CSV 或 JSON。`,
+        415
+      );
+    }
+  }
+}
+
+async function fileToContentBlocks(file: Express.Multer.File) {
+  const extension = getFileExtension(file.originalname);
+  const imageMediaType = supportedImageTypes.get(extension);
+
+  if (imageMediaType) {
+    return [
+      {
+        type: "text" as const,
+        text: `\n\n[上传图片：${file.originalname}]`
+      },
+      {
+        type: "image" as const,
+        source: {
+          type: "base64" as const,
+          media_type: imageMediaType,
+          data: file.buffer.toString("base64")
+        }
+      }
+    ];
+  }
+
+  const text =
+    extension === "pdf"
+      ? await extractPdfText(file)
+      : file.buffer.toString("utf8");
+
+  return [
+    {
+      type: "text" as const,
+      text: formatUploadedTextContent(file.originalname, text)
+    }
+  ];
+}
+
+async function extractPdfText(file: Express.Multer.File) {
+  const parser = new PDFParse({ data: file.buffer });
+
+  try {
+    const result = await parser.getText();
+    return result.text;
+  } catch {
+    throw new UploadPreparationError(`PDF ${file.originalname} 解析失败。`, 400);
+  } finally {
+    await parser.destroy();
+  }
+}
+
+function formatUploadedTextContent(fileName: string, content: string) {
+  const normalizedContent = content.replace(/\u0000/g, "").trim();
+  const clippedContent =
+    normalizedContent.length > maxExtractedTextCharacters
+      ? `${normalizedContent.slice(0, maxExtractedTextCharacters)}\n\n[文件内容较长，已截取前 ${maxExtractedTextCharacters} 个字符]`
+      : normalizedContent;
+
+  if (!clippedContent) {
+    return `\n\n[上传文件：${fileName}]\n文件没有提取到可读取文本。`;
+  }
+
+  return `\n\n[上传文件：${fileName}]\n${clippedContent}`;
+}
+
+function findLastUserMessageIndex(messages: ChatMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function getLastUserText(messages: ChatMessage[]) {
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+
+  if (!lastUserMessage) {
+    return "";
+  }
+
+  return contentToStoredString(lastUserMessage.content);
+}
+
+function isKnowledgeBaseOverviewRequest(value: string) {
+  const text = value.replace(/\s+/g, "").trim();
+
+  return (
+    /(这个|该|所选|当前|已选|此)?(知识库|资料库).*(有什么作用|有什么用|能做什么|里面有什么|包含什么|有哪些资料|有些什么|作用|用途)/.test(
+      text
+    ) ||
+    /(有什么作用|有什么用|能做什么|里面有什么|包含什么|有哪些资料|有些什么|作用|用途).*(这个|该|所选|当前|已选|此)?(知识库|资料库)/.test(
+      text
+    )
+  );
+}
+
+async function buildKnowledgeBaseOverview(knowledgeBaseIds: string[]) {
+  if (!knowledgeBaseIds.length) {
+    return "当前没有选择知识库。请先在输入框上方选择一个知识库，再询问它包含什么资料或可以用于哪些问题。";
+  }
+
+  const bases = await knowledgeProvider.listBases();
+  const selectedBases = bases.filter((base) => knowledgeBaseIds.includes(base.id));
+
+  if (!selectedBases.length) {
+    return "所选知识库暂时无法读取。请重新选择后再试。";
+  }
+
+  const sections = await Promise.all(
+    selectedBases.map(async (base) => {
+      const documents = await knowledgeProvider.listDocuments(base.id);
+      const recentDocuments = [...documents]
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 3);
+      const resourceTypes = [...new Set(documents.map((document) => document.resourceType))];
+      const tags = [...new Set(documents.flatMap((document) => document.tags))].slice(0, 8);
+      const subjects = [...new Set(documents.map((document) => document.subject).filter(Boolean))];
+      const scope = subjects.length ? subjects.join("、") : resourceTypes.join("、") || "教学资料";
+      const recentNames = recentDocuments.map((document) => document.name);
+
+      return [
+        `「${base.name}」`,
+        `资料数量：${base.documentCount} ${base.source === "ima" ? "条内容" : "份文档"}`,
+        `文件类型：${resourceTypes.length ? resourceTypes.join("、") : "暂未提供"}`,
+        `标签：${tags.length ? tags.join("、") : "暂未设置"}`,
+        `最近资料：${recentNames.length ? recentNames.join("、") : base.source === "ima" ? "外部知识库会在提问时实时检索" : "暂未上传资料"}`,
+        `可用于回答：围绕${scope}的教学目标、重点难点、教学活动、课例设计或常见学习问题。`,
+        `示例问题："${scope}中有哪些可用于课堂设计的依据？"`
+      ].join("\n");
+    })
+  );
+
+  return `我已读取所选知识库的真实资料信息：\n\n${sections.join("\n\n")}`;
+}
+
+function attachKnowledgeContextToMessages(
+  messages: ChatMessage[],
+  citations: KnowledgeCitation[]
+) {
+  if (citations.length === 0) {
+    return messages;
+  }
+
+  const lastUserIndex = findLastUserMessageIndex(messages);
+
+  if (lastUserIndex < 0) {
+    return messages;
+  }
+
+  const contextBlock: TextContentBlock = {
+    type: "text",
+    text: formatKnowledgeContext(citations)
+  };
+
+  return messages.map((message, index) => {
+    if (index !== lastUserIndex) {
+      return message;
+    }
+
+    if (typeof message.content === "string") {
+      return {
+        ...message,
+        content: [
+          { type: "text" as const, text: message.content },
+          contextBlock
+        ]
+      };
+    }
+
+    return {
+      ...message,
+      content: [...message.content, contextBlock]
+    };
+  });
+}
+
+function formatKnowledgeContext(citations: KnowledgeCitation[]) {
+  return [
+    "\n\n[知识库检索结果]",
+    "请优先基于以下资料回答；如果资料不足，再补充通用教学建议，并明确不要编造资料来源。",
+    ...citations.map(
+      (citation, index) =>
+        `${index + 1}. 来源：${citation.documentName}\n片段：${citation.snippet}`
+    )
+  ].join("\n");
+}
+
+function buildConversationTitle(messages: StoredChatMessage[]) {
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  const text = firstUserMessage?.content.replace(/\s+/g, " ").trim() || "教学实训记录";
+
+  return text.length > 28 ? `${text.slice(0, 28)}...` : text;
+}
+
+async function streamLessonPlanRequest(
+  request: express.Request,
+  response: express.Response,
+  mode: "generate" | "refine"
+) {
+  const input = normalizeLessonPlanInput(
+    mode === "refine" ? request.body?.input || request.body : request.body
+  );
+  const currentDraft = isRecord(request.body?.draft)
+    ? (request.body.draft as LessonPlanDraft)
+    : undefined;
+  const conversationId =
+    mode === "refine" && typeof request.body?.conversationId === "string"
+      ? request.body.conversationId
+      : randomUUID();
+  const abortController = new AbortController();
+  const phaseSteps =
+    mode === "generate" ? lessonPlanStreamGenerateSteps : lessonPlanStreamRefineSteps;
+
+  response.on("close", () => {
+    if (!response.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no"
+  });
+  response.flushHeaders?.();
+
+  try {
+    await observeOperation(
+      mode === "generate" ? "lesson.plan.generate.stream" : "lesson.plan.refine.stream",
+      {
+        input: {
+          subject: input.subject,
+          grade: input.grade,
+          topic: input.topic,
+          knowledgeBaseCount: input.knowledgeBaseIds.length,
+          hasCurrentDraft: Boolean(currentDraft)
+        },
+        metadata: {
+          mode,
+          transport: "sse"
+        }
+      },
+      async (observation) => {
+        writeStreamPhase(response, phaseSteps, 0);
+        const citations = (
+          await searchKnowledge({
+            query: buildLessonPlanSearchQuery(input),
+            knowledgeBaseIds: input.knowledgeBaseIds,
+            topK: 4
+          })
+        ).map(toStoredCitation);
+
+        for (const citation of citations) {
+          writeSse(response, "citation", citation);
+        }
+
+        writeStreamPhase(response, phaseSteps, 1);
+        let streamedCharacterCount = 0;
+        const draft = await createStreamingLessonPlanDraftWithOptionalAi({
+          input,
+          citations,
+          currentDraft,
+          mode,
+          signal: abortController.signal,
+          onDelta(content) {
+            streamedCharacterCount += content.length;
+            writeSse(response, "delta", { content });
+          },
+          onThinkingDelta(content) {
+            writeSse(response, "thinking_delta", { content });
+          }
+        });
+
+        writeStreamPhase(response, phaseSteps, 2);
+        const diagnostic = diagnoseLessonPlanDraft(draft, citations);
+        const comparison = compareLessonPlanDrafts({
+          previousDraft: currentDraft,
+          currentDraft: draft,
+          diagnostic,
+          citations
+        });
+        const evaluation = lessonDiagnosticToEvaluation(
+          conversationId,
+          diagnostic,
+          citations
+        );
+
+        writeStreamPhase(response, phaseSteps, 3);
+        await saveLessonPlanTraining({
+          conversationId,
+          input,
+          draft,
+          citations,
+          evaluation,
+          action: mode === "generate" ? "生成教案" : "按建议优化教案",
+          comparison
+        });
+
+        writeStreamPhase(response, phaseSteps, 4);
+        writeSse(response, "evaluation", evaluation);
+        writeSse(response, "done", {
+          conversationId,
+          draft,
+          diagnostic,
+          citations,
+          evaluation,
+          comparison
+        });
+
+        observation.update({
+          output: {
+            conversationId,
+            title: draft.title,
+            citationCount: citations.length,
+            overallScore: evaluation.overallScore,
+            streamedCharacterCount
+          }
+        });
+        recordTrainingEvaluationScores(observation, evaluation);
+      },
+      { asType: "chain" }
+    );
+  } catch (error) {
+    if (!abortController.signal.aborted) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : mode === "generate"
+            ? "教案生成失败，请稍后重试。"
+            : "教案优化失败，请稍后重试。";
+      writeSse(response, "error", { message });
+    }
+  } finally {
+    response.end();
+  }
+}
+
+async function streamInternshipReflectionRequest(
+  request: express.Request,
+  response: express.Response,
+  mode: "generate" | "refine"
+) {
+  const input = normalizeInternshipReflectionInput(
+    parseJsonField(request.body?.input) || request.body
+  );
+  const currentDraft = isRecord(parseJsonField(request.body?.draft))
+    ? (parseJsonField(request.body?.draft) as InternshipReflectionDraft)
+    : isRecord(request.body?.draft)
+      ? (request.body.draft as InternshipReflectionDraft)
+      : undefined;
+  const conversationId =
+    typeof request.body?.conversationId === "string"
+      ? request.body.conversationId
+      : randomUUID();
+  const phaseSteps =
+    mode === "generate" ? reflectionStreamGenerateSteps : reflectionStreamRefineSteps;
+
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no"
+  });
+  response.flushHeaders?.();
+
+  try {
+    writeStreamPhase(response, phaseSteps, 0);
+    const uploadedEvidence = await summarizeInternshipEvidence(getUploadedFiles(request));
+    const evidence = [
+      ...normalizeInternshipEvidence(parseJsonField(request.body?.evidence)),
+      ...uploadedEvidence
+    ];
+
+    writeStreamPhase(response, phaseSteps, 1);
+    const citations = (
+      await searchKnowledge({
+        query: buildInternshipReflectionSearchQuery(input),
+        knowledgeBaseIds: input.knowledgeBaseIds,
+        topK: 4
+      })
+    ).map(toStoredCitation);
+
+    for (const citation of citations) {
+      writeSse(response, "citation", citation);
+    }
+
+    writeStreamPhase(response, phaseSteps, 2);
+    const draft =
+      mode === "refine"
+        ? refineInternshipReflectionDraft({
+            input,
+            currentDraft,
+            evidence: evidence.length ? evidence : currentDraft?.evidence || [],
+            citations,
+            priorTrainingLinks: buildReflectionPriorTrainingLinks()
+          })
+        : generateInternshipReflectionDraft({
+            input,
+            evidence,
+            citations,
+            priorTrainingLinks: buildReflectionPriorTrainingLinks()
+          });
+
+    writeStreamPhase(response, phaseSteps, 3);
+    const diagnostic = diagnoseInternshipReflectionDraft(draft, citations);
+    const evaluation = internshipDiagnosticToEvaluation(
+      conversationId,
+      diagnostic,
+      citations
+    );
+    const savedEvidence = draft.evidence;
+
+    await saveInternshipReflectionTraining({
+      conversationId,
+      input,
+      draft,
+      citations,
+      evidence: savedEvidence,
+      evaluation,
+      action:
+        mode === "generate"
+          ? "生成实习日志与反思"
+          : "按建议优化实习日志与反思"
+    });
+
+    writeStreamPhase(response, phaseSteps, 4);
+    writeSse(response, "evaluation", evaluation);
+    writeSse(response, "done", {
+      conversationId,
+      draft,
+      diagnostic,
+      citations,
+      evidence: savedEvidence,
+      evaluation
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : mode === "generate"
+          ? "实习反思生成失败，请稍后重试。"
+          : "实习反思优化失败，请稍后重试。";
+    writeSse(response, "error", { message });
+  } finally {
+    response.end();
+  }
+}
+
+async function createLessonPlanDraftWithOptionalAi({
+  input,
+  citations,
+  currentDraft,
+  mode
+}: {
+  input: LessonPlanInput;
+  citations: StoredCitation[];
+  currentDraft?: LessonPlanDraft;
+  mode: "generate" | "refine";
+}) {
+  return observeOperation(
+    "lesson.plan.ai_or_fallback",
+    {
+      input: {
+        mode,
+        topic: input.topic,
+        citationCount: citations.length,
+        aiConfigured: isMiniMaxLessonPlanConfigured()
+      }
+    },
+    async (observation) => {
+      if (isMiniMaxLessonPlanConfigured()) {
+        try {
+          const aiDraft = await withLessonPlanAiTimeout(
+            generateMiniMaxLessonPlanDraft({
+              input,
+              citations,
+              currentDraft,
+              mode
+            })
+          );
+
+          if (aiDraft) {
+            observation.update({
+              output: {
+                source: "ai",
+                title: aiDraft.title,
+                sectionCount: aiDraft.sections.length
+              }
+            });
+            return aiDraft;
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "MiniMax lesson plan failed";
+          const status =
+            error instanceof MiniMaxLessonPlanError && error.status
+              ? ` (${error.status})`
+              : "";
+          console.warn(`MiniMax lesson plan fallback${status}: ${message}`);
+          observation.update({
+            metadata: {
+              fallback: true,
+              fallbackReason: message,
+              fallbackStatus:
+                error instanceof MiniMaxLessonPlanError ? error.status : undefined
+            }
+          });
+        }
+      }
+
+      const fallbackDraft =
+        mode === "refine"
+          ? refineLessonPlanDraft(input, currentDraft, citations)
+          : generateLessonPlanDraft(input, citations);
+
+      if (isMiniMaxLessonPlanConfigured()) {
+        fallbackDraft.sourceNote = `${fallbackDraft.sourceNote} 远端教案增强暂不可用，已自动回退本地教案模板。`;
+      }
+
+      observation.update({
+        output: {
+          source: "fallback",
+          title: fallbackDraft.title,
+          sectionCount: fallbackDraft.sections.length
+        }
+      });
+
+      return fallbackDraft;
+    },
+    { asType: "chain" }
+  );
+}
+
+async function createStreamingLessonPlanDraftWithOptionalAi({
+  input,
+  citations,
+  currentDraft,
+  mode,
+  signal,
+  onDelta,
+  onThinkingDelta
+}: {
+  input: LessonPlanInput;
+  citations: StoredCitation[];
+  currentDraft?: LessonPlanDraft;
+  mode: "generate" | "refine";
+  signal?: AbortSignal;
+  onDelta: (content: string) => void;
+  onThinkingDelta: (content: string) => void;
+}) {
+  return observeOperation(
+    "lesson.plan.ai_or_fallback.stream",
+    {
+      input: {
+        mode,
+        topic: input.topic,
+        citationCount: citations.length,
+        aiConfigured: isMiniMaxLessonPlanConfigured()
+      }
+    },
+    async (observation) => {
+      if (isMiniMaxLessonPlanConfigured()) {
+        try {
+          const aiDraft = await generateStreamingMiniMaxLessonPlanDraft({
+            input,
+            citations,
+            currentDraft,
+            mode,
+            signal,
+            onDelta,
+            onThinkingDelta
+          });
+
+          if (aiDraft) {
+            observation.update({
+              output: {
+                source: "ai_stream",
+                title: aiDraft.title,
+                sectionCount: aiDraft.sections.length
+              }
+            });
+            return aiDraft;
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Streaming lesson plan failed";
+          const status =
+            error instanceof MiniMaxLessonPlanError && error.status
+              ? ` (${error.status})`
+              : "";
+          console.warn(`Streaming lesson plan fallback${status}: ${message}`);
+          observation.update({
+            metadata: {
+              fallback: true,
+              fallbackReason: message,
+              fallbackStatus:
+                error instanceof MiniMaxLessonPlanError ? error.status : undefined
+            }
+          });
+        }
+      }
+
+      const fallbackDraft =
+        mode === "refine"
+          ? refineLessonPlanDraft(input, currentDraft, citations)
+          : generateLessonPlanDraft(input, citations);
+
+      if (isMiniMaxLessonPlanConfigured()) {
+        fallbackDraft.sourceNote = `${fallbackDraft.sourceNote} 远端流式教案增强暂不可用，已自动回退本地教案模板。`;
+      }
+
+      observation.update({
+        output: {
+          source: "fallback",
+          title: fallbackDraft.title,
+          sectionCount: fallbackDraft.sections.length
+        }
+      });
+
+      return fallbackDraft;
+    },
+    { asType: "chain" }
+  );
+}
+
+async function withLessonPlanAiTimeout<T>(operation: Promise<T>) {
+  const timeoutMs = getLessonPlanAiTimeoutMs();
+
+  if (timeoutMs <= 0) {
+    return operation;
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(
+            new MiniMaxLessonPlanError(
+              `远端教案增强超过 ${timeoutMs}ms 未返回，已启用本地回退。`
+            )
+          );
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function getLessonPlanAiTimeoutMs() {
+  const configured = Number(process.env.LESSON_PLAN_AI_TIMEOUT_MS);
+
+  if (Number.isFinite(configured)) {
+    return Math.max(0, configured);
+  }
+
+  return defaultLessonPlanAiTimeoutMs;
+}
+
+async function saveLessonPlanTraining({
+  conversationId,
+  input,
+  draft,
+  citations,
+  evaluation,
+  action,
+  comparison
+}: {
+  conversationId: string;
+  input: LessonPlanInput;
+  draft: LessonPlanDraft;
+  citations: StoredCitation[];
+  evaluation: TrainingEvaluation;
+  action: string;
+  comparison?: LessonPlanComparison;
+}) {
+  const messages: StoredChatMessage[] = [
+    {
+      role: "user",
+      content: [
+        `${action}：${input.subject} ${input.grade}《${input.topic}》`,
+        `课时：${input.duration}`,
+        `教材背景：${input.textbookContext}`,
+        `学情：${input.studentProfile}`,
+        `知识库：${input.knowledgeBaseIds.length ? input.knowledgeBaseIds.join("、") : "未选择"}`,
+        `技能：${input.skills.join("、") || "未启用"}`
+      ].join("\n")
+    },
+    {
+      role: "assistant",
+      content: [
+        renderLessonPlanText(draft),
+        `诊断总分：${evaluation.overallScore}`,
+        `诊断维度：${evaluation.dimensions
+          .map((dimension) => `${dimension.name}${dimension.score}分`)
+          .join("；")}`,
+        `问题：${evaluation.diagnosis.join("；")}`,
+        `建议：${evaluation.suggestions.join("；")}`,
+        comparison
+          ? [
+              `前后对比：${comparison.summary}`,
+              ...comparison.items.map(
+                (item) =>
+                  `${item.dimension}：优化前 ${item.before}；优化后 ${item.after}；改动说明 ${item.improvement}`
+              ),
+              `对比证据：${comparison.evidence.join("；")}`
+            ].join("\n")
+          : undefined,
+        `下一步：${evaluation.nextTask}`
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    }
+  ];
+
+  await chatRepository.saveConversation({
+    conversationId,
+    title: draft.title,
+    trainingType: "教案诊断",
+    messages,
+    knowledgeBaseIds: input.knowledgeBaseIds,
+    attachmentNames: [],
+    artifacts: [],
+    citations
+  });
+  await chatRepository.saveEvaluation(evaluation);
+}
+
+async function saveInternshipReflectionTraining({
+  conversationId,
+  input,
+  draft,
+  citations,
+  evidence,
+  evaluation,
+  action
+}: {
+  conversationId: string;
+  input: InternshipReflectionInput;
+  draft: InternshipReflectionDraft;
+  citations: StoredCitation[];
+  evidence: InternshipEvidenceItem[];
+  evaluation: TrainingEvaluation;
+  action: string;
+}) {
+  const messages: StoredChatMessage[] = [
+    {
+      role: "user",
+      content: `${action}：${input.internshipDate} ${input.schoolClass} ${input.subjectTopic}`
+    },
+    {
+      role: "assistant",
+      content: renderInternshipReflectionText(draft)
+    }
+  ];
+  let artifacts: StoredArtifact[] = [];
+
+  try {
+    const generatedArtifacts = await generateArtifacts([
+      buildInternshipReflectionArtifact(draft)
+    ]);
+    artifacts = generatedArtifacts.map(toStoredArtifact);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "unknown internship reflection export error";
+    console.warn(`Internship reflection artifact skipped: ${message}`);
+  }
+
+  await chatRepository.saveConversation({
+    conversationId,
+    title: draft.title,
+    trainingType: "实习反思",
+    messages,
+    knowledgeBaseIds: input.knowledgeBaseIds,
+    attachmentNames: evidence.map((item) => item.name),
+    artifacts,
+    citations
+  });
+  await chatRepository.saveEvaluation(evaluation);
+}
+
+function buildReflectionPriorTrainingLinks() {
+  const summary = chatRepository.getGrowthSummary();
+  const weakText = summary.weakDimensions.length
+    ? summary.weakDimensions
+        .map((dimension) => `${dimension.name}${dimension.score}分`)
+        .join("、")
+    : "目标活动评价一致性、理论依据和课堂应变";
+
+  return [
+    `关联教案诊断：已沉淀 ${summary.trainingTypeCounts["教案诊断"]} 次教案训练，结合 ${weakText} 回看目标、活动、评价证据是否一致。`,
+    `关联说课陪练：已沉淀 ${summary.trainingTypeCounts["说课陪练"]} 次说课训练，把理论依据、学情解释和答辩风险转化为本次反思的原因分析。`,
+    `关联模拟课堂：已沉淀 ${summary.trainingTypeCounts["模拟课堂"]} 次模拟课堂训练，将学生沉默、错误回答、跑题或控场波动对应到下一次追问与反馈动作。`
+  ];
+}
+
+function toStoredArtifact(artifact: {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+  size: number;
+}): StoredArtifact {
+  return artifact;
+}
+
+function toStoredCitation(citation: KnowledgeCitation): StoredCitation {
+  return {
+    id: citation.id,
+    knowledgeBaseId: citation.knowledgeBaseId,
+    knowledgeBaseName: citation.knowledgeBaseName,
+    documentId: citation.documentId,
+    documentName: citation.documentName,
+    snippet: citation.snippet,
+    source: citation.source,
+    score: citation.score
+  };
+}
+
+function buildGrowthReportArtifact(
+  summary: ReturnType<typeof chatRepository.getGrowthSummary>,
+  type: "md" | "docx"
+): ArtifactRequest {
+  const dimensions =
+    summary.dimensionAverages
+      .map((dimension) => `${dimension.name}：${dimension.score}分，${dimension.comment}`)
+      .join("\n") || "暂未形成评价数据。";
+  const recent =
+    summary.recentEvaluations
+      .map(
+        (evaluation) =>
+          `${evaluation.trainingType}：${evaluation.overallScore}分；下一步：${evaluation.nextTask}`
+      )
+      .join("\n") || "完成一次训练后，这里会沉淀评价记录。";
+  const weak =
+    summary.weakDimensions
+      .map((dimension) => `${dimension.name}（${dimension.score}分）`)
+      .join("、") || "暂无薄弱项";
+  const trainingTypeSummaries =
+    summary.trainingTypeSummaries
+      .map(
+        (item) =>
+          `${item.trainingType}：${item.status}｜${item.count} 次｜均分 ${item.averageScore || "--"}｜证据 ${item.evidenceCount} 条｜成果 ${item.artifactCount} 个｜最新：${item.latestTitle || "暂无"}｜下一步：${item.nextAction}`
+      )
+      .join("\n") || "暂未形成四类训练覆盖数据。";
+  const timeline =
+    summary.growthTimeline
+      .map(
+        (item) =>
+          `${item.trainingType}｜${item.title}｜${item.score || "--"}分｜薄弱项：${item.weakDimensions.join("、") || "暂无"}｜下一步：${item.nextTask}`
+      )
+      .join("\n") || "完成训练后会形成证据时间线。";
+  const representativeArtifacts =
+    summary.representativeArtifacts
+      .map(
+        (item) =>
+          `${item.trainingType}｜${item.title}｜${item.score || "--"}分｜${item.reason}`
+      )
+      .join("\n") || "生成教案、课堂报告或实习反思后会出现代表性成果。";
+  const capabilityMatrix =
+    summary.capabilityMatrix
+      .map(
+        (item) =>
+          `${item.name}：${item.score}分\n证据：${item.evidence}\n下一步：${item.nextAction}`
+      )
+      .join("\n\n") || "暂未形成能力成长矩阵。";
+  const reflectionSummary = [
+    `反思次数：${summary.reflectionSummary.totalReflections} 次`,
+    `最新反思：${summary.reflectionSummary.latestTitle || "暂无"}`,
+    `最新得分：${summary.reflectionSummary.latestScore || "--"}`,
+    `反思证据：${summary.reflectionSummary.evidenceCount} 条`,
+    `下一步：${summary.reflectionSummary.nextAction}`
+  ].join("\n");
+  return {
+    name: `易师训成长档案.${type}`,
+    type,
+    title: "易师训师范生教学能力成长档案",
+    content: [
+      `累计训练：${summary.totalTrainings} 次`,
+      `平均得分：${summary.averageScore || 0} 分`,
+      `当前成长阶段：${summary.growthStage}`,
+      `当前薄弱项：${weak}`,
+      `本轮成长行动：${summary.recommendedAction.objective}`,
+      `行动原因：${summary.recommendedAction.reason}`,
+      `完成标准：${summary.recommendedAction.completionCriteria}`,
+      `四类训练覆盖：\n${trainingTypeSummaries}`,
+      `训练证据时间线：\n${timeline}`,
+      `能力成长矩阵：\n${capabilityMatrix}`,
+      `代表性成果：\n${representativeArtifacts}`,
+      `推荐下一步：${summary.recommendedNextTask}`
+    ].join("\n\n"),
+    sections: [
+      {
+        heading: "阶段成长摘要",
+        body: `当前处于「${summary.growthStage}」阶段。累计完成 ${summary.totalTrainings} 次训练，平均得分 ${summary.averageScore || 0} 分，当前薄弱项为 ${weak}。${summary.recommendedAction.objective}`
+      },
+      {
+        heading: "本轮成长行动",
+        body: [
+          `推荐训练：${summary.recommendedAction.trainingType}`,
+          `推荐原因：${summary.recommendedAction.reason}`,
+          `训练目标：${summary.recommendedAction.objective}`,
+          `完成标准：${summary.recommendedAction.completionCriteria}`
+        ].join("\n")
+      },
+      {
+        heading: "四类训练覆盖",
+        body: trainingTypeSummaries
+      },
+      {
+        heading: "训练证据时间线",
+        body: timeline
+      },
+      {
+        heading: "能力成长矩阵",
+        body: capabilityMatrix
+      },
+      {
+        heading: "代表性成果",
+        body: representativeArtifacts
+      },
+      {
+        heading: "实习反思成长摘要",
+        body: reflectionSummary
+      },
+      {
+        heading: "能力维度概览",
+        body: dimensions
+      },
+      {
+        heading: "最近训练反馈",
+        body: recent
+      },
+    ]
+  };
+}
+
+function contentToStoredString(content: ChatMessage["content"]) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content
+    .map((block) =>
+      block.type === "text" ? block.text : `[上传图片：${block.source.media_type}]`
+    )
+    .join("\n");
+}
+
+function getFileExtension(fileName: string) {
+  return path.extname(fileName).replace(".", "").toLowerCase();
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function writeSse(
+  response: express.Response,
+  event:
+    | "delta"
+    | "thinking_delta"
+    | "phase"
+    | "metrics"
+    | "artifact"
+    | "citation"
+    | "evaluation"
+    | "done"
+    | "error",
+  data: unknown
+) {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function writeStreamPhase(
+  response: express.Response,
+  steps: StreamPhaseStep[],
+  activeIndex: number
+) {
+  const boundedIndex = Math.min(Math.max(activeIndex, 0), steps.length - 1);
+  const activeStep = steps[boundedIndex];
+
+  writeSse(response, "phase", {
+    stepId: activeStep?.id,
+    label: activeStep?.label,
+    detail: activeStep?.detail,
+    steps,
+    activeStepId: activeStep?.id,
+    completedStepIds: steps.slice(0, boundedIndex).map((step) => step.id)
+  });
+}
+
+function roundSeconds(milliseconds: number) {
+  return Math.max(0.1, Math.round((milliseconds / 1000) * 10) / 10);
+}
+
+function handleClassroomError(error: unknown, response: express.Response) {
+  const status = error instanceof ClassroomServiceError ? error.status : 400;
+  const message =
+    error instanceof Error ? error.message : "虚拟课堂服务暂时不可用。";
+
+  response.status(status).json({ message });
+}
+
+function coerceArtifactRequests(values: unknown[]): ArtifactRequest[] {
+  return values
+    .filter((value): value is Record<string, unknown> => Boolean(value))
+    .map((value) => ({
+      name: typeof value.name === "string" ? value.name : "生成文件.md",
+      type:
+        value.type === "md" || value.type === "docx" || value.type === "pptx"
+          ? value.type
+          : "md",
+      title: typeof value.title === "string" ? value.title : undefined,
+      content: typeof value.content === "string" ? value.content : undefined,
+      sections: Array.isArray(value.sections)
+        ? value.sections.map((section) => coerceSection(section))
+        : undefined,
+      slides: Array.isArray(value.slides)
+        ? value.slides.map((slide) => coerceSlide(slide))
+        : undefined
+    }));
+}
+
+function coerceSection(value: unknown) {
+  const section = isRecord(value) ? value : {};
+  return {
+    heading: typeof section.heading === "string" ? section.heading : undefined,
+    body: typeof section.body === "string" ? section.body : undefined,
+    bullets: Array.isArray(section.bullets)
+      ? section.bullets.filter((item): item is string => typeof item === "string")
+      : undefined
+  };
+}
+
+function coerceSlide(value: unknown) {
+  const slide = isRecord(value) ? value : {};
+  return {
+    title: typeof slide.title === "string" ? slide.title : undefined,
+    notes: typeof slide.notes === "string" ? slide.notes : undefined,
+    bullets: Array.isArray(slide.bullets)
+      ? slide.bullets.filter((item): item is string => typeof item === "string")
+      : undefined
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+class UploadPreparationError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "UploadPreparationError";
+  }
+}
