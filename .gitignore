@@ -1,4 +1,5 @@
 node_modules/
+public/voice-assets/
 dist/
 .codex-screenshots/
 .npm-cache/

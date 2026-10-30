@@ -4,6 +4,7 @@ import {
   Clock3,
   Ellipsis,
   GraduationCap,
+  HeartHandshake,
   Mic,
   PanelLeft,
   SquareChartGantt,
@@ -26,6 +27,7 @@ type MenuItem = {
     | "history"
     | "growth"
     | "speak"
+    | "counseling"
     | "classroom";
 };
 
@@ -36,12 +38,14 @@ type SidebarProps = {
     | "history"
     | "growth"
     | "speak"
+    | "counseling"
     | "classroom";
   collapsed: boolean;
   onOpenGrowth: () => void;
   onOpenHistory: () => void;
   onOpenKnowledge: () => void;
   onOpenClassroom: () => void;
+  onOpenCounselingTraining: () => void;
   onOpenSpeakTraining: () => void;
   onNewConversation: () => void;
   onToggle: () => void;
@@ -59,6 +63,7 @@ const menuItems: MenuItem[] = [
   { label: "新对话", icon: SquarePen, section: "chat" },
   { label: "说课训练", icon: Mic, section: "speak" },
   { label: "虚拟课堂", icon: GraduationCap, section: "classroom" },
+  { label: "谈心谈话", icon: HeartHandshake, section: "counseling" },
   { label: "知识库", icon: BookOpen, section: "knowledge" },
   { label: "历史记录", icon: Clock3, section: "history" },
   { label: "成长报告", icon: SquareChartGantt, section: "growth" }
@@ -78,6 +83,7 @@ export function Sidebar({
   onOpenHistory,
   onOpenKnowledge,
   onOpenClassroom,
+  onOpenCounselingTraining,
   onOpenSpeakTraining,
   onNewConversation,
   onToggle,
@@ -120,7 +126,9 @@ export function Sidebar({
                   : item.label === "说课训练"
                     ? onOpenSpeakTraining
                     : item.label === "虚拟课堂"
-                    ? onOpenClassroom
+                      ? onOpenClassroom
+                      : item.label === "谈心谈话"
+                        ? onOpenCounselingTraining
                     : item.label === "知识库"
                         ? onOpenKnowledge
                         : item.label === "历史记录"

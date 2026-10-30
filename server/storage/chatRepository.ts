@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-export type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思";
+export type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
 
 export type StoredChatMessage = {
   role: "user" | "assistant";
@@ -223,6 +223,8 @@ export type ChatRepository = {
   saveEvaluation(evaluation: TrainingEvaluation): Promise<void>;
   saveSpeakTrainingSession(conversationId: string, snapshotJson: string): Promise<void>;
   getSpeakTrainingSession(conversationId: string): string | undefined;
+  saveCounselingSession(id: string, snapshot: string): void;
+  getCounselingSession(id: string): string | undefined;
   getEvaluation(conversationId: string): TrainingEvaluation | undefined;
   listEvaluations(limit?: number): TrainingEvaluation[];
   getGrowthSummary(): GrowthSummary;
@@ -233,7 +235,8 @@ const trainingTypes: TrainingType[] = [
   "教案诊断",
   "说课陪练",
   "模拟课堂",
-  "实习反思"
+  "实习反思",
+  "谈心谈话"
 ];
 
 export class SQLiteChatRepository implements ChatRepository {
@@ -501,6 +504,17 @@ export class SQLiteChatRepository implements ChatRepository {
     return row?.snapshot_json;
   }
 
+  saveCounselingSession(id: string, snapshot: string) {
+    this.db.prepare(`INSERT INTO counseling_sessions (id, snapshot_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at`)
+      .run(id, snapshot, new Date().toISOString());
+  }
+
+  getCounselingSession(id: string): string | undefined {
+    const row = this.db.prepare("SELECT snapshot_json FROM counseling_sessions WHERE id = ?").get(id) as { snapshot_json: string } | undefined;
+    return row?.snapshot_json;
+  }
+
   getEvaluation(conversationId: string) {
     const row = this.db
       .prepare(
@@ -615,6 +629,11 @@ export class SQLiteChatRepository implements ChatRepository {
 
   private initialize() {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS counseling_sessions (
+        id TEXT PRIMARY KEY,
+        snapshot_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -945,7 +964,7 @@ function buildRepresentativeArtifacts(
   }
 
   return [...byType.values()]
-    .slice(0, 4)
+    .slice(0, 5)
     .map((conversation) => ({
       id: conversation.id,
       title: conversation.title,
@@ -1013,6 +1032,12 @@ function buildCapabilityMatrix(
       evidence: "来自教案、课堂和反思中对学生差异、价值引导和公平评价的呈现。",
       nextAction: "补充面向不同学生的鼓励性评价语言。"
     },
+    {
+      name: "学生关怀",
+      score: fallback(scoreOf("关系建立", "倾听共情", "安全确认", "支持计划", "谈话修复"), 56),
+      evidence: "来自虚拟个案谈话中的倾听共情、安全确认、支持计划和打断后修复证据。",
+      nextAction: "下一轮先复述学生感受，再用开放式提问核对事实并共同商定支持。"
+    },
   ].map((item) => ({
     ...item,
     score: Math.max(0, Math.min(100, Math.round(item.score)))
@@ -1045,6 +1070,7 @@ function buildReflectionSummary(conversations: ConversationSummary[]): Reflectio
 }
 
 function buildDefaultTimelineTask(trainingType: TrainingType) {
+  if (trainingType === "谈心谈话") return "复核谈话证据，重练共情回应、安全确认与支持计划。";
   if (trainingType === "实习反思") {
     return "补充课堂证据，再按建议优化反思。";
   }
@@ -1061,6 +1087,7 @@ function buildDefaultTimelineTask(trainingType: TrainingType) {
 }
 
 function buildArtifactReason(conversation: ConversationSummary) {
+  if (conversation.trainingType === "谈心谈话") return "记录虚拟个案谈话、关系变化、打断与修复证据。";
   if (conversation.trainingType === "实习反思") {
     return "可作为实习复盘与师德育人反思的代表成果。";
   }
@@ -1088,6 +1115,10 @@ function buildRecommendedAction(
     completionCriteria: "完成本轮训练并生成一份带评价的记录。",
     prompt: trainingPromptFor(trainingType)
   });
+
+  if (weakest && /关系建立|倾听共情|提问澄清|安全确认|边界与支持计划|谈话修复/.test(weakest)) {
+    return actionFor("谈心谈话", `${weakest}仍需专项练习。`, "完成一次虚拟个案谈话，并复核安全与共情表达证据。");
+  }
 
   if (!weakest) {
     return actionFor(
@@ -1140,6 +1171,9 @@ function buildRecommendedAction(
 }
 
 function trainingPromptFor(trainingType: TrainingType) {
+  if (trainingType === "谈心谈话") {
+    return "开始一次虚拟学生谈心谈话训练，重点练习共情回应与安全确认。";
+  }
   if (trainingType === "说课陪练") {
     return "陪我练习说课，请先给我一份说课结构，再模拟评委追问。";
   }

@@ -44,6 +44,8 @@ import {
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
+import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
+import { VoiceChatStage } from "./features/voice/VoiceChatStage";
 import "./styles.css";
 
 type Attachment = {
@@ -180,7 +182,7 @@ type StarterKnowledgePack = {
   documentCount: number;
 };
 
-type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思";
+type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
 
 type EvaluationDimension = {
   name: string;
@@ -6378,6 +6380,7 @@ type ComposerProps = {
   onConfirmKnowledgeSelection: () => boolean;
   onRemoveAttachment: (id: string) => void;
   onSend: () => void;
+  onOpenVoice: () => void;
   onSkipKnowledgeSelection: () => void;
   onToggleKnowledgeBase: (id: string) => void;
   onToggleThinking: () => void;
@@ -6401,6 +6404,7 @@ function Composer({
   onConfirmKnowledgeSelection,
   onRemoveAttachment,
   onSend,
+  onOpenVoice,
   onSkipKnowledgeSelection,
   onToggleKnowledgeBase,
   onToggleThinking,
@@ -6417,7 +6421,6 @@ function Composer({
   );
   const canSend =
     !isGenerating && (inputValue.trim().length > 0 || attachments.length > 0);
-
   useEffect(() => {
     if (!uploadTargetBaseId && knowledgeBases[0]) {
       setUploadTargetBaseId(knowledgeBases[0].id);
@@ -6741,15 +6744,25 @@ function Composer({
               <span>深度思考</span>
             </button>
           </div>
-          <button
-            className="send-button"
-            type="button"
-            aria-label="发送"
-            disabled={!canSend}
-            onClick={onSend}
-          >
-            <Send size={24} strokeWidth={2.5} fill="currentColor" />
-          </button>
+          <div className="composer-right-actions">
+            <button
+              className="voice-entry-button"
+              type="button"
+              aria-label="语音说课"
+              onClick={onOpenVoice}
+            >
+              <Mic size={19} strokeWidth={2.2} />
+            </button>
+            <button
+              className="send-button"
+              type="button"
+              aria-label="发送"
+              disabled={!canSend}
+              onClick={onSend}
+            >
+              <Send size={24} strokeWidth={2.5} fill="currentColor" />
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -7648,7 +7661,7 @@ function HistoryCenter({
       </header>
 
       <div className="history-toolbar">
-        {(["全部", "教案诊断", "说课陪练", "模拟课堂", "实习反思"] as Array<
+        {(["全部", "教案诊断", "说课陪练", "模拟课堂", "实习反思", "谈心谈话"] as Array<
           TrainingType | "全部"
         >).map((type) => (
           <button
@@ -7887,7 +7900,7 @@ function GrowthCenter({
   const trainingTypeSummaries =
     summary?.trainingTypeSummaries?.length
       ? summary.trainingTypeSummaries
-      : (["教案诊断", "说课陪练", "模拟课堂", "实习反思"] as TrainingType[]).map(
+      : (["教案诊断", "说课陪练", "模拟课堂", "实习反思", "谈心谈话"] as TrainingType[]).map(
           (trainingType) => ({
             trainingType,
             count: trainingCounts?.[trainingType] || 0,
@@ -7963,7 +7976,7 @@ function GrowthCenter({
             <span>当前成长结论</span>
             <strong>{summary?.growthStage || "建立基线"}</strong>
             <p>
-              已完成 {summary?.totalTrainings || 0} 次训练，四类训练覆盖 {coveredTrainingTypes}/4；
+              已完成 {summary?.totalTrainings || 0} 次训练，训练覆盖 {coveredTrainingTypes}/{trainingTypeSummaries.length}；
               平均得分 {summary?.averageScore || 0} 分，当前最需提升：{weakNames}。
             </p>
             <div className="growth-summary-metrics" aria-label="成长核心指标">
@@ -8032,7 +8045,7 @@ function GrowthCenter({
         <section className="growth-panel growth-wide">
           <header>
             <Target size={18} strokeWidth={2.2} />
-            <h2>四类训练覆盖</h2>
+            <h2>训练覆盖</h2>
           </header>
           <div className="training-type-coverage">
             {trainingTypeSummaries.map((item) => (
@@ -8256,9 +8269,11 @@ function App() {
     | "history"
     | "growth"
     | "speak"
+    | "counseling"
     | "classroom"
   >("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isVoiceOpen, setIsVoiceOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
@@ -8271,6 +8286,9 @@ function App() {
   const [enableThinking, setEnableThinking] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [conversationId, setConversationId] = useState<string | undefined>();
+  const [restoredCounselingSessionId, setRestoredCounselingSessionId] = useState<
+    string | undefined
+  >();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeProviders, setKnowledgeProviders] = useState<
     KnowledgeProviderInfo[]
@@ -8417,6 +8435,10 @@ function App() {
     setSelectedKnowledgeBaseIds(knowledgeBaseIds);
     setActiveInsightMessageId(undefined);
 
+    if (trainingType === "谈心谈话") {
+      setRestoredCounselingSessionId(undefined);
+    }
+
     if (trainingType === "教案诊断") {
       startLessonPlanWizard(undefined, knowledgeBaseIds);
       return;
@@ -8428,7 +8450,13 @@ function App() {
     }
 
     setCurrentTrainingType(trainingType);
-    setActiveSection(trainingType === "说课陪练" ? "speak" : "classroom");
+    setActiveSection(
+      trainingType === "说课陪练"
+        ? "speak"
+        : trainingType === "谈心谈话"
+          ? "counseling"
+          : "classroom"
+    );
   }
 
   async function testImaProvider() {
@@ -8696,6 +8724,13 @@ function App() {
         conversation: ConversationDetail;
       };
       const conversation = payload.conversation;
+      if (conversation.trainingType === "谈心谈话") {
+        setRestoredCounselingSessionId(conversation.id);
+        setCurrentTrainingType("谈心谈话");
+        setActiveInsightMessageId(undefined);
+        setActiveSection("counseling");
+        return;
+      }
       const restoredMessages = conversation.messages.map((message, index) => ({
         id: createId(`restored-${index}`),
         role: message.role,
@@ -10579,6 +10614,14 @@ function App() {
       return;
     }
 
+    if (task.trainingType === "谈心谈话") {
+      setCurrentTrainingType("谈心谈话");
+      setRestoredCounselingSessionId(undefined);
+      setActiveSection("counseling");
+      setActiveInsightMessageId(undefined);
+      return;
+    }
+
     setInputValue(task.prompt);
     setCurrentTrainingType(task.trainingType);
   }
@@ -10600,6 +10643,14 @@ function App() {
       return;
     }
 
+    if (action.trainingType === "谈心谈话") {
+      setCurrentTrainingType("谈心谈话");
+      setRestoredCounselingSessionId(undefined);
+      setActiveSection("counseling");
+      setActiveInsightMessageId(undefined);
+      return;
+    }
+
     handleNewConversation();
     setCurrentTrainingType("模拟课堂");
     setInputValue(action.prompt);
@@ -10614,6 +10665,7 @@ function App() {
     setAttachments([]);
     setAttachmentError(undefined);
     setConversationId(undefined);
+    setRestoredCounselingSessionId(undefined);
     setCurrentTrainingType("教案诊断");
     setIsGenerating(false);
     setActiveInsightMessageId(undefined);
@@ -10650,6 +10702,12 @@ function App() {
         }}
         onOpenClassroom={() => {
           setActiveSection("classroom");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenCounselingTraining={() => {
+          setCurrentTrainingType("谈心谈话");
+          setRestoredCounselingSessionId(undefined);
+          setActiveSection("counseling");
           setActiveInsightMessageId(undefined);
         }}
         onOpenSpeakTraining={() => {
@@ -10744,6 +10802,17 @@ function App() {
               onOpenMaterials={() => setActiveSection("knowledge")}
             />
           </div>
+        ) : activeSection === "counseling" ? (
+          <div className="workspace-inner counseling-workspace">
+            <CounselingTrainingPage
+              key={restoredCounselingSessionId || "new-counseling-session"}
+              initialSessionId={restoredCounselingSessionId}
+              onTrainingSaved={() => {
+                void loadConversationHistory();
+                void loadGrowthSummary();
+              }}
+            />
+          </div>
         ) : (
           <div className={`workspace-inner ${hasMessages ? "has-messages" : ""}`}>
           {!hasMessages ? (
@@ -10820,6 +10889,7 @@ function App() {
             }
             onRemoveAttachment={handleRemoveAttachment}
             onSend={() => sendMessage()}
+            onOpenVoice={() => setIsVoiceOpen(true)}
             onSkipKnowledgeSelection={() =>
               void completePendingLessonKnowledgeSelection(false)
             }
@@ -10846,6 +10916,33 @@ function App() {
           setActiveSection("knowledge");
         }}
       />
+      {createPortal(
+        <AnimatePresence>
+          {isVoiceOpen ? (
+            <motion.div
+              className="voice-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <motion.div
+                className="voice-overlay-inner"
+                initial={{ opacity: 0, y: 28, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 18, scale: 0.98 }}
+                transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <VoiceChatStage
+                  title="沉浸式说课"
+                  onClose={() => setIsVoiceOpen(false)}
+                />
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>,
+        document.body
+      )}
     </main>
   );
 }

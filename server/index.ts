@@ -107,6 +107,7 @@ import {
   XfyunIatStream,
   XfyunSpeechError
 } from "./xfyunSpeechService.js";
+import { registerCounseling } from "./counseling/routes.js";
 import {
   observeOperation,
   recordTrainingEvaluationScores,
@@ -243,7 +244,7 @@ const app = express();
 const httpServer = http.createServer(app);
 const speakTrainingSessions = new SpeakTrainingSession();
 const classroomService = new ClassroomService();
-const chatRepository = new SQLiteChatRepository();
+const chatRepository = new SQLiteChatRepository(process.env.TRAINING_DB_PATH);
 const knowledgeProvider = new KnowledgeProviderRegistry(
   new LocalKnowledgeProvider(),
   new IMAKnowledgeProvider()
@@ -270,6 +271,7 @@ const supportedImageTypes = new Map([
 const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
 
 app.use(express.json({ limit: "1mb" }));
+const counselingRealtimeServer = registerCounseling(app, httpServer, chatRepository);
 
 async function searchKnowledge(options: {
   query: string;
@@ -1465,8 +1467,25 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
 });
 
 const speakRealtimeServer = new WebSocketServer({
-  server: httpServer,
-  path: "/api/speak-training/realtime"
+  noServer: true
+});
+
+httpServer.on("upgrade", (request, socket, head) => {
+  const pathname = request.url?.split("?")[0];
+  const target = pathname === "/api/speak-training/realtime"
+    ? speakRealtimeServer
+    : pathname === "/api/counseling/realtime"
+      ? counselingRealtimeServer
+      : undefined;
+
+  if (!target) {
+    socket.destroy();
+    return;
+  }
+
+  target.handleUpgrade(request, socket, head, (connection) => {
+    target.emit("connection", connection, request);
+  });
 });
 
 speakRealtimeServer.on("connection", (socket) => {
@@ -3259,7 +3278,7 @@ function buildGrowthReportArtifact(
         (item) =>
           `${item.trainingType}：${item.status}｜${item.count} 次｜均分 ${item.averageScore || "--"}｜证据 ${item.evidenceCount} 条｜成果 ${item.artifactCount} 个｜最新：${item.latestTitle || "暂无"}｜下一步：${item.nextAction}`
       )
-      .join("\n") || "暂未形成四类训练覆盖数据。";
+      .join("\n") || "暂未形成训练覆盖数据。";
   const timeline =
     summary.growthTimeline
       .map(
@@ -3300,7 +3319,7 @@ function buildGrowthReportArtifact(
       `本轮成长行动：${summary.recommendedAction.objective}`,
       `行动原因：${summary.recommendedAction.reason}`,
       `完成标准：${summary.recommendedAction.completionCriteria}`,
-      `四类训练覆盖：\n${trainingTypeSummaries}`,
+      `训练覆盖：\n${trainingTypeSummaries}`,
       `训练证据时间线：\n${timeline}`,
       `能力成长矩阵：\n${capabilityMatrix}`,
       `代表性成果：\n${representativeArtifacts}`,
@@ -3321,7 +3340,7 @@ function buildGrowthReportArtifact(
         ].join("\n")
       },
       {
-        heading: "四类训练覆盖",
+        heading: "训练覆盖",
         body: trainingTypeSummaries
       },
       {

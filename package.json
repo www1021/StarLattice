@@ -1,5 +1,9 @@
 {
   "scripts": {
+    "predev": "node scripts/prepare-voice-assets.mjs",
+    "predev:client": "node scripts/prepare-voice-assets.mjs",
+    "prebuild": "node scripts/prepare-voice-assets.mjs",
+    "test:counseling": "tsx --test server/counseling/*.test.ts",
     "dev": "concurrently -k -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite --host 127.0.0.1",
     "dev:server": "tsx watch server/index.ts",
@@ -12,6 +16,7 @@
     "@langfuse/otel": "^5.9.1",
     "@langfuse/tracing": "^5.9.1",
     "@opentelemetry/sdk-node": "^0.220.0",
+    "@ricky0123/vad-web": "^0.0.30",
     "@vitejs/plugin-react": "^5.1.1",
     "better-sqlite3": "^12.11.1",
     "docx": "^9.7.1",
