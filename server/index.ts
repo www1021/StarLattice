@@ -108,6 +108,7 @@ import {
   XfyunSpeechError
 } from "./xfyunSpeechService.js";
 import { registerCounseling } from "./counseling/routes.js";
+import { registerPlatform } from "./platform/routes.js";
 import {
   observeOperation,
   recordTrainingEvaluationScores,
@@ -272,6 +273,7 @@ const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
 
 app.use(express.json({ limit: "1mb" }));
 const counselingRealtimeServer = registerCounseling(app, httpServer, chatRepository);
+registerPlatform(app);
 
 async function searchKnowledge(options: {
   query: string;

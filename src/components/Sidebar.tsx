@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import {
+  Activity,
   BookOpen,
   Clock3,
   Ellipsis,
@@ -8,9 +9,9 @@ import {
   Mic,
   PanelLeft,
   SquareChartGantt,
-  SquarePen
+  SquarePen,
+  Workflow
 } from "lucide-react";
-import avatarUrl from "../images/avatar.png";
 
 type SidebarIcon = ComponentType<{
   size?: number;
@@ -18,28 +19,25 @@ type SidebarIcon = ComponentType<{
   className?: string;
 }>;
 
+type SidebarSection =
+  | "chat"
+  | "knowledge"
+  | "history"
+  | "growth"
+  | "speak"
+  | "counseling"
+  | "classroom"
+  | "platform"
+  | "monitor";
+
 type MenuItem = {
   label: string;
   icon: SidebarIcon;
-  section?:
-    | "chat"
-    | "knowledge"
-    | "history"
-    | "growth"
-    | "speak"
-    | "counseling"
-    | "classroom";
+  section: SidebarSection;
 };
 
 type SidebarProps = {
-  activeSection:
-    | "chat"
-    | "knowledge"
-    | "history"
-    | "growth"
-    | "speak"
-    | "counseling"
-    | "classroom";
+  activeSection: SidebarSection;
   collapsed: boolean;
   onOpenGrowth: () => void;
   onOpenHistory: () => void;
@@ -47,6 +45,8 @@ type SidebarProps = {
   onOpenClassroom: () => void;
   onOpenCounselingTraining: () => void;
   onOpenSpeakTraining: () => void;
+  onOpenPlatform: () => void;
+  onOpenMonitor: () => void;
   onNewConversation: () => void;
   onToggle: () => void;
   user?: SidebarUser;
@@ -55,8 +55,6 @@ type SidebarProps = {
 export type SidebarUser = {
   name: string;
   description?: string;
-  avatarUrl?: string;
-  initials?: string;
 };
 
 const menuItems: MenuItem[] = [
@@ -66,14 +64,14 @@ const menuItems: MenuItem[] = [
   { label: "谈心谈话", icon: HeartHandshake, section: "counseling" },
   { label: "知识库", icon: BookOpen, section: "knowledge" },
   { label: "历史记录", icon: Clock3, section: "history" },
-  { label: "成长报告", icon: SquareChartGantt, section: "growth" }
+  { label: "成长报告", icon: SquareChartGantt, section: "growth" },
+  { label: "编排画布", icon: Workflow, section: "platform" },
+  { label: "运行监控", icon: Activity, section: "monitor" }
 ];
 
 const defaultUser: SidebarUser = {
   name: "实训用户",
-  description: "个人空间",
-  avatarUrl,
-  initials: "师"
+  description: "个人空间"
 };
 
 export function Sidebar({
@@ -85,11 +83,23 @@ export function Sidebar({
   onOpenClassroom,
   onOpenCounselingTraining,
   onOpenSpeakTraining,
+  onOpenPlatform,
+  onOpenMonitor,
   onNewConversation,
   onToggle,
   user = defaultUser
 }: SidebarProps) {
-  const avatarLabel = user.initials ?? user.name.slice(0, 1);
+  const sectionHandlers: Record<SidebarSection, () => void> = {
+    chat: onNewConversation,
+    speak: onOpenSpeakTraining,
+    classroom: onOpenClassroom,
+    counseling: onOpenCounselingTraining,
+    knowledge: onOpenKnowledge,
+    history: onOpenHistory,
+    growth: onOpenGrowth,
+    platform: onOpenPlatform,
+    monitor: onOpenMonitor
+  };
 
   return (
     <aside className="sidebar" aria-label="主导航" data-collapsed={collapsed}>
@@ -110,33 +120,14 @@ export function Sidebar({
       <nav className="nav-list">
         {menuItems.map((item) => {
           const Icon = item.icon;
-          const isActive =
-            item.section === "chat"
-              ? activeSection === "chat"
-              : item.section === activeSection;
+          const isActive = item.section === activeSection;
 
           return (
             <button
               className={`nav-item ${isActive ? "nav-item-active" : ""}`}
               key={item.label}
               type="button"
-              onClick={
-                item.label === "新对话"
-                  ? onNewConversation
-                  : item.label === "说课训练"
-                    ? onOpenSpeakTraining
-                    : item.label === "虚拟课堂"
-                      ? onOpenClassroom
-                      : item.label === "谈心谈话"
-                        ? onOpenCounselingTraining
-                    : item.label === "知识库"
-                        ? onOpenKnowledge
-                        : item.label === "历史记录"
-                          ? onOpenHistory
-                          : item.label === "成长报告"
-                            ? onOpenGrowth
-                            : undefined
-              }
+              onClick={sectionHandlers[item.section]}
               title={collapsed ? item.label : undefined}
             >
               <Icon size={22} strokeWidth={2.1} />
@@ -152,13 +143,6 @@ export function Sidebar({
           type="button"
           title={collapsed ? user.name : undefined}
         >
-          <span className="user-avatar" aria-hidden="true">
-            {user.avatarUrl ? (
-              <img src={user.avatarUrl} alt="" />
-            ) : (
-              <span>{avatarLabel}</span>
-            )}
-          </span>
           <span className="user-details">
             <span className="user-name">{user.name}</span>
             {user.description ? (

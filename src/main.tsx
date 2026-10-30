@@ -45,6 +45,8 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
 import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
+import { WorkflowCanvasPage } from "./features/platform/WorkflowCanvasPage";
+import { RunMonitorPage } from "./features/platform/RunMonitorPage";
 import { VoiceChatStage } from "./features/voice/VoiceChatStage";
 import "./styles.css";
 
@@ -8271,6 +8273,8 @@ function App() {
     | "speak"
     | "counseling"
     | "classroom"
+    | "platform"
+    | "monitor"
   >("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
@@ -10715,6 +10719,14 @@ function App() {
           setActiveSection("speak");
           setActiveInsightMessageId(undefined);
         }}
+        onOpenPlatform={() => {
+          setActiveSection("platform");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenMonitor={() => {
+          setActiveSection("monitor");
+          setActiveInsightMessageId(undefined);
+        }}
         onNewConversation={handleNewConversation}
         onToggle={() => setSidebarCollapsed((value) => !value)}
       />
@@ -10812,6 +10824,14 @@ function App() {
                 void loadGrowthSummary();
               }}
             />
+          </div>
+        ) : activeSection === "platform" ? (
+          <div className="workspace-inner platform-workspace">
+            <WorkflowCanvasPage />
+          </div>
+        ) : activeSection === "monitor" ? (
+          <div className="workspace-inner platform-workspace">
+            <RunMonitorPage />
           </div>
         ) : (
           <div className={`workspace-inner ${hasMessages ? "has-messages" : ""}`}>
