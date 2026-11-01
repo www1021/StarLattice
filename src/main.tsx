@@ -46,7 +46,11 @@ import { Sidebar } from "./components/Sidebar";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
 import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
 import { WorkflowCanvasPage } from "./features/platform/WorkflowCanvasPage";
+import { RegistryPage } from "./features/platform/RegistryPage";
+import { KnowledgePage } from "./features/platform/KnowledgePage";
+import { McpPage } from "./features/platform/McpPage";
 import { RunMonitorPage } from "./features/platform/RunMonitorPage";
+import { VerifyReportPage } from "./features/platform/VerifyReportPage";
 import { VoiceChatStage } from "./features/voice/VoiceChatStage";
 import "./styles.css";
 
@@ -8274,7 +8278,11 @@ function App() {
     | "counseling"
     | "classroom"
     | "platform"
+    | "registry"
+    | "library"
+    | "mcp"
     | "monitor"
+    | "report"
   >("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
@@ -10723,8 +10731,24 @@ function App() {
           setActiveSection("platform");
           setActiveInsightMessageId(undefined);
         }}
+        onOpenRegistry={() => {
+          setActiveSection("registry");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenLibrary={() => {
+          setActiveSection("library");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenMcp={() => {
+          setActiveSection("mcp");
+          setActiveInsightMessageId(undefined);
+        }}
         onOpenMonitor={() => {
           setActiveSection("monitor");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenReport={() => {
+          setActiveSection("report");
           setActiveInsightMessageId(undefined);
         }}
         onNewConversation={handleNewConversation}
@@ -10829,9 +10853,25 @@ function App() {
           <div className="workspace-inner platform-workspace">
             <WorkflowCanvasPage />
           </div>
+        ) : activeSection === "registry" ? (
+          <div className="workspace-inner platform-workspace">
+            <RegistryPage />
+          </div>
+        ) : activeSection === "library" ? (
+          <div className="workspace-inner platform-workspace">
+            <KnowledgePage />
+          </div>
+        ) : activeSection === "mcp" ? (
+          <div className="workspace-inner platform-workspace">
+            <McpPage />
+          </div>
         ) : activeSection === "monitor" ? (
           <div className="workspace-inner platform-workspace">
             <RunMonitorPage />
+          </div>
+        ) : activeSection === "report" ? (
+          <div className="workspace-inner platform-workspace">
+            <VerifyReportPage />
           </div>
         ) : (
           <div className={`workspace-inner ${hasMessages ? "has-messages" : ""}`}>

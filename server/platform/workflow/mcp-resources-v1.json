@@ -1,0 +1,52 @@
+{
+  "id": "mcp-resources-v1",
+  "name": "MCP 教学资源工具链",
+  "version": 1,
+  "description": "调用真实 MCP 服务器完成教学资源检索 → 课时校验 → 课堂反馈；产物中记录 server、tool 与调用耗时，用于演示 MCP 握手、工具发现与执行。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "课题，例如“分数的意义”" },
+    { "name": "durationMinutes", "type": "number", "required": true, "description": "计划课时（分钟）" }
+  ],
+  "nodes": [
+    {
+      "id": "resource-search",
+      "kind": "tool",
+      "title": "教学资源检索（MCP）",
+      "tool": "mcp.teaching-resources.teaching_resource_search",
+      "args": {
+        "query": "${input.topic}",
+        "limit": 3
+      }
+    },
+    {
+      "id": "timing-check",
+      "kind": "tool",
+      "title": "课时校验（MCP）",
+      "tool": "mcp.teaching-resources.lesson_timing_check",
+      "args": {
+        "durationMinutes": "${input.durationMinutes}",
+        "phases": [
+          { "name": "情境导入", "minutes": 8 },
+          { "name": "探究建构", "minutes": 18 },
+          { "name": "分层练习", "minutes": 10 },
+          { "name": "总结反馈", "minutes": 4 }
+        ]
+      }
+    },
+    {
+      "id": "classroom-feedback",
+      "kind": "tool",
+      "title": "课堂反馈（MCP）",
+      "tool": "mcp.teaching-resources.classroom_feedback",
+      "args": {
+        "score": 0.86,
+        "strengths": ["情境导入贴近学生经验", "探究环节有明确记录单"],
+        "issues": ["分层练习缺少即时反馈"]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "resource-search", "to": "timing-check" },
+    { "from": "timing-check", "to": "classroom-feedback" }
+  ]
+}

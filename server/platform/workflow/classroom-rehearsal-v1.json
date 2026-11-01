@@ -1,0 +1,74 @@
+{
+  "id": "classroom-rehearsal-v1",
+  "name": "课堂演练子流程",
+  "version": 1,
+  "description": "三名学生 Agent 并行模拟课堂反应 → 观察员归纳差异 → 验证互动覆盖；可嵌入任意需要课堂演练的主流程。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "课题" },
+    { "name": "plan", "type": "object", "required": true, "description": "待演练的教案或教学方案" }
+  ],
+  "nodes": [
+    {
+      "id": "classroom",
+      "kind": "parallel",
+      "title": "学生 Agent 并行演练",
+      "branches": [
+        {
+          "id": "student-top",
+          "kind": "agent",
+          "title": "学霸型学生反应",
+          "agent": "student-top-agent",
+          "inputs": { "plan": "${input.plan}", "topic": "${input.topic}" }
+        },
+        {
+          "id": "student-weak",
+          "kind": "agent",
+          "title": "基础薄弱型学生反应",
+          "agent": "student-weak-agent",
+          "inputs": { "plan": "${input.plan}", "topic": "${input.topic}" }
+        },
+        {
+          "id": "student-silent",
+          "kind": "agent",
+          "title": "沉默型学生反应",
+          "agent": "student-silent-agent",
+          "inputs": { "plan": "${input.plan}", "topic": "${input.topic}" }
+        },
+        {
+          "id": "student-misunderstanding",
+          "kind": "agent",
+          "title": "典型误区学生反应",
+          "agent": "student-misunderstanding-agent",
+          "inputs": { "plan": "${input.plan}", "topic": "${input.topic}" }
+        }
+      ]
+    },
+    {
+      "id": "observer",
+      "kind": "agent",
+      "title": "课堂观察员归纳",
+      "agent": "classroom-observer-agent",
+      "inputs": {
+        "top": "${student-top.output}",
+        "weak": "${student-weak.output}",
+        "silent": "${student-silent.output}",
+        "misunderstanding": "${student-misunderstanding.output}"
+      },
+      "prompt": "对比四类学生的课堂反应，指出教学设计在提问梯度、支架和反馈上的改进点。"
+    },
+    {
+      "id": "verify-rehearsal",
+      "kind": "verify",
+      "title": "演练效果验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
+      "rubric": ["互动覆盖", "学生差异", "证据支撑"],
+      "threshold": 0.8,
+      "inputs": { "artifact": "${observer.output}" }
+    }
+  ],
+  "edges": [
+    { "from": "classroom", "to": "observer" },
+    { "from": "observer", "to": "verify-rehearsal" }
+  ]
+}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye, Lock, Trash2 } from "lucide-react";
 import {
   blockChildren,
   createLeafNode,
@@ -18,9 +18,18 @@ type InspectorProps = {
   status?: RunNodeStatus;
   onChange: (next: WorkflowNode) => void;
   onDelete: () => void;
+  onOpenSubflow?: (workflowId: string, version?: number) => void;
 };
 
-const CHILD_KINDS: NodeKind[] = ["agent", "tool", "verify"];
+const CHILD_KINDS: NodeKind[] = [
+  "agent",
+  "llm",
+  "tool",
+  "template",
+  "subworkflow",
+  "verify",
+  "approve"
+];
 
 export function NodeInspector({
   definition,
@@ -30,7 +39,8 @@ export function NodeInspector({
   usedIds,
   status,
   onChange,
-  onDelete
+  onDelete,
+  onOpenSubflow
 }: InspectorProps) {
   const [expandedChild, setExpandedChild] = useState<string | undefined>();
   const [childKinds, setChildKinds] = useState<Record<string, NodeKind>>({});
@@ -71,6 +81,29 @@ export function NodeInspector({
           />
         ))}
       </div>
+
+      {definition.kind === "subworkflow" && (
+        <section className="platform-subflow-entry">
+          <div>
+            <strong>
+              <Lock size={13} /> 子工作流只读边界
+            </strong>
+            <small>子流程拥有独立输入作用域，内部节点请到子流程本身编辑；这里只查看结构。</small>
+          </div>
+          <button
+            type="button"
+            className="platform-button is-ghost"
+            disabled={!definition.workflowId || !onOpenSubflow}
+            onClick={() =>
+              definition.workflowId && onOpenSubflow
+                ? onOpenSubflow(definition.workflowId, definition.workflowVersion)
+                : undefined
+            }
+          >
+            <Eye size={14} /> 打开子流程
+          </button>
+        </section>
+      )}
 
       {spec?.blocks.map((block) => (
         <BlockEditor
@@ -236,6 +269,26 @@ type FieldRowProps = {
 };
 
 function FieldRow({ field, value, onChange }: FieldRowProps) {
+  if (field.type === "select" && field.options && field.options.length > 0) {
+    const current = typeof value === "string" ? value : "";
+    // 已保存的值可能不在最新列表里（被引用流程已删除），保留它以免编辑时悄悄丢失配置。
+    const options = current && !field.options.includes(current) ? [current, ...field.options] : field.options;
+    return (
+      <label className="platform-field">
+        <span>{field.label}</span>
+        <select value={current} onChange={(event) => onChange(event.target.value)}>
+          <option value="">请选择…</option>
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+        {field.help && <small>{field.help}</small>}
+      </label>
+    );
+  }
+
   if (field.type === "json") {
     return <JsonField field={field} value={value} onChange={onChange} />;
   }
@@ -278,12 +331,32 @@ function FieldRow({ field, value, onChange }: FieldRowProps) {
     );
   }
 
+  if (field.type === "boolean") {
+    return (
+      <label className="platform-field">
+        <span>{field.label}</span>
+        <select
+          value={value === true ? "true" : value === false ? "false" : ""}
+          onChange={(event) => {
+            const next = event.target.value;
+            onChange(next === "" ? undefined : next === "true");
+          }}
+        >
+          <option value="">自动</option>
+          <option value="true">是</option>
+          <option value="false">否</option>
+        </select>
+        {field.help && <small>{field.help}</small>}
+      </label>
+    );
+  }
+
   return (
     <label className="platform-field">
       <span>{field.label}</span>
       <input
         type={field.type === "number" ? "number" : "text"}
-        step={field.type === "number" ? "0.01" : undefined}
+        step={field.type === "number" ? 0.01 : undefined}
         value={typeof value === "number" || typeof value === "string" ? value : ""}
         placeholder={field.placeholder}
         spellCheck={false}

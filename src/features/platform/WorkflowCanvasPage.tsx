@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "zustand";
 import {
   Background,
   Controls,
@@ -15,10 +16,13 @@ import "@xyflow/react/dist/style.css";
 import {
   AlertTriangle,
   CheckCircle2,
+  LayoutGrid,
   Loader2,
   Play,
   Plus,
+  Redo2,
   Save,
+  Undo2,
   X,
   XCircle
 } from "lucide-react";
@@ -26,24 +30,29 @@ import { PlatformApiError, platformApi } from "./api";
 import {
   aggregateStatuses,
   collectNodeIds,
+  computeElkLayout,
   computeLayout,
   createNode,
   firstInputName,
   isActiveRun,
   runStatusLabel,
   runStatusTone,
+  selfLoopActionLabel,
   stepStatusLabel,
   uniqueNodeId,
   type RunNodeStatus
 } from "./layout";
 import { PlatformNodeCard, type PlatformFlowNode, type PlatformNodeData } from "./PlatformNodeCard";
 import { NodeInspector } from "./NodeInspector";
+import { definitionTemporal, useDefinitionHistory } from "./useDefinitionHistory";
 import type {
+  NodeTypeSpec,
   NodeTypesResponse,
   PlatformIssue,
   RunRecord,
   TraceResponse,
   WorkflowDefinition,
+  WorkflowDetail,
   WorkflowNode,
   WorkflowSummary,
   WorkflowVariable
@@ -72,7 +81,10 @@ function PlatformWorkspace() {
   const [contract, setContract] = useState<NodeTypesResponse>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>();
-  const [definition, setDefinition] = useState<WorkflowDefinition>();
+  const definition = useDefinitionHistory((state) => state.definition);
+  const setDefinition = useDefinitionHistory((state) => state.setDefinition);
+  const canUndo = useStore(definitionTemporal, (state) => state.pastStates.length > 0);
+  const canRedo = useStore(definitionTemporal, (state) => state.futureStates.length > 0);
   const [selectedId, setSelectedId] = useState<string>();
   const [issuesByNode, setIssuesByNode] = useState<Record<string, PlatformIssue[]>>({});
   const [banner, setBanner] = useState<Banner>();
@@ -81,12 +93,18 @@ function PlatformWorkspace() {
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [runState, setRunState] = useState<"idle" | "running">("idle");
   const [runOpen, setRunOpen] = useState(false);
+  const [subflowPreview, setSubflowPreview] = useState<{ workflowId: string; version?: number }>();
+  const [layouting, setLayouting] = useState(false);
   const [trace, setTrace] = useState<TraceResponse>();
   const [runValues, setRunValues] = useState<Record<string, string>>({});
   const [loadToken, setLoadToken] = useState(0);
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const fittedTokenRef = useRef(0);
   const runTokenRef = useRef(0);
+  const layoutTokenRef = useRef(0);
+  const fitTimerRef = useRef<number | undefined>(undefined);
+  const definitionRef = useRef<WorkflowDefinition | undefined>(undefined);
+  definitionRef.current = definition;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<PlatformFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -120,7 +138,9 @@ function PlatformWorkspace() {
             return;
           }
           setWorkflowId(detail.workflow.definition.id);
+          positionsRef.current = new Map();
           setDefinition(detail.workflow.definition);
+          definitionTemporal.getState().clear();
           setRunValues(initialRunValues(detail.workflow.definition));
           setLoadToken((value) => value + 1);
         }
@@ -147,7 +167,8 @@ function PlatformWorkspace() {
     }
 
     const positions = computeLayout(definition);
-    positionsRef.current = positions;
+    // 已上画布的节点（可能来自 ELK 布局）保留真实坐标，新节点才用同步布局兜底
+    positionsRef.current = new Map([...positions, ...positionsRef.current]);
     setNodes((current) => {
       const currentById = new Map(current.map((node) => [node.id, node]));
       return definition.nodes.map((node): PlatformFlowNode => {
@@ -195,6 +216,32 @@ function PlatformWorkspace() {
   }, [loadToken, nodes.length, fitView]);
 
   useEffect(() => {
+    if (!loadToken) {
+      return;
+    }
+    const current = definitionRef.current;
+    if (!current || current.nodes.length === 0) {
+      return;
+    }
+    const token = layoutTokenRef.current + 1;
+    layoutTokenRef.current = token;
+    const definitionId = current.id;
+    void (async () => {
+      try {
+        const positions = await computeElkLayout(current);
+        if (layoutTokenRef.current !== token || definitionRef.current?.id !== definitionId) {
+          return;
+        }
+        applyElkPositions(positions);
+      } catch {
+        // ELK 失败时保留 computeLayout 的同步结果
+      }
+    })();
+  }, [loadToken]);
+
+  useEffect(() => () => window.clearTimeout(fitTimerRef.current), []);
+
+  useEffect(() => {
     if (!runOpen) {
       return;
     }
@@ -206,6 +253,105 @@ function PlatformWorkspace() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [runOpen]);
+
+  useEffect(() => {
+    if (!subflowPreview) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSubflowPreview(undefined);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [subflowPreview]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && !event.shiftKey;
+      const isRedo = (key === "z" && event.shiftKey) || (key === "y" && !event.shiftKey);
+      if (!isUndo && !isRedo) {
+        return;
+      }
+      if (runOpen || subflowPreview || isEditableTarget(event.target)) {
+        return;
+      }
+      const history = definitionTemporal.getState();
+      if (isUndo ? history.pastStates.length === 0 : history.futureStates.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      runHistory(isUndo ? "undo" : "redo");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [runOpen, subflowPreview]);
+
+  function applyElkPositions(positions: Map<string, { x: number; y: number }>) {
+    if (positions.size === 0) {
+      return;
+    }
+    positionsRef.current = new Map([...positionsRef.current, ...positions]);
+    setNodes((current) =>
+      current.map((node) => {
+        const position = positions.get(node.id);
+        return position ? { ...node, position } : node;
+      })
+    );
+    window.clearTimeout(fitTimerRef.current);
+    fitTimerRef.current = window.setTimeout(() => {
+      void fitView({ padding: 0.12, duration: 280 });
+    }, 80);
+  }
+
+  function handleAutoLayout() {
+    const current = definitionRef.current;
+    if (!current || current.nodes.length === 0 || layouting) {
+      return;
+    }
+    const token = layoutTokenRef.current + 1;
+    layoutTokenRef.current = token;
+    setLayouting(true);
+    void (async () => {
+      try {
+        const positions = await computeElkLayout(current);
+        if (layoutTokenRef.current === token && definitionRef.current?.id === current.id) {
+          applyElkPositions(positions);
+        }
+      } catch (error) {
+        if (layoutTokenRef.current === token) {
+          setBanner({ tone: "error", text: `自动布局失败：${describe(error)}` });
+        }
+      } finally {
+        if (layoutTokenRef.current === token) {
+          setLayouting(false);
+        }
+      }
+    })();
+  }
+
+  function runHistory(direction: "undo" | "redo") {
+    const history = definitionTemporal.getState();
+    if (direction === "undo") {
+      if (history.pastStates.length === 0) {
+        return;
+      }
+      history.undo();
+    } else {
+      if (history.futureStates.length === 0) {
+        return;
+      }
+      history.redo();
+    }
+    setIssuesByNode({});
+    setSelectedId(undefined);
+    setDirty(true);
+  }
 
   function patchDefinition(updater: (current: WorkflowDefinition) => WorkflowDefinition) {
     setDefinition((current) => (current ? updater(current) : current));
@@ -233,7 +379,9 @@ function PlatformWorkspace() {
       .getWorkflow(id)
       .then((response) => {
         setWorkflowId(response.workflow.definition.id);
+        positionsRef.current = new Map();
         setDefinition(response.workflow.definition);
+        definitionTemporal.getState().clear();
         setSelectedId(undefined);
         setIssuesByNode({});
         setTrace(undefined);
@@ -314,11 +462,14 @@ function PlatformWorkspace() {
     try {
       const response = await platformApi.saveWorkflow(definition);
       setDefinition(response.workflow.definition);
+      definitionTemporal.getState().clear();
       setWorkflowId(response.workflow.definition.id);
       setDirty(false);
       setBanner({
         tone: "success",
-        text: `已保存 · ${response.plan.rootNodes} 个顶层节点 / ${response.plan.stepCount} 个执行步骤 / 最大嵌套 ${response.plan.maxDepth} 层`
+        text: `已保存 · ${response.plan.rootNodes} 个顶层节点 / ${response.plan.stepCount} 个执行步骤 / 最大嵌套 ${response.plan.maxDepth} 层${
+          response.plan.subWorkflows ? ` · 引用 ${response.plan.subWorkflows} 个子流程` : ""
+        }`
       });
       await refreshWorkflows();
       return response.workflow.definition;
@@ -510,6 +661,38 @@ function PlatformWorkspace() {
         >
           选中节点后添加会自动连线 · 画布只渲染顶层 DAG
         </span>
+        <div className="platform-toolbar-actions">
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={handleAutoLayout}
+            disabled={layouting}
+            title="用 ELK 重新计算顶层节点位置（不改变 DSL，不会标记未保存）"
+          >
+            {layouting ? <Loader2 size={12} className="is-spinning" /> : <LayoutGrid size={12} />}
+            自动布局
+          </button>
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={() => runHistory("undo")}
+            disabled={!canUndo}
+            title="撤销 (⌘/Ctrl+Z)"
+          >
+            <Undo2 size={12} />
+            撤销
+          </button>
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={() => runHistory("redo")}
+            disabled={!canRedo}
+            title="重做 (⇧⌘/Ctrl+Shift+Z 或 Ctrl+Y)"
+          >
+            <Redo2 size={12} />
+            重做
+          </button>
+        </div>
       </div>
 
       <div className="platform-canvas-wrap">
@@ -560,6 +743,7 @@ function PlatformWorkspace() {
               status={runStatuses.get(selectedNode.id)}
               onChange={updateSelectedNode}
               onDelete={() => handleRemoveNodes([selectedNode.id])}
+              onOpenSubflow={(workflowId, version) => setSubflowPreview({ workflowId, version })}
             />
           </div>
         )}
@@ -585,7 +769,163 @@ function PlatformWorkspace() {
           </div>
         </div>
       )}
+
+      {subflowPreview && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setSubflowPreview(undefined)}
+        >
+          <div
+            className="platform-modal platform-subflow-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="子工作流只读视图"
+          >
+            <SubflowPreviewPanel
+              workflowId={subflowPreview.workflowId}
+              version={subflowPreview.version}
+              specs={specs}
+              onClose={() => setSubflowPreview(undefined)}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+type SubflowPreviewProps = {
+  workflowId: string;
+  version?: number;
+  specs: NodeTypeSpec[];
+  onClose: () => void;
+};
+
+/** 子流程只读视图：展示引用的 DSL 结构与输入契约，不提供任何编辑入口。 */
+function SubflowPreviewPanel({ workflowId, version, specs, onClose }: SubflowPreviewProps) {
+  const [detail, setDetail] = useState<WorkflowDetail>();
+  const [error, setError] = useState<string>();
+  const specByKind = new Map(specs.map((spec) => [spec.kind, spec]));
+
+  useEffect(() => {
+    let cancelled = false;
+    setDetail(undefined);
+    setError(undefined);
+    void platformApi
+      .getWorkflow(workflowId, version)
+      .then((response) => {
+        if (!cancelled) {
+          setDetail(response.workflow);
+        }
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(describe(reason));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowId, version]);
+
+  const definition = detail?.definition;
+
+  return (
+    <div className="platform-subflow-preview">
+      <header className="platform-inspector-head">
+        <div>
+          <span className="platform-inspector-kind">子工作流 · 只读</span>
+          <h2>{definition?.name ?? workflowId}</h2>
+        </div>
+        <button type="button" className="platform-modal-close" aria-label="关闭子流程视图" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <p className="platform-inspector-note">
+        子流程在独立输入作用域中执行，trace 以「父节点/子节点」路径展示。这里只查看结构；修改请回到工作流下拉中切换。
+      </p>
+
+      {error && <div className="platform-banner is-error">{error}</div>}
+      {!definition && !error && (
+        <div className="platform-loading">
+          <Loader2 size={16} className="is-spinning" />
+          正在读取子流程结构…
+        </div>
+      )}
+
+      {definition && (
+        <>
+          <div className="platform-subflow-meta">
+            <span>ID {definition.id}</span>
+            <span>v{definition.version}</span>
+            <span>{definition.nodes.length} 个顶层节点</span>
+            <span>{definition.inputs.length} 个输入</span>
+            <span>{definition.edges.length} 条边</span>
+          </div>
+          {definition.description && <p className="platform-subflow-desc">{definition.description}</p>}
+
+          {definition.inputs.length > 0 && (
+            <section className="platform-subflow-section">
+              <h3>输入契约</h3>
+              <div className="platform-subflow-inputs">
+                {definition.inputs.map((variable) => (
+                  <span key={variable.name} data-required={variable.required ? "true" : "false"}>
+                    <code>{variable.name}</code>
+                    {variable.type}
+                    {variable.required ? " · 必填" : ""}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="platform-subflow-section">
+            <h3>节点结构</h3>
+            <SubflowNodeTree nodes={definition.nodes} depth={0} specByKind={specByKind} />
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SubflowNodeTree({
+  nodes,
+  depth,
+  specByKind
+}: {
+  nodes: WorkflowNode[];
+  depth: number;
+  specByKind: Map<string, NodeTypeSpec>;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const spec = specByKind.get(node.kind);
+        const children = [
+          ...(node.branches ?? []),
+          ...(node.then ?? []),
+          ...(node.else ?? []),
+          ...(node.body ?? [])
+        ];
+        return (
+          <div className="platform-subflow-branch" key={`${node.id}-${depth}`}>
+            <div className="platform-subflow-node" style={{ marginLeft: depth * 16 }}>
+              <span className="platform-subflow-dot" style={{ background: spec?.accent ?? "#94a3b8" }} />
+              <span className="platform-subflow-kind">{spec?.label ?? node.kind}</span>
+              <strong>{node.title || node.id}</strong>
+              <code>{node.id}</code>
+              {children.length > 0 && <small>{children.length} 个内部节点</small>}
+            </div>
+            {children.length > 0 && (
+              <SubflowNodeTree nodes={children} depth={depth + 1} specByKind={specByKind} />
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -707,7 +1047,8 @@ function RunPanel({
                   </strong>
                   <span>
                     {iteration.scoreBefore === undefined ? "—" : iteration.scoreBefore.toFixed(2)} →{" "}
-                    {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)}
+                    {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)} ·{" "}
+                    {selfLoopActionLabel(iteration.action)}
                   </span>
                 </div>
               ))}
@@ -858,6 +1199,14 @@ function finalScoreOf(run: RunRecord, trace: TraceResponse): number | undefined 
   }
   const last = trace.verifyResults[trace.verifyResults.length - 1];
   return last?.score;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
 function describe(error: unknown): string {

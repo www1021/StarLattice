@@ -39,10 +39,20 @@ function summarize(node: WorkflowNode): string {
   switch (node.kind) {
     case "agent":
       return `调用 ${node.agent || "未配置 Agent"}`;
+    case "llm":
+      return `${node.model || "默认模型"}${node.thinking === false ? "" : " · 思考摘要"}`;
     case "tool":
       return `调用 ${node.tool || "未配置工具"}`;
+    case "template":
+      return `模板拼接 · ${(node.template ?? "").length} 字符`;
+    case "subworkflow":
+      return `子流程 ${node.workflowId || "未选择"}${
+        node.workflowVersion === undefined ? "" : ` v${node.workflowVersion}`
+      }`;
     case "verify":
       return `验证器 ${node.verifier || "未配置"} · 阈值 ${node.threshold ?? 0.8}`;
+    case "approve":
+      return `人工审批 · ${node.assignee || "未指定审批人"}`;
     case "parallel":
       return `${node.branches?.length ?? 0} 个并行分支`;
     case "condition":

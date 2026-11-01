@@ -12,11 +12,27 @@ import {
 } from "../types.js";
 
 const MAX_DEPTH = 4;
+const MAX_SUBWORKFLOW_DEPTH = 5;
 const MAX_ROOT_NODES = 64;
 const MAX_LOOP_ITERATIONS = 20;
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const REF_PATTERN = /\$\{([^}\s]+)\}/g;
 const EXPRESSION_PATTERN = /^\s*\$\{([^}\s]+)\}\s*(?:(<=|>=|==|!=|<|>)\s*(.+?))?\s*$/;
+/** loop 是保留作用域名，指向进入本轮前的循环状态，不作为节点 id 解析。 */
+const LOOP_SCOPE_KEYS = new Set(["artifact", "issues", "score", "iteration", "retrievalQuery"]);
+
+export type WorkflowResolver = (id: string, version?: number) => WorkflowDefinition | undefined;
+
+export type CompileOptions = {
+  /** 解析被引用的子工作流；未提供时 subworkflow 节点会报 unknown-subworkflow。 */
+  resolveWorkflow?: WorkflowResolver;
+};
+
+type InternalCompileOptions = CompileOptions & {
+  pathPrefix?: string;
+  baseDepth?: number;
+  workflowStack?: string[];
+};
 
 export class WorkflowCompileError extends Error {
   constructor(readonly issues: CompileIssue[]) {
@@ -25,8 +41,8 @@ export class WorkflowCompileError extends Error {
   }
 }
 
-export function compileWorkflow(workflow: WorkflowDefinition): CompiledPlan {
-  return new Compiler(workflow).compile();
+export function compileWorkflow(workflow: WorkflowDefinition, options: CompileOptions = {}): CompiledPlan {
+  return new Compiler(workflow, options).compile();
 }
 
 class Compiler {
@@ -37,23 +53,38 @@ class Compiler {
   private readonly whileExpressions = new Map<string, CompiledExpression>();
   private readonly declaredInputs: Set<string>;
   private readonly steps: CompiledStep[] = [];
+  private readonly resolveWorkflow?: WorkflowResolver;
+  private readonly pathPrefix: string;
+  private readonly baseDepth: number;
+  /** 当前编译链上的工作流 id@version，用于拒绝直接/间接循环引用。 */
+  private readonly workflowStack: string[];
   private maxDepth = 0;
+  private subWorkflowCount = 0;
 
-  constructor(private readonly workflow: WorkflowDefinition) {
+  constructor(private readonly workflow: WorkflowDefinition, options: InternalCompileOptions = {}) {
     this.declaredInputs = new Set(workflow.inputs.map((variable) => variable.name));
+    this.resolveWorkflow = options.resolveWorkflow;
+    this.pathPrefix = options.pathPrefix ?? "";
+    this.baseDepth = options.baseDepth ?? 1;
+    this.workflowStack = options.workflowStack ?? [workflowKey(workflow)];
   }
 
   compile(): CompiledPlan {
-    this.validateHeader();
-    this.collect(this.workflow.nodes, "", 1);
-    const order = this.topologicalOrder();
+    const plan = this.compilePlan();
     if (this.issues.length) {
       throw new WorkflowCompileError(this.issues);
     }
-    const program = this.expandRoot(order);
-    this.validateReferences(program);
-    if (this.issues.length) {
-      throw new WorkflowCompileError(this.issues);
+    return plan;
+  }
+
+  /** 子流程递归编译使用：返回计划并把问题留在 this.issues，由父编译器统一抛出。 */
+  private compilePlan(): CompiledPlan {
+    this.validateHeader();
+    this.collect(this.workflow.nodes, this.pathPrefix, this.baseDepth);
+    const order = this.topologicalOrder();
+    const program = this.issues.length ? [] : this.expandRoot(order);
+    if (this.issues.length === 0) {
+      this.validateReferences(program);
     }
     return {
       workflow: this.workflow,
@@ -63,7 +94,8 @@ class Compiler {
       stats: {
         rootNodes: this.workflow.nodes.length,
         stepCount: this.steps.length,
-        maxDepth: this.maxDepth
+        maxDepth: this.maxDepth,
+        subWorkflows: this.subWorkflowCount
       }
     };
   }
@@ -111,7 +143,45 @@ class Compiler {
       switch (node.kind) {
         case "agent":
         case "tool":
+        case "template":
           break;
+        case "llm":
+          if (node.temperature !== undefined && (node.temperature < 0 || node.temperature > 2)) {
+            this.error("invalid-llm-temperature", location, "llm.temperature 必须在 0 到 2 之间");
+          }
+          if (
+            node.maxTokens !== undefined &&
+            (!Number.isInteger(node.maxTokens) || node.maxTokens < 1 || node.maxTokens > 32768)
+          ) {
+            this.error("invalid-llm-max-tokens", location, "llm.maxTokens 必须在 1 到 32768 之间");
+          }
+          break;
+        case "subworkflow": {
+          if (
+            node.workflowVersion !== undefined &&
+            (!Number.isInteger(node.workflowVersion) || node.workflowVersion < 1)
+          ) {
+            this.error("invalid-subworkflow-version", location, "subworkflow.workflowVersion 必须是正整数");
+          }
+          const outputs = node.outputs ?? {};
+          for (const [key, value] of Object.entries(outputs)) {
+            if (!ID_PATTERN.test(key)) {
+              this.error(
+                "invalid-subworkflow-output",
+                `${location}.outputs.${key}`,
+                `输出名 "${key}" 只能包含字母、数字、下划线和短横线`
+              );
+            }
+            if (typeof value !== "string" || value.trim() === "") {
+              this.error(
+                "invalid-subworkflow-output",
+                `${location}.outputs.${key}`,
+                "输出映射值必须是非空引用表达式"
+              );
+            }
+          }
+          break;
+        }
         case "parallel":
           if (node.branches.length === 0) {
             this.error("empty-parallel", location, "parallel 节点至少需要一个分支");
@@ -143,12 +213,64 @@ class Compiler {
               this.whileExpressions.set(location, expression);
             }
           }
+          if (
+            node.patience !== undefined &&
+            (!Number.isInteger(node.patience) || node.patience < 1 || node.patience > 10)
+          ) {
+            this.error("invalid-loop-patience", location, "loop.patience 必须在 1 到 10 之间");
+          }
+          if (node.budget?.maxDurationMs !== undefined) {
+            if (
+              !Number.isInteger(node.budget.maxDurationMs) ||
+              node.budget.maxDurationMs < 0 ||
+              node.budget.maxDurationMs > 3_600_000
+            ) {
+              this.error(
+                "invalid-loop-budget",
+                location,
+                "loop.budget.maxDurationMs 必须在 0 到 3600000 之间（0 表示不限制）"
+              );
+            }
+          }
+          if (node.budget?.maxTokens !== undefined) {
+            if (
+              !Number.isInteger(node.budget.maxTokens) ||
+              node.budget.maxTokens < 0 ||
+              node.budget.maxTokens > 10_000_000
+            ) {
+              this.error(
+                "invalid-loop-budget",
+                location,
+                "loop.budget.maxTokens 必须在 0 到 10000000 之间（0 表示不限制）"
+              );
+            }
+          }
           this.collect(node.body, location, depth + 1);
           break;
         }
+        case "approve":
+          if (
+            node.timeoutMs !== undefined &&
+            (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 86_400_000)
+          ) {
+            this.error("invalid-approve-timeout", location, "approve.timeoutMs 必须在 1000 到 86400000 之间");
+          }
+          break;
         case "verify":
           if (node.threshold !== undefined && (node.threshold < 0 || node.threshold > 1)) {
             this.error("invalid-threshold", location, "verify.threshold 必须在 0 到 1 之间");
+          }
+          if (
+            node.minChars !== undefined &&
+            (!Number.isInteger(node.minChars) || node.minChars < 0 || node.minChars > 20000)
+          ) {
+            this.error("invalid-verify-min-chars", location, "verify.minChars 必须在 0 到 20000 之间");
+          }
+          if (node.verifiers !== undefined && (node.verifiers.length === 0 || node.verifiers.length > 5)) {
+            this.error("invalid-verify-verifiers", location, "verify.verifiers 需要 1 到 5 个 Agent id");
+          }
+          if (node.rubric !== undefined && node.rubric.length > 8) {
+            this.error("invalid-verify-rubric", location, "verify.rubric 最多 8 个维度");
           }
           break;
       }
@@ -267,7 +389,7 @@ class Compiler {
   }
 
   private expandRoot(order: string[]): CompiledBlock {
-    return order.map((id) => this.expandStatement(this.nodesById.get(id)!, "", 1));
+    return order.map((id) => this.expandStatement(this.nodesById.get(id)!, this.pathPrefix, this.baseDepth));
   }
 
   private expandBlock(nodes: WorkflowNode[], parentPath: string, depth: number): CompiledBlock {
@@ -277,7 +399,18 @@ class Compiler {
   private expandStatement(node: WorkflowNode, parentPath: string, depth: number): CompiledStatement {
     const location = parentPath ? `${parentPath}/${node.id}` : node.id;
 
-    if (node.kind === "agent" || node.kind === "tool" || node.kind === "verify") {
+    if (node.kind === "subworkflow") {
+      return this.expandSubWorkflow(node, location, depth);
+    }
+
+    if (
+      node.kind === "agent" ||
+      node.kind === "llm" ||
+      node.kind === "tool" ||
+      node.kind === "template" ||
+      node.kind === "verify" ||
+      node.kind === "approve"
+    ) {
       const step: CompiledStep = { path: location, nodeId: node.id, depth, node };
       this.steps.push(step);
       return { type: "step", step };
@@ -312,29 +445,140 @@ class Compiler {
       title: node.title ?? node.id,
       maxIterations: node.maxIterations,
       while: this.whileExpressions.get(location),
+      patience: node.patience,
+      budget: node.budget,
       body: this.expandBlock(node.body, location, depth + 1)
     };
   }
 
-  /** 按执行顺序模拟作用域：并行分支互不可见，条件分支合并可见，循环体输出回写外层。 */
-  private validateReferences(program: CompiledBlock) {
-    this.validateBlock(program, new Set<string>());
+  /**
+   * 子流程在编译期递归展开：父计划里保存子程序，运行时仍由同一执行器在独立作用域执行。
+   * 递归链与深度在这里拦截，避免运行期才发现循环引用。
+   */
+  private expandSubWorkflow(
+    node: Extract<WorkflowNode, { kind: "subworkflow" }>,
+    location: string,
+    depth: number
+  ): CompiledStatement {
+    const base = {
+      type: "subworkflow" as const,
+      path: location,
+      nodeId: node.id,
+      title: node.title ?? node.id,
+      node
+    };
+    const definition = this.resolveWorkflow?.(node.workflowId, node.workflowVersion);
+    if (!definition) {
+      this.error(
+        "unknown-subworkflow",
+        `${location}.workflowId`,
+        node.workflowVersion === undefined
+          ? `引用的子工作流 "${node.workflowId}" 不存在或尚未保存`
+          : `引用的子工作流 "${node.workflowId}" v${node.workflowVersion} 不存在`
+      );
+      return { ...base, program: [], definition: undefined };
+    }
+
+    const key = workflowKey(definition);
+    if (this.workflowStack.includes(key)) {
+      this.error(
+        "subworkflow-cycle",
+        location,
+        `子工作流存在循环引用：${[...this.workflowStack, key].join(" -> ")}`
+      );
+      return { ...base, program: [], definition };
+    }
+    if (this.workflowStack.length >= MAX_SUBWORKFLOW_DEPTH) {
+      this.error(
+        "subworkflow-depth",
+        location,
+        `子工作流嵌套超过 ${MAX_SUBWORKFLOW_DEPTH} 层上限`
+      );
+      return { ...base, program: [], definition };
+    }
+
+    const provided = new Set(Object.keys(node.inputs ?? {}));
+    for (const variable of definition.inputs) {
+      if (variable.required && !provided.has(variable.name)) {
+        this.error(
+          "subworkflow-missing-input",
+          `${location}.inputs.${variable.name}`,
+          `子工作流 "${definition.id}" 的必填输入 "${variable.name}" 未映射`
+        );
+      }
+    }
+
+    const childIds = collectDefinitionIds(definition.nodes);
+    const declaredInputs = new Set(definition.inputs.map((variable) => variable.name));
+    for (const [name, expression] of Object.entries(node.outputs ?? {})) {
+      const refs: string[] = [];
+      gatherRefs(expression, refs);
+      for (const ref of refs) {
+        const [head] = ref.split(".");
+        if (head === "input") {
+          const inputName = ref.slice("input.".length);
+          if (!declaredInputs.has(inputName)) {
+            this.error(
+              "unknown-subworkflow-output-ref",
+              `${location}.outputs.${name}`,
+              `输出映射引用了子流程未声明的输入 "${inputName}"`
+            );
+          }
+          continue;
+        }
+        if (head === "loop" || !childIds.has(head)) {
+          this.error(
+            "unknown-subworkflow-output-ref",
+            `${location}.outputs.${name}`,
+            `输出映射只能引用子流程节点或 input.*，当前为 "${head}"`
+          );
+        }
+      }
+    }
+
+    const child = new Compiler(definition, {
+      resolveWorkflow: this.resolveWorkflow,
+      workflowStack: [...this.workflowStack, key],
+      pathPrefix: location,
+      baseDepth: depth + 1
+    });
+    const childPlan = child.compilePlan();
+    this.issues.push(...child.issues);
+    this.steps.push(...childPlan.steps);
+    this.maxDepth = Math.max(this.maxDepth, childPlan.stats.maxDepth);
+    this.subWorkflowCount += 1;
+
+    return { ...base, program: childPlan.program, definition };
   }
 
-  private validateBlock(block: CompiledBlock, environment: Set<string>) {
+  /** 按执行顺序模拟作用域：并行分支互不可见，条件分支合并可见，循环体输出回写外层。 */
+  private validateReferences(program: CompiledBlock) {
+    this.validateBlock(program, new Set<string>(), false);
+  }
+
+  private validateBlock(block: CompiledBlock, environment: Set<string>, inLoop: boolean) {
     for (const statement of block) {
       if (statement.type === "step") {
         for (const ref of collectNodeRefs(statement.step.node)) {
-          this.checkRef(ref, environment, statement.step.path);
+          this.checkRef(ref, environment, statement.step.path, inLoop);
         }
         environment.add(statement.step.nodeId);
+        continue;
+      }
+
+      if (statement.type === "subworkflow") {
+        // 输入映射在父作用域解析；输出映射在子作用域解析，已由 expandSubWorkflow 单独校验。
+        for (const ref of collectNodeRefs(statement.node)) {
+          this.checkRef(ref, environment, statement.path, inLoop);
+        }
+        environment.add(statement.nodeId);
         continue;
       }
 
       if (statement.type === "parallel") {
         const branchEnvironments = statement.branches.map((branch) => {
           const branchEnvironment = new Set(environment);
-          this.validateBlock(branch, branchEnvironment);
+          this.validateBlock(branch, branchEnvironment, inLoop);
           return branchEnvironment;
         });
         branchEnvironments.forEach((branchEnvironment) => branchEnvironment.forEach((id) => environment.add(id)));
@@ -342,26 +586,26 @@ class Compiler {
       }
 
       if (statement.type === "condition") {
-        this.checkRef(statement.when.ref, environment, statement.path);
+        this.checkRef(statement.when.ref, environment, statement.path, inLoop);
         const thenEnvironment = new Set(environment);
-        this.validateBlock(statement.then, thenEnvironment);
+        this.validateBlock(statement.then, thenEnvironment, inLoop);
         const elseEnvironment = new Set(environment);
-        this.validateBlock(statement.otherwise, elseEnvironment);
+        this.validateBlock(statement.otherwise, elseEnvironment, inLoop);
         thenEnvironment.forEach((id) => environment.add(id));
         elseEnvironment.forEach((id) => environment.add(id));
         continue;
       }
 
       const bodyEnvironment = new Set(environment);
-      this.validateBlock(statement.body, bodyEnvironment);
+      this.validateBlock(statement.body, bodyEnvironment, true);
       if (statement.while) {
-        this.checkRef(statement.while.ref, bodyEnvironment, statement.path);
+        this.checkRef(statement.while.ref, bodyEnvironment, statement.path, true);
       }
       bodyEnvironment.forEach((id) => environment.add(id));
     }
   }
 
-  private checkRef(ref: string, environment: Set<string>, location: string) {
+  private checkRef(ref: string, environment: Set<string>, location: string, inLoop: boolean) {
     const [head, ...rest] = ref.split(".");
     if (head === "input") {
       const name = rest.join(".");
@@ -371,6 +615,20 @@ class Compiler {
       }
       if (!this.declaredInputs.has(name)) {
         this.error("unknown-input", location, `未声明的工作流输入 "${name}"`);
+      }
+      return;
+    }
+    if (head === "loop") {
+      if (!inLoop) {
+        this.error("loop-ref-outside-loop", location, "循环作用域 ${loop.*} 只能在 loop 节点体内使用");
+        return;
+      }
+      if (!rest.length || !LOOP_SCOPE_KEYS.has(rest[0])) {
+        this.error(
+          "unknown-loop-ref",
+          location,
+          `循环作用域只支持 ${[...LOOP_SCOPE_KEYS].join("、")}，当前为 "${rest[0] ?? ""}"`
+        );
       }
       return;
     }
@@ -400,9 +658,35 @@ function collectNodeRefs(node: LeafNode): string[] {
   if (node.kind === "agent") {
     values.push(node.prompt);
   }
+  if (node.kind === "llm") {
+    values.push(node.prompt, node.system);
+  }
+  if (node.kind === "template") {
+    values.push(node.template);
+  }
+  // subworkflow.outputs 在子流程作用域内解析，由 expandSubWorkflow 单独校验。
   const refs: string[] = [];
   values.forEach((value) => gatherRefs(value, refs));
   return refs;
+}
+
+function collectDefinitionIds(nodes: WorkflowNode[], ids = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    ids.add(node.id);
+    if (node.kind === "parallel") {
+      collectDefinitionIds(node.branches, ids);
+    } else if (node.kind === "condition") {
+      collectDefinitionIds(node.then, ids);
+      collectDefinitionIds(node.else ?? [], ids);
+    } else if (node.kind === "loop") {
+      collectDefinitionIds(node.body, ids);
+    }
+  }
+  return ids;
+}
+
+function workflowKey(workflow: WorkflowDefinition): string {
+  return `${workflow.id}@${workflow.version}`;
 }
 
 function gatherRefs(value: unknown, refs: string[]): string[] {

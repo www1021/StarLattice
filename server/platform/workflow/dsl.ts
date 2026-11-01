@@ -29,7 +29,8 @@ export function parseWorkflowDefinition(value: unknown): WorkflowDefinition {
     description: optionalString(root.description, "description"),
     inputs: root.inputs === undefined ? [] : asArray(root.inputs, "inputs").map((item, index) => parseVariable(item, `inputs[${index}]`)),
     nodes,
-    edges: root.edges === undefined ? [] : asArray(root.edges, "edges").map((item, index) => parseEdge(item, `edges[${index}]`))
+    edges: root.edges === undefined ? [] : asArray(root.edges, "edges").map((item, index) => parseEdge(item, `edges[${index}]`)),
+    knowledgeBaseIds: parseKnowledgeBaseIds(root.knowledgeBaseIds)
   };
 }
 
@@ -71,6 +72,7 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         ...base,
         kind: "agent",
         agent: requireString(record.agent, `${location}.agent`),
+        agentVersion: parseAgentVersion(record.agentVersion, `${location}.agentVersion`),
         prompt: optionalString(record.prompt, `${location}.prompt`)
       };
     case "tool":
@@ -79,6 +81,43 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         kind: "tool",
         tool: requireString(record.tool, `${location}.tool`),
         args: record.args === undefined ? undefined : asRecord(record.args, `${location}.args`)
+      };
+    case "llm":
+      return {
+        ...base,
+        kind: "llm",
+        prompt: requireString(record.prompt, `${location}.prompt`),
+        system: optionalString(record.system, `${location}.system`),
+        model: optionalString(record.model, `${location}.model`),
+        thinking:
+          record.thinking === undefined
+            ? undefined
+            : requireBoolean(record.thinking, `${location}.thinking`),
+        temperature:
+          record.temperature === undefined
+            ? undefined
+            : requireNumber(record.temperature, `${location}.temperature`),
+        maxTokens:
+          record.maxTokens === undefined
+            ? undefined
+            : requireInteger(record.maxTokens, `${location}.maxTokens`)
+      };
+    case "template":
+      return {
+        ...base,
+        kind: "template",
+        template: requireString(record.template, `${location}.template`)
+      };
+    case "subworkflow":
+      return {
+        ...base,
+        kind: "subworkflow",
+        workflowId: requireString(record.workflowId, `${location}.workflowId`),
+        workflowVersion: parseAgentVersion(record.workflowVersion, `${location}.workflowVersion`),
+        outputs:
+          record.outputs === undefined
+            ? undefined
+            : parseStringRecord(record.outputs, `${location}.outputs`)
       };
     case "parallel":
       return {
@@ -105,6 +144,14 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         kind: "loop",
         maxIterations: requireInteger(record.maxIterations, `${location}.maxIterations`),
         while: optionalString(record.while, `${location}.while`),
+        patience:
+          record.patience === undefined
+            ? undefined
+            : requireInteger(record.patience, `${location}.patience`),
+        budget:
+          record.budget === undefined
+            ? undefined
+            : parseLoopBudget(record.budget, `${location}.budget`),
         body: asArray(record.body, `${location}.body`).map((item, index) => parseNode(item, `${location}.body[${index}]`))
       };
     case "verify":
@@ -116,9 +163,86 @@ function parseNode(value: unknown, location: string): WorkflowNode {
           record.rubric === undefined
             ? undefined
             : asArray(record.rubric, `${location}.rubric`).map((item, index) => requireString(item, `${location}.rubric[${index}]`)),
-        threshold: record.threshold === undefined ? undefined : requireNumber(record.threshold, `${location}.threshold`)
+        threshold: record.threshold === undefined ? undefined : requireNumber(record.threshold, `${location}.threshold`),
+        required:
+          record.required === undefined
+            ? undefined
+            : parseStringArray(record.required, `${location}.required`),
+        expectedKeywords:
+          record.expectedKeywords === undefined
+            ? undefined
+            : parseStringArray(record.expectedKeywords, `${location}.expectedKeywords`),
+        minChars:
+          record.minChars === undefined
+            ? undefined
+            : requireInteger(record.minChars, `${location}.minChars`),
+        verifiers:
+          record.verifiers === undefined
+            ? undefined
+            : parseStringArray(record.verifiers, `${location}.verifiers`),
+        requireEvidence:
+          record.requireEvidence === undefined
+            ? undefined
+            : requireBoolean(record.requireEvidence, `${location}.requireEvidence`)
+      };
+    case "approve":
+      return {
+        ...base,
+        kind: "approve",
+        instructions: optionalString(record.instructions, `${location}.instructions`),
+        assignee: optionalString(record.assignee, `${location}.assignee`),
+        timeoutMs:
+          record.timeoutMs === undefined
+            ? undefined
+            : requireInteger(record.timeoutMs, `${location}.timeoutMs`)
       };
   }
+}
+
+function parseStringArray(value: unknown, location: string): string[] {
+  return asArray(value, location).map((item, index) => requireString(item, `${location}[${index}]`));
+}
+
+function parseStringRecord(value: unknown, location: string): Record<string, string> {
+  const record = asRecord(value, location);
+  return Object.fromEntries(
+    Object.entries(record).map(([key, item]) => [key, requireString(item, `${location}.${key}`)])
+  );
+}
+
+function parseLoopBudget(value: unknown, location: string) {
+  const record = asRecord(value, location);
+  return {
+    maxDurationMs:
+      record.maxDurationMs === undefined
+        ? undefined
+        : requireInteger(record.maxDurationMs, `${location}.maxDurationMs`),
+    maxTokens:
+      record.maxTokens === undefined
+        ? undefined
+        : requireInteger(record.maxTokens, `${location}.maxTokens`)
+  };
+}
+
+function parseAgentVersion(value: unknown, location: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const version = requireInteger(value, location);
+  if (version < 1) {
+    throw new WorkflowSyntaxError(location, "应为正整数");
+  }
+  return version;
+}
+
+function parseKnowledgeBaseIds(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const ids = asArray(value, "knowledgeBaseIds").map((item, index) =>
+    requireString(item, `knowledgeBaseIds[${index}]`)
+  );
+  return [...new Set(ids)];
 }
 
 function parseVariable(value: unknown, location: string): WorkflowVariable {

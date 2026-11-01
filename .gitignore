@@ -4,9 +4,26 @@ dist/
 .codex-screenshots/
 .npm-cache/
 generated/
-data/
+# 运行时数据库与本地数据，仅保留可复现的评测集
+data/*
+!data/eval/
+!data/eval/tasks.json
 .env
 .env.local
+
+# 压测临时隔离库（单个可达 10MB+）
+benchmarks/.tmp/
+# benchmark 原始逐次结果不入库，保留最新汇总与冻结报告
+benchmarks/results/*
+!benchmarks/results/latest.md
+!benchmarks/results/latest.csv
+!benchmarks/results/latest-analysis.md
+!benchmarks/results/concurrency-latest.md
+!benchmarks/results/concurrency-latest.csv
+!benchmarks/results/concurrency-stub-latest.md
+!benchmarks/results/verify-sensitivity-latest.md
+!benchmarks/results/audit-topic-2026-10-31T16-27-11-658Z.md
+!benchmarks/results/bench-merged-2026-10-31T15-50-58-263Z.md
 
 *.log
 .vite-dev.*.log

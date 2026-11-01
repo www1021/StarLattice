@@ -1,0 +1,59 @@
+{
+  "id": "lesson-design-v1",
+  "name": "教学设计子流程",
+  "version": 1,
+  "description": "模型先做教学设计思考 → 教案 Agent 成稿 → 观察员验证；可作为主流程的“教案生成”模块复用。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "课题" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "grade", "type": "string", "required": true, "description": "年级" },
+    { "name": "brief", "type": "string", "required": false, "description": "上游模型输出的教学设计要点" },
+    { "name": "citations", "type": "object", "required": false, "description": "知识库检索引用" }
+  ],
+  "nodes": [
+    {
+      "id": "design-brief",
+      "kind": "llm",
+      "title": "教学设计思考",
+      "thinking": true,
+      "temperature": 0.3,
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "brief": "${input.brief}",
+        "citations": "${input.citations}"
+      },
+      "system": "你是一名资深教研员，先分析教学重难点，再给出可执行的设计思路。",
+      "prompt": "围绕 ${input.subject}「${input.topic}」（${input.grade}）梳理：① 学情与重难点；② 三维目标；③ 三段式活动设计；④ 分层练习与评价方式。每条建议都要具体到课堂动作。"
+    },
+    {
+      "id": "design-plan",
+      "kind": "agent",
+      "title": "教案成稿",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "brief": "${design-brief.output}",
+        "citations": "${input.citations}"
+      },
+      "prompt": "基于 ${design-brief.output} 生成可直接试讲的教案，包含教学目标、重难点、教学过程、分层练习与板书设计，并标注引用来源。"
+    },
+    {
+      "id": "design-verify",
+      "kind": "verify",
+      "title": "教案验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
+      "rubric": ["目标达成", "活动设计", "证据支撑"],
+      "threshold": 0.8,
+      "inputs": { "artifact": "${design-plan.output}" }
+    }
+  ],
+  "edges": [
+    { "from": "design-brief", "to": "design-plan" },
+    { "from": "design-plan", "to": "design-verify" }
+  ]
+}

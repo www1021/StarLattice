@@ -1,0 +1,119 @@
+{
+  "id": "teaching-pipeline-v1",
+  "name": "教研全链路（子流程编排）",
+  "version": 1,
+  "description": "模型思考 → 知识库检索 → 教学设计子流程 → 课堂演练子流程 → 全局验证 → 学情报告子流程 → 交付模板，演示子工作流复用与父子 trace。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "训练课题" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "grade", "type": "string", "required": true, "description": "年级" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "参与检索的知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "brief",
+      "kind": "llm",
+      "title": "教研问题思考",
+      "thinking": true,
+      "temperature": 0.3,
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}"
+      },
+      "system": "你是一名资深教研员，先拆解教学任务，再给上下游节点明确的执行建议。",
+      "prompt": "围绕 ${input.subject}「${input.topic}」（${input.grade}）分析：本课最容易被忽视的教学难点是什么？应该让学生在什么环节暴露理解？列成三条可执行的教研关注点。"
+    },
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.topic}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "design",
+      "kind": "subworkflow",
+      "title": "教学设计子流程",
+      "workflowId": "lesson-design-v1",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "brief": "${brief.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "outputs": {
+        "plan": "${design-plan.output}",
+        "score": "${design-verify.score}",
+        "issues": "${design-verify.issues}"
+      }
+    },
+    {
+      "id": "rehearse",
+      "kind": "subworkflow",
+      "title": "课堂演练子流程",
+      "workflowId": "classroom-rehearsal-v1",
+      "inputs": {
+        "topic": "${input.topic}",
+        "plan": "${design.plan}"
+      },
+      "outputs": {
+        "observer": "${observer.output}",
+        "score": "${verify-rehearsal.score}"
+      }
+    },
+    {
+      "id": "verify-overall",
+      "kind": "verify",
+      "title": "全链路验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
+      "rubric": ["目标达成", "课堂互动", "证据支撑"],
+      "threshold": 0.85,
+      "inputs": {
+        "artifact": "${design.plan}",
+        "evidence": "${retrieve.citations}"
+      }
+    },
+    {
+      "id": "report",
+      "kind": "subworkflow",
+      "title": "学情报告子流程",
+      "workflowId": "learning-report-v1",
+      "inputs": {
+        "topic": "${input.topic}",
+        "plan": "${design.plan}",
+        "observer": "${rehearse.observer}",
+        "score": "${verify-overall.score}",
+        "issues": "${verify-overall.issues}"
+      },
+      "outputs": {
+        "report": "${report-output.output}",
+        "insight": "${insight.output}"
+      }
+    },
+    {
+      "id": "deliver",
+      "kind": "template",
+      "title": "交付摘要",
+      "template": "# ${input.topic} 教研交付包\n\n- 学科：${input.subject}\n- 年级：${input.grade}\n- 课堂演练验证分：${rehearse.score}\n- 全链路验证分：${verify-overall.score}\n\n## 报告正文\n${report.report}",
+      "inputs": {
+        "subject": "${input.subject}",
+        "grade": "${input.grade}"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "brief", "to": "retrieve" },
+    { "from": "retrieve", "to": "design" },
+    { "from": "design", "to": "rehearse" },
+    { "from": "rehearse", "to": "verify-overall" },
+    { "from": "verify-overall", "to": "report" },
+    { "from": "report", "to": "deliver" }
+  ]
+}

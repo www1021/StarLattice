@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WorkflowDefinition, WorkflowNode } from "../types.js";
 import { NODE_KINDS, type NodeKind } from "../types.js";
-import { compileWorkflow, WorkflowCompileError } from "./compiler.js";
+import { compileWorkflow, WorkflowCompileError, type CompileOptions } from "./compiler.js";
 import { loadBuiltinWorkflows } from "./dsl.js";
 import { COMMON_NODE_FIELDS, NODE_TYPE_SPECS } from "./nodeTypes.js";
 
@@ -12,9 +12,12 @@ function classroomWorkflow(): WorkflowDefinition {
   return structuredClone(workflow);
 }
 
-function compileError(workflow: WorkflowDefinition): WorkflowCompileError {
+function compileError(
+  workflow: WorkflowDefinition,
+  options: CompileOptions = {}
+): WorkflowCompileError {
   try {
-    compileWorkflow(workflow);
+    compileWorkflow(workflow, options);
   } catch (error) {
     if (error instanceof WorkflowCompileError) {
       return error;
@@ -121,14 +124,68 @@ test("allows loop conditions to read outputs produced inside the body", () => {
   assert.equal(plan.stats.stepCount, 2);
 });
 
-test("node-type contract stays in sync with the parser for all six kinds", () => {
+test("resolves ${loop.*} only inside a loop body", () => {
+  const workflow = singleNodeWorkflow({
+    id: "polish",
+    kind: "loop",
+    maxIterations: 2,
+    body: [
+      {
+        id: "rewrite",
+        kind: "agent",
+        agent: "agent-a",
+        inputs: {
+          draft: "${loop.artifact}",
+          issues: "${loop.issues}",
+          score: "${loop.score}",
+          round: "${loop.iteration}",
+          query: "${loop.retrievalQuery}"
+        }
+      },
+      { id: "check", kind: "verify", verifier: "verifier-a", threshold: 0.9 }
+    ]
+  });
+  assert.equal(compileWorkflow(workflow).stats.stepCount, 2);
+
+  const outside = singleNodeWorkflow({
+    id: "bad",
+    kind: "agent",
+    agent: "agent-a",
+    inputs: { draft: "${loop.artifact}" }
+  });
+  assert.ok(compileError(outside).issues.some((issue) => issue.code === "loop-ref-outside-loop"));
+
+  const unknownKey = singleNodeWorkflow({
+    id: "polish",
+    kind: "loop",
+    maxIterations: 2,
+    body: [{ id: "rewrite", kind: "agent", agent: "agent-a", inputs: { draft: "${loop.draft}" } }]
+  });
+  assert.ok(compileError(unknownKey).issues.some((issue) => issue.code === "unknown-loop-ref"));
+});
+
+test("node-type contract stays in sync with the parser for all node kinds", () => {
   const acceptedFields: Record<NodeKind, string[]> = {
-    agent: ["agent", "prompt", "inputs"],
+    agent: ["agent", "agentVersion", "prompt", "inputs"],
+    llm: ["prompt", "system", "model", "thinking", "temperature", "maxTokens", "inputs"],
     tool: ["tool", "args"],
+    template: ["template", "inputs"],
+    subworkflow: ["workflowId", "workflowVersion", "inputs", "outputs"],
     parallel: [],
     condition: ["when"],
-    loop: ["maxIterations", "while"],
-    verify: ["verifier", "rubric", "threshold", "inputs"]
+    loop: ["maxIterations", "while", "patience", "budget"],
+    approve: ["instructions", "assignee", "timeoutMs", "inputs"],
+    verify: [
+      "verifier",
+      "rubric",
+      "threshold",
+      "required",
+      "expectedKeywords",
+      "minChars",
+      "verifiers",
+      "requireEvidence",
+      "inputs"
+    ]
   };
   const containerKinds = new Set<NodeKind>(["parallel", "condition", "loop"]);
 
@@ -150,5 +207,141 @@ test("node-type contract stays in sync with the parser for all six kinds", () =>
   assert.deepEqual(
     COMMON_NODE_FIELDS.map((field) => field.key),
     ["id", "title", "description"]
+  );
+});
+
+function childDefinition(id = "child-probe"): WorkflowDefinition {
+  return {
+    id,
+    name: "子流程探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      { id: "think", kind: "llm", prompt: "分析 ${input.topic} 的教学难点" },
+      { id: "draft", kind: "agent", agent: "agent-a", inputs: { brief: "${think.output}" } },
+      { id: "check", kind: "verify", verifier: "verifier-a", threshold: 0.8 }
+    ],
+    edges: [
+      { from: "think", to: "draft" },
+      { from: "draft", to: "check" }
+    ]
+  };
+}
+
+function parentDefinition(childId = "child-probe"): WorkflowDefinition {
+  return {
+    id: "parent-probe",
+    name: "父流程探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      { id: "prepare", kind: "template", template: "# ${input.topic}" },
+      {
+        id: "child",
+        kind: "subworkflow",
+        workflowId: childId,
+        inputs: { topic: "${input.topic}" },
+        outputs: { draft: "${draft.output}", score: "${check.score}" }
+      },
+      { id: "summary", kind: "template", template: "${child.draft} / ${child.score}" }
+    ],
+    edges: [
+      { from: "prepare", to: "child" },
+      { from: "child", to: "summary" }
+    ]
+  };
+}
+
+test("expands a sub-workflow in place with prefixed paths", () => {
+  const plan = compileWorkflow(parentDefinition(), {
+    resolveWorkflow: (id) => (id === "child-probe" ? childDefinition() : undefined)
+  });
+
+  assert.equal(plan.stats.rootNodes, 3);
+  assert.equal(plan.stats.stepCount, 5);
+  assert.equal(plan.stats.subWorkflows, 1);
+  assert.deepEqual(
+    plan.steps.map((step) => step.path),
+    ["prepare", "child/think", "child/draft", "child/check", "summary"]
+  );
+  const subStatement = plan.program.find((statement) => statement.type === "subworkflow");
+  assert.ok(subStatement && subStatement.type === "subworkflow");
+  assert.equal(subStatement.definition?.id, "child-probe");
+  assert.equal(subStatement.program.length, 3);
+});
+
+test("rejects missing sub-workflow inputs, unknown refs and unresolved workflows", () => {
+  const missing = parentDefinition();
+  const subNode = missing.nodes[1];
+  assert.equal(subNode.kind, "subworkflow");
+  if (subNode.kind === "subworkflow") {
+    subNode.inputs = {};
+  }
+  const missingError = compileError(missing, {
+    resolveWorkflow: () => childDefinition()
+  });
+  assert.ok(missingError.issues.some((issue) => issue.code === "subworkflow-missing-input"));
+
+  const badOutput = parentDefinition();
+  const badNode = badOutput.nodes[1];
+  if (badNode.kind === "subworkflow") {
+    badNode.outputs = { draft: "${ghost.output}" };
+  }
+  assert.ok(
+    compileError(badOutput, { resolveWorkflow: () => childDefinition() }).issues.some(
+      (issue) => issue.code === "unknown-subworkflow-output-ref"
+    )
+  );
+
+  assert.equal(compileError(parentDefinition()).issues[0]?.code, "unknown-subworkflow");
+
+  const badInput = parentDefinition();
+  const inputNode = badInput.nodes[1];
+  if (inputNode.kind === "subworkflow") {
+    inputNode.inputs = { topic: "${ghost.output}" };
+  }
+  assert.ok(
+    compileError(badInput, { resolveWorkflow: () => childDefinition() }).issues.some(
+      (issue) => issue.code === "unknown-node-ref"
+    )
+  );
+});
+
+test("rejects direct and indirect sub-workflow cycles", () => {
+  const selfReferencing: WorkflowDefinition = {
+    ...parentDefinition("parent-probe")
+  };
+  const selfError = compileError(selfReferencing, {
+    resolveWorkflow: () => selfReferencing
+  });
+  assert.ok(selfError.issues.some((issue) => issue.code === "subworkflow-cycle"));
+
+  const left: WorkflowDefinition = {
+    id: "flow-left",
+    name: "左",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "to-right", kind: "subworkflow", workflowId: "flow-right", inputs: {} }
+    ],
+    edges: []
+  };
+  const right: WorkflowDefinition = {
+    id: "flow-right",
+    name: "右",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "to-left", kind: "subworkflow", workflowId: "flow-left", inputs: {} }
+    ],
+    edges: []
+  };
+  const cycleError = compileError(left, {
+    resolveWorkflow: (id) => (id === "flow-left" ? left : id === "flow-right" ? right : undefined)
+  });
+  assert.ok(cycleError.issues.some((issue) => issue.code === "subworkflow-cycle"));
+  assert.match(
+    cycleError.issues.find((issue) => issue.code === "subworkflow-cycle")?.message ?? "",
+    /flow-left@1 -> flow-right@1 -> flow-left@1/
   );
 });

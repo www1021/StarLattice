@@ -1,0 +1,50 @@
+{
+  "id": "bench-single-agent",
+  "name": "基线 A · 单 Agent 直出",
+  "version": 1,
+  "description": "单个教案生成 Agent 直接产出，无检索、无多角色演练、无验证与修正。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "训练课题" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "grade", "type": "string", "required": true, "description": "年级" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "lesson-plan",
+      "kind": "agent",
+      "title": "教案生成",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}"
+      },
+      "prompt": "围绕 ${input.topic} 生成一份可直接试讲的教案。"
+    },
+    {
+      "id": "verify",
+      "kind": "verify",
+      "title": "单次验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成训练报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${lesson-plan.output}",
+        "score": "${verify.score}",
+        "iterations": 0
+      }
+    }
+  ],
+  "edges": [
+    { "from": "lesson-plan", "to": "verify" },
+    { "from": "verify", "to": "report" }
+  ]
+}

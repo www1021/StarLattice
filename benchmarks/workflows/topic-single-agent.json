@@ -1,0 +1,50 @@
+{
+  "id": "bench-topic-single-agent",
+  "name": "选题基线 A · 单 Agent 直出",
+  "version": 1,
+  "description": "单个选题评审 Agent 直接给出结论，无检索、无三评审并行、无修正回路。",
+  "inputs": [
+    { "name": "title", "type": "string", "required": true, "description": "论文选题名称" },
+    { "name": "field", "type": "string", "required": true, "description": "学科或研究领域" },
+    { "name": "background", "type": "string", "required": false, "description": "研究背景与已有基础" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "review",
+      "kind": "agent",
+      "title": "选题评审直出",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "field": "${input.field}",
+        "background": "${input.background}"
+      },
+      "prompt": "直接评审选题「${input.title}」：给出创新性、可行性、规范性的判断与必须修改项。"
+    },
+    {
+      "id": "verify",
+      "kind": "verify",
+      "title": "单次验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成评审报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${review.output}",
+        "score": "${verify.score}",
+        "iterations": 0
+      }
+    }
+  ],
+  "edges": [
+    { "from": "review", "to": "verify" },
+    { "from": "verify", "to": "report" }
+  ]
+}

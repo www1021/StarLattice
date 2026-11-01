@@ -40,8 +40,11 @@ export type StreamChatOptions = {
 export type CompleteChatOptions = {
   system?: string;
   messages: ChatMessage[];
+  model?: string;
   maxTokens?: number;
   temperature?: number;
+  enableThinking?: boolean;
+  onThinking?: (content: string) => void;
   signal?: AbortSignal;
 };
 
@@ -108,6 +111,11 @@ export function isQwenConfigured() {
 
 export function getQwenModel() {
   return process.env.QWEN_MODEL || process.env.AI_MODEL || DEFAULT_MODEL;
+}
+
+/** 平台工作流节点可单独指定文本模型，避免与聊天/多模态场景共用同一个高成本模型。 */
+export function getPlatformLiveModel() {
+  return process.env.PLATFORM_LIVE_MODEL || getQwenModel();
 }
 
 export async function streamQwenChat({
@@ -233,8 +241,11 @@ export async function streamQwenChat({
 export async function completeQwenChat({
   system,
   messages,
+  model: requestedModel,
   maxTokens = 4096,
   temperature = 0.35,
+  enableThinking = false,
+  onThinking,
   signal
 }: CompleteChatOptions) {
   const apiKey = getQwenApiKey();
@@ -244,7 +255,7 @@ export async function completeQwenChat({
   }
 
   const baseUrl = getQwenBaseUrl();
-  const model = getQwenModel();
+  const model = requestedModel?.trim() || getQwenModel();
   const compactedMessages = compactMessages(messages);
 
   return observeGeneration(
@@ -277,6 +288,7 @@ export async function completeQwenChat({
             model,
             temperature,
             max_tokens: maxTokens,
+            enable_thinking: enableThinking,
             messages: [
               ...(system ? [{ role: "system" as const, content: system }] : []),
               ...toOpenAiMessages(compactedMessages)
@@ -305,9 +317,15 @@ export async function completeQwenChat({
           throw new UpstreamModelError("Qwen did not return content");
         }
 
+        const thinking = payload.choices?.[0]?.message?.reasoning_content?.trim();
+        if (thinking && onThinking) {
+          onThinking(thinking);
+        }
+
         generation.update({
           output: {
             content: summarizeText(content),
+            thinking: thinking ? summarizeText(thinking, 900) : undefined,
             characterCount: content.length
           }
         });

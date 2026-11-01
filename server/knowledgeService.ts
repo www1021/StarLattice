@@ -391,7 +391,8 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
     const documentId = `doc_${randomUUID()}`;
     const createdAt = new Date().toISOString();
-    const extension = getFileExtension(file.originalname);
+    const fileName = normalizeUploadName(file.originalname);
+    const extension = getFileExtension(fileName);
     const normalizedMetadata = normalizeDocumentMetadata(metadata);
 
     const transaction = this.db.transaction(() => {
@@ -406,7 +407,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         .run(
           documentId,
           knowledgeBaseId,
-          file.originalname,
+          fileName,
           extension,
           file.size,
           normalizedMetadata.resourceType,
@@ -437,7 +438,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           chunkId,
           knowledgeBaseId,
           documentId,
-          file.originalname,
+          fileName,
           index,
           content
         );
@@ -445,7 +446,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
           chunkId,
           knowledgeBaseId,
           documentId,
-          file.originalname,
+          fileName,
           content
         );
       });
@@ -456,7 +457,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     return {
       id: documentId,
       knowledgeBaseId,
-      name: file.originalname,
+      name: fileName,
       type: extension,
       size: file.size,
       chunkCount: chunks.length,
@@ -1421,4 +1422,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getFileExtension(fileName: string) {
   return path.extname(fileName).replace(".", "").toLowerCase();
+}
+
+/** busboy 默认按 latin1 解码 multipart 文件名，中文名会变乱码；能无损还原时转回 UTF-8。 */
+function normalizeUploadName(name: string) {
+  if (!/[\u0080-\u00ff]/.test(name)) {
+    return name;
+  }
+  const decoded = Buffer.from(name, "latin1").toString("utf8");
+  return decoded.includes("\uFFFD") ? name : decoded;
 }

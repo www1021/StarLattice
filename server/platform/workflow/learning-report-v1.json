@@ -1,0 +1,57 @@
+{
+  "id": "learning-report-v1",
+  "name": "学情报告子流程",
+  "version": 1,
+  "description": "模型分析学情洞察 → 文本模板拼装报告 → 验证结构完整性；不调用报告类工具，方便在任何环境复用。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "课题" },
+    { "name": "plan", "type": "object", "required": true, "description": "教学方案正文" },
+    { "name": "observer", "type": "string", "required": false, "description": "课堂观察结论" },
+    { "name": "score", "type": "number", "required": false, "description": "上游验证分" },
+    { "name": "issues", "type": "object", "required": false, "description": "待改进问题清单" }
+  ],
+  "nodes": [
+    {
+      "id": "insight",
+      "kind": "llm",
+      "title": "学情洞察",
+      "thinking": true,
+      "temperature": 0.35,
+      "inputs": {
+        "topic": "${input.topic}",
+        "plan": "${input.plan}",
+        "observer": "${input.observer}",
+        "score": "${input.score}",
+        "issues": "${input.issues}"
+      },
+      "system": "你是一名教研分析师，基于课堂证据给出可执行的改进建议。",
+      "prompt": "阅读 ${input.plan} 与课堂观察 ${input.observer}，总结本课三点亮点与三条改进建议；如果验证分 ${input.score} 低于 0.85，说明差距来源。"
+    },
+    {
+      "id": "report-output",
+      "kind": "template",
+      "title": "报告拼装",
+      "template": "# ${input.topic} 课堂训练报告\n\n## 学情洞察\n${insight.output}\n\n## 课堂观察\n${input.observer}\n\n## 验证分\n${input.score}\n\n## 下一步\n按改进建议修订教案，并补充分层练习与课堂反馈设计。",
+      "inputs": {
+        "topic": "${input.topic}",
+        "observer": "${input.observer}",
+        "score": "${input.score}"
+      }
+    },
+    {
+      "id": "report-check",
+      "kind": "verify",
+      "title": "报告完整性验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
+      "rubric": ["结构完整", "证据支撑", "可执行性"],
+      "threshold": 0.75,
+      "required": ["学情洞察", "课堂观察", "下一步"],
+      "inputs": { "artifact": "${report-output.output}" }
+    }
+  ],
+  "edges": [
+    { "from": "insight", "to": "report-output" },
+    { "from": "report-output", "to": "report-check" }
+  ]
+}

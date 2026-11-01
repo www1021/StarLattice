@@ -78,6 +78,7 @@
       "kind": "verify",
       "title": "初始验证",
       "verifier": "observer-verifier",
+      "verifiers": ["observer-verifier", "teaching-expert-agent"],
       "rubric": ["目标达成", "互动覆盖", "证据支撑"],
       "threshold": 0.85
     },
@@ -87,6 +88,8 @@
       "title": "自循环修正",
       "maxIterations": 2,
       "while": "${verify-loop.score} < 0.85",
+      "patience": 2,
+      "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
       "body": [
         {
           "id": "revise",
@@ -103,6 +106,7 @@
           "kind": "verify",
           "title": "复核",
           "verifier": "observer-verifier",
+          "verifiers": ["observer-verifier", "teaching-expert-agent"],
           "rubric": ["目标达成", "互动覆盖", "证据支撑"],
           "threshold": 0.85
         }

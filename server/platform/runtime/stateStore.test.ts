@@ -20,7 +20,7 @@ test("creates the eight platform tables and round-trips a run", () => {
     assert.ok(workflow);
     store.saveWorkflow(workflow);
     assert.equal(store.getWorkflow("classroom-v1")?.definition.nodes.length, workflow.nodes.length);
-    assert.equal(store.listWorkflows()[0]?.id, "classroom-v1");
+    assert.ok(store.listWorkflows().some((item) => item.id === "classroom-v1"));
 
     const run = store.createRun({
       workflowId: "classroom-v1",
@@ -28,7 +28,7 @@ test("creates the eight platform tables and round-trips a run", () => {
       workflowInput: { topic: "分数的意义" },
       mode: "stub"
     });
-    assert.equal(run.status, "running");
+    assert.equal(run.status, "queued");
 
     const stepId = store.beginStep({
       runId: run.id,
@@ -68,6 +68,80 @@ test("creates the eight platform tables and round-trips a run", () => {
     assert.equal(store.listVerifyResults(run.id)[0]?.score, 0.62);
     assert.equal(store.listLoopIterations(run.id)[0]?.scoreAfter, 0.74);
     assert.equal(store.listRuns()[0]?.id, run.id);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps agent version snapshots and rolls back without losing history", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-versions-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  try {
+    store.seedAgents(BUILTIN_AGENTS);
+    const v1 = store.getAgent("lesson-plan-agent")!;
+    assert.equal(store.listAgentVersions("lesson-plan-agent").length, 1);
+
+    store.saveAgent({ ...v1, version: 2, prompt: "v2 提示词" });
+    assert.equal(store.listAgentVersions("lesson-plan-agent").length, 2);
+    assert.equal(store.getAgentVersion("lesson-plan-agent", 1)?.prompt, v1.prompt);
+    assert.equal(store.getAgentVersion("lesson-plan-agent", 2)?.prompt, "v2 提示词");
+
+    const rolled = store.rollbackAgent("lesson-plan-agent", 1)!;
+    assert.equal(rolled.version, 1);
+    assert.equal(rolled.prompt, v1.prompt);
+    assert.equal(store.getAgent("lesson-plan-agent")?.version, 1);
+    assert.equal(store.maxAgentVersion("lesson-plan-agent"), 2);
+
+    const v3 = store.saveAgent({
+      ...rolled,
+      version: store.maxAgentVersion("lesson-plan-agent") + 1,
+      prompt: "v3 提示词"
+    });
+    assert.equal(v3.version, 3);
+    assert.equal(store.getAgentVersion("lesson-plan-agent", 2)?.prompt, "v2 提示词");
+    assert.equal(store.getAgentVersion("lesson-plan-agent", 3)?.prompt, "v3 提示词");
+    assert.equal(store.rollbackAgent("lesson-plan-agent", 99), undefined);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("persists teams and counts agent invocations from trace", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-teams-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  try {
+    const saved = store.saveTeam({
+      id: "lesson-team",
+      name: "教案实训团队",
+      description: "生成 + 评审 + 验证",
+      agentIds: ["lesson-plan-agent", "teaching-expert-agent"],
+      workflowId: "classroom-v1",
+      knowledgeBaseIds: ["kb-lesson"]
+    });
+    assert.deepEqual(saved.agentIds, ["lesson-plan-agent", "teaching-expert-agent"]);
+    assert.equal(store.listTeams().length, 1);
+
+    const run = store.createRun({
+      workflowId: "classroom-v1",
+      workflowVersion: 1,
+      workflowInput: { topic: "分数的意义" },
+      mode: "stub"
+    });
+    const stepId = store.beginStep({
+      runId: run.id,
+      sequence: 1,
+      path: "plan",
+      nodeId: "plan",
+      nodeKind: "agent",
+      input: {}
+    });
+    store.completeStep(stepId, "succeeded", {
+      agent: "lesson-plan-agent",
+      agentVersion: 2
+    });
+    assert.deepEqual(store.agentCallCounts(), { "lesson-plan-agent": 1 });
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

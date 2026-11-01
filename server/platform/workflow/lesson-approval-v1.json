@@ -1,0 +1,77 @@
+{
+  "id": "lesson-approval-v1",
+  "name": "教案人工审核发布链路",
+  "version": 1,
+  "description": "知识库检索 → 教案生成 → 自动验证 → 人工审批（通过继续 / 驳回终止）→ 发布报告，演示自动验证与人工验证组合。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "课题，例如“分数的意义”" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "grade", "type": "string", "required": true, "description": "年级" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "参与检索的知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.topic}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "lesson-plan",
+      "kind": "agent",
+      "title": "教案生成",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "围绕 ${input.topic} 生成一份可直接试讲的教案初稿，并标注引用来源。"
+    },
+    {
+      "id": "verify-plan",
+      "kind": "verify",
+      "title": "自动验证",
+      "verifier": "observer-verifier",
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.8
+    },
+    {
+      "id": "human-approval",
+      "kind": "approve",
+      "title": "教研组长人工审核",
+      "instructions": "请核对教学目标、学生活动与评价是否一致，确认引用来源可追溯后通过；如有问题请填写意见并驳回。",
+      "assignee": "教研组长",
+      "timeoutMs": 600000,
+      "inputs": {
+        "draft": "${lesson-plan.output}",
+        "score": "${verify-plan.score}",
+        "issues": "${verify-plan.issues}"
+      }
+    },
+    {
+      "id": "publish-report",
+      "kind": "tool",
+      "title": "生成发布报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${lesson-plan.output}",
+        "score": "${verify-plan.score}",
+        "title": "教案审核发布报告",
+        "bodyLabel": "教案正文"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "retrieve", "to": "lesson-plan" },
+    { "from": "lesson-plan", "to": "verify-plan" },
+    { "from": "verify-plan", "to": "human-approval" },
+    { "from": "human-approval", "to": "publish-report" }
+  ]
+}

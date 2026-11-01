@@ -9,8 +9,21 @@ import {
   XCircle
 } from "lucide-react";
 import { platformApi } from "./api";
-import { isActiveRun, runStatusLabel, runStatusTone, stepStatusLabel } from "./layout";
-import type { NodeKind, RunRecord, TraceResponse, WorkflowSummary } from "./types";
+import {
+  isActiveRun,
+  runStatusLabel,
+  runStatusTone,
+  selfLoopActionLabel,
+  stepStatusLabel
+} from "./layout";
+import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  NodeKind,
+  RunRecord,
+  TraceResponse,
+  WorkflowSummary
+} from "./types";
 import "./platform.css";
 
 type Banner = {
@@ -20,11 +33,15 @@ type Banner = {
 
 const NODE_KIND_LABELS: Record<NodeKind, string> = {
   agent: "Agent",
+  llm: "模型思考",
   tool: "工具",
+  template: "文本模板",
+  subworkflow: "子工作流",
   parallel: "并行",
   condition: "条件",
   loop: "循环",
-  verify: "验证"
+  verify: "验证",
+  approve: "人工审批"
 };
 
 export function RunMonitorPage() {
@@ -37,6 +54,8 @@ export function RunMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<string>();
+  const [reviewer, setReviewer] = useState("实训用户");
+  const [comments, setComments] = useState<Record<string, string>>({});
 
   const workflowNames = useMemo(
     () => new Map(workflows.map((workflow) => [workflow.id, workflow.name])),
@@ -45,6 +64,7 @@ export function RunMonitorPage() {
   const active =
     Boolean(trace && isActiveRun(trace.run.status)) ||
     runs.some((run) => isActiveRun(run.status));
+  const pendingApprovals = trace?.approvals.filter((approval) => approval.status === "pending") ?? [];
 
   useEffect(() => {
     let cancelled = false;
@@ -172,6 +192,36 @@ export function RunMonitorPage() {
         tone: "info",
         text: `已按原始输入创建重跑 ${shortId(response.run.id)}，原运行 ${shortId(trace.run.id)} 保持不变。`
       });
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function handleDecision(approval: ApprovalRecord, decision: ApprovalDecision) {
+    const comment = (comments[approval.id] ?? "").trim();
+    if (decision === "rejected" && !comment) {
+      setBanner({ tone: "error", text: "驳回时必须填写审批意见，说明需要修改的地方。" });
+      return;
+    }
+    setBusy(`approval:${approval.id}`);
+    setBanner(undefined);
+    try {
+      await platformApi.decideApproval(approval.id, {
+        decision,
+        reviewer: reviewer.trim() || "实训用户",
+        comment: comment || undefined
+      });
+      setBanner({
+        tone: decision === "approved" ? "success" : "error",
+        text:
+          decision === "approved"
+            ? `已通过「${approval.title}」，运行将从该节点继续执行。`
+            : `已驳回「${approval.title}」，运行将在此终止并保留审批意见。`
+      });
+      setComments((current) => ({ ...current, [approval.id]: "" }));
+      window.setTimeout(() => void refreshAll(), 250);
     } catch (error) {
       setBanner({ tone: "error", text: describe(error) });
     } finally {
@@ -347,6 +397,79 @@ export function RunMonitorPage() {
                 </div>
               )}
 
+              {pendingApprovals.map((approval) => (
+                <section className="monitor-approval" key={approval.id}>
+                  <header className="monitor-approval-head">
+                    <span className="monitor-approval-badge">待人工审批</span>
+                    <strong>{approval.title}</strong>
+                    <span>{approval.assignee || "未指定审批人"}</span>
+                  </header>
+                  {approval.instructions && <p className="monitor-approval-note">{approval.instructions}</p>}
+                  <div className="monitor-approval-meta">
+                    <span>节点 {approval.nodeId}</span>
+                    {typeof approval.context?.score === "number" && (
+                      <span>自动验证 {approval.context.score.toFixed(2)}</span>
+                    )}
+                    {approval.context?.issues && approval.context.issues.length > 0 && (
+                      <span className="is-warning">{approval.context.issues.length} 个待关注问题</span>
+                    )}
+                    <span>截止 {formatDateTime(approval.expiresAt)}</span>
+                  </div>
+                  <div className="monitor-approval-context">
+                    <span>待审产物</span>
+                    <pre>{pretty(approval.context?.input ?? approval.context?.artifact)}</pre>
+                  </div>
+                  {approval.context?.issues && approval.context.issues.length > 0 && (
+                    <ul className="monitor-approval-issues">
+                      {approval.context.issues.map((issue) => (
+                        <li key={issue}>{issue}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="monitor-approval-form">
+                    <label>
+                      <span>审批人</span>
+                      <input value={reviewer} onChange={(event) => setReviewer(event.target.value)} />
+                    </label>
+                    <label className="is-wide">
+                      <span>审批意见</span>
+                      <textarea
+                        rows={3}
+                        value={comments[approval.id] ?? ""}
+                        placeholder="通过可留空；驳回必须填写需要修改的地方。"
+                        onChange={(event) =>
+                          setComments((current) => ({ ...current, [approval.id]: event.target.value }))
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="monitor-approval-actions">
+                    <button
+                      type="button"
+                      className="platform-button is-primary"
+                      disabled={busy !== undefined}
+                      onClick={() => void handleDecision(approval, "approved")}
+                    >
+                      {busy === `approval:${approval.id}` ? (
+                        <Loader2 size={14} className="is-spinning" />
+                      ) : (
+                        <CheckCircle2 size={14} />
+                      )}
+                      通过并继续
+                    </button>
+                    <button
+                      type="button"
+                      className="platform-button is-ghost is-reject"
+                      disabled={busy !== undefined}
+                      onClick={() => void handleDecision(approval, "rejected")}
+                    >
+                      <XCircle size={14} />
+                      驳回并终止
+                    </button>
+                  </div>
+                </section>
+              ))}
+
               <div className="monitor-summary">
                 <div>
                   <span>步骤</span>
@@ -370,6 +493,93 @@ export function RunMonitorPage() {
                 </div>
               </div>
 
+              {trace.approvals.length > 0 && (
+                <section className="monitor-section">
+                  <div className="monitor-section-head">
+                    <h3>人工审批记录</h3>
+                    <span>
+                      {trace.approvals.filter((approval) => approval.status === "approved").length} 通过 ·{" "}
+                      {trace.approvals.filter((approval) => approval.status === "rejected").length} 驳回
+                    </span>
+                  </div>
+                  <div className="monitor-approval-records">
+                    {trace.approvals.map((approval) => (
+                      <article className={`monitor-approval-record is-${approval.status}`} key={approval.id}>
+                        <div className="monitor-approval-record-head">
+                          <strong>{approval.title}</strong>
+                          <span className={`monitor-approval-status is-${approval.status}`}>
+                            {approvalStatusLabel(approval.status)}
+                          </span>
+                        </div>
+                        <small>
+                          {approval.assignee || "未指定审批人"} · {approval.reviewer || "未记录审批人"} ·{" "}
+                          {formatDateTime(approval.decidedAt ?? approval.createdAt)}
+                        </small>
+                        {approval.comment && <p>{approval.comment}</p>}
+                        {typeof approval.context?.score === "number" && (
+                          <span className="monitor-approval-score">
+                            审批时自动验证 {approval.context.score.toFixed(2)}
+                          </span>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {trace.run.plan && trace.run.plan.decisions.length + trace.run.plan.unassigned.length > 0 && (
+                <section className="monitor-section">
+                  <div className="monitor-section-head">
+                    <h3>运行前调度计划</h3>
+                    <span>
+                      {trace.run.plan.formula} · 已分配 {trace.run.plan.stats.scheduledCount}/
+                      {trace.run.plan.stats.taskCount}
+                    </span>
+                  </div>
+                  <div className="monitor-schedule">
+                    {trace.run.plan.decisions.map((decision) => {
+                      const requested = trace.run.plan?.requestedAgentIds[decision.taskId];
+                      return (
+                        <article className="monitor-schedule-row" key={decision.taskId}>
+                          <div className="monitor-schedule-head">
+                            <strong>{decision.taskTitle}</strong>
+                            <code>{decision.taskId}</code>
+                            <span>
+                              {requested && requested !== decision.agentId
+                                ? `${requested} → ${decision.agentName}`
+                                : `${decision.agentName}（DSL 首选）`}
+                            </span>
+                            <em>{decision.score.toFixed(2)}</em>
+                          </div>
+                          <p>{decision.reason}</p>
+                          <small>
+                            能力 {decision.breakdown.capability.toFixed(2)} · 可用度{" "}
+                            {decision.breakdown.availability.toFixed(2)} · 优先级{" "}
+                            {decision.breakdown.priority.toFixed(2)}
+                            {decision.dependsOn.length > 0 && ` · 依赖 ${decision.dependsOn.join("、")}`}
+                            {decision.alternatives.length > 0 &&
+                              ` · 次选 ${decision.alternatives
+                                .slice(0, 2)
+                                .map((item) => `${item.agentName}（${item.score.toFixed(2)}）`)
+                                .join("、")}`}
+                          </small>
+                        </article>
+                      );
+                    })}
+                    {trace.run.plan.unassigned.map((task) => (
+                      <article className="monitor-schedule-row is-unassigned" key={task.taskId}>
+                        <div className="monitor-schedule-head">
+                          <strong>{task.taskTitle}</strong>
+                          <code>{task.taskId}</code>
+                          <span>未分配，回退到 DSL 声明 Agent</span>
+                        </div>
+                        <p>{task.reason}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>执行时间线</h3>
@@ -381,16 +591,24 @@ export function RunMonitorPage() {
                   {trace.steps.length === 0 && <p className="monitor-hint">尚未产生步骤记录。</p>}
                   {trace.steps.map((step) => {
                     const isExpanded = expanded.has(step.id);
+                    const depth = step.path.split("/").length - 1;
                     return (
                       <article className={`monitor-step is-${step.status}`} key={step.id}>
                         <span className="monitor-step-dot" aria-hidden="true" />
-                        <div className="monitor-step-card">
+                        <div
+                          className="monitor-step-card"
+                          style={depth > 0 ? { marginLeft: Math.min(depth, 3) * 18 } : undefined}
+                        >
                           <div className="monitor-step-head">
                             <div>
                               <code>{step.path}</code>
+                              {step.nodeKind === "subworkflow" && (
+                                <span className="monitor-step-boundary">子流程边界</span>
+                              )}
                               <small>
                                 #{step.sequence} · {NODE_KIND_LABELS[step.nodeKind] ?? step.nodeKind} ·{" "}
                                 {step.durationMs ?? 0} ms · {formatTime(step.startedAt)}
+                                {(step.attempts ?? 1) > 1 && ` · 尝试 ${step.attempts} 次`}
                               </small>
                             </div>
                             <span className={`platform-step-status is-${step.status}`}>
@@ -417,7 +635,10 @@ export function RunMonitorPage() {
                             <button type="button" className="platform-link" onClick={() => toggleStep(step.id)}>
                               {isExpanded ? "收起输入/输出" : "查看输入/输出"}
                             </button>
-                            {step.status !== "running" && step.status !== "pending" && (
+                            {step.nodeKind !== "approve" &&
+                              step.status !== "running" &&
+                              step.status !== "waiting" &&
+                              step.status !== "pending" && (
                               <button
                                 type="button"
                                 className="monitor-retry-step"
@@ -448,30 +669,54 @@ export function RunMonitorPage() {
                     <span>分数随循环变化</span>
                   </div>
                   <div className="monitor-verify-grid">
-                    {trace.verifyResults.map((result, index) => (
-                      <div className="monitor-verify" key={result.id}>
-                        <div className="monitor-verify-head">
-                          <strong>第 {index + 1} 次验证 · {result.score.toFixed(2)}</strong>
-                          <span>置信度 {result.confidence.toFixed(2)}</span>
-                        </div>
-                        {result.dimensions.length > 0 && (
-                          <div className="monitor-dims">
-                            {result.dimensions.map((dimension) => (
-                              <span key={`${result.id}-${dimension.name}`}>
-                                {dimension.name} {dimension.score.toFixed(2)}
-                              </span>
-                            ))}
+                    {trace.verifyResults.map((result, index) => {
+                      const layers = result.detail?.layers;
+                      return (
+                        <div className="monitor-verify" key={result.id}>
+                          <div className="monitor-verify-head">
+                            <strong>第 {index + 1} 次验证 · {result.score.toFixed(2)}</strong>
+                            <span>置信度 {result.confidence.toFixed(2)}</span>
                           </div>
-                        )}
-                        {result.issues.length > 0 && (
-                          <ul>
-                            {result.issues.map((issue) => (
-                              <li key={issue}>{issue}</li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    ))}
+                          {layers && (
+                            <>
+                              <div className="monitor-verify-layers">
+                                <span>规则 {layers.rule.score.toFixed(2)}</span>
+                                <span>
+                                  交叉 {layers.crossCheck.score.toFixed(2)} · {layers.crossCheck.verifiers.length} 名验证器
+                                  · 分歧 {layers.crossCheck.spread.toFixed(2)}
+                                </span>
+                                <span>基准 {layers.baseline.coverage.toFixed(2)}</span>
+                              </div>
+                              {layers.crossCheck.verifiers.length > 0 && (
+                                <div className="monitor-verify-agents">
+                                  {layers.crossCheck.verifiers.map((verifier) => (
+                                    <span key={`${result.id}-${verifier.agentId}`}>
+                                      {verifier.agentName} {verifier.score.toFixed(2)}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {result.dimensions.length > 0 && (
+                            <div className="monitor-dims">
+                              {result.dimensions.map((dimension) => (
+                                <span key={`${result.id}-${dimension.name}`}>
+                                  {dimension.name} {dimension.score.toFixed(2)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {result.issues.length > 0 && (
+                            <ul>
+                              {result.issues.map((issue) => (
+                                <li key={issue}>{issue}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               )}
@@ -482,16 +727,30 @@ export function RunMonitorPage() {
                     <h3>循环轮次</h3>
                     <span>{trace.loopIterations.length} 轮</span>
                   </div>
+                  {loopSummariesOf(trace).map((summary, index) => (
+                    <p className="monitor-loop-retention" key={`retention-${index}`}>
+                      {retentionText(summary)}
+                    </p>
+                  ))}
                   <div className="monitor-loops">
                     {trace.loopIterations.map((iteration) => (
                       <div className="monitor-loop" key={iteration.id}>
-                        <strong>{iteration.loopNodeId}</strong>
-                        <span>第 {iteration.iteration} 轮</span>
-                        <span>
-                          {iteration.scoreBefore === undefined ? "—" : iteration.scoreBefore.toFixed(2)} →{" "}
-                          {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)}
-                        </span>
-                        <em>{iteration.action}</em>
+                        <div className="monitor-loop-main">
+                          <strong>{iteration.loopNodeId}</strong>
+                          <span>第 {iteration.iteration} 轮</span>
+                          <span>
+                            {iteration.scoreBefore === undefined ? "—" : iteration.scoreBefore.toFixed(2)} →{" "}
+                            {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)}
+                          </span>
+                          <em>{selfLoopActionLabel(iteration.action)}</em>
+                        </div>
+                        {iteration.changes && iteration.changes.length > 0 && (
+                          <ul className="monitor-loop-changes">
+                            {iteration.changes.map((change) => (
+                              <li key={`${iteration.id}-${change}`}>{change}</li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -530,6 +789,41 @@ function finalScoreOf(trace: TraceResponse): number | undefined {
   }
   const last = trace.verifyResults[trace.verifyResults.length - 1];
   return last?.score;
+}
+
+type LoopSummaryView = {
+  bestIteration?: number;
+  iterations?: number;
+  finalScore?: number;
+};
+
+function loopSummariesOf(trace: TraceResponse): LoopSummaryView[] {
+  const value = trace.run.output?.selfLoop;
+  return Array.isArray(value) ? (value as LoopSummaryView[]) : [];
+}
+
+function retentionText(summary: LoopSummaryView): string {
+  const kept =
+    summary.bestIteration === 0
+      ? "初始产物"
+      : typeof summary.bestIteration === "number"
+        ? `第 ${summary.bestIteration} 轮产物`
+        : "最优产物";
+  const score =
+    typeof summary.finalScore === "number" ? `，最终验证分 ${summary.finalScore.toFixed(2)}` : "";
+  const rounds =
+    typeof summary.iterations === "number" ? `（循环 ${summary.iterations} 轮）` : "";
+  return `保留${kept}${score}${rounds}；被丢弃轮次的验证记录仍保留在证据中。`;
+}
+
+function approvalStatusLabel(status: ApprovalRecord["status"]): string {
+  const labels: Record<ApprovalRecord["status"], string> = {
+    pending: "待审批",
+    approved: "已通过",
+    rejected: "已驳回",
+    expired: "已超时"
+  };
+  return labels[status] ?? status;
 }
 
 function shortId(id: string): string {

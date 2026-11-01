@@ -2,7 +2,10 @@ import type { ComponentType } from "react";
 import {
   Activity,
   BookOpen,
+  Cable,
+  ClipboardCheck,
   Clock3,
+  Database,
   Ellipsis,
   GraduationCap,
   HeartHandshake,
@@ -10,6 +13,7 @@ import {
   PanelLeft,
   SquareChartGantt,
   SquarePen,
+  Users,
   Workflow
 } from "lucide-react";
 
@@ -28,7 +32,11 @@ type SidebarSection =
   | "counseling"
   | "classroom"
   | "platform"
-  | "monitor";
+  | "registry"
+  | "library"
+  | "mcp"
+  | "monitor"
+  | "report";
 
 type MenuItem = {
   label: string;
@@ -46,7 +54,11 @@ type SidebarProps = {
   onOpenCounselingTraining: () => void;
   onOpenSpeakTraining: () => void;
   onOpenPlatform: () => void;
+  onOpenRegistry: () => void;
+  onOpenLibrary: () => void;
+  onOpenMcp: () => void;
   onOpenMonitor: () => void;
+  onOpenReport: () => void;
   onNewConversation: () => void;
   onToggle: () => void;
   user?: SidebarUser;
@@ -66,7 +78,11 @@ const menuItems: MenuItem[] = [
   { label: "历史记录", icon: Clock3, section: "history" },
   { label: "成长报告", icon: SquareChartGantt, section: "growth" },
   { label: "编排画布", icon: Workflow, section: "platform" },
-  { label: "运行监控", icon: Activity, section: "monitor" }
+  { label: "注册中心", icon: Users, section: "registry" },
+  { label: "知识库管理", icon: Database, section: "library" },
+  { label: "MCP 连接", icon: Cable, section: "mcp" },
+  { label: "运行监控", icon: Activity, section: "monitor" },
+  { label: "验证报告", icon: ClipboardCheck, section: "report" }
 ];
 
 const defaultUser: SidebarUser = {
@@ -84,7 +100,11 @@ export function Sidebar({
   onOpenCounselingTraining,
   onOpenSpeakTraining,
   onOpenPlatform,
+  onOpenRegistry,
+  onOpenLibrary,
+  onOpenMcp,
   onOpenMonitor,
+  onOpenReport,
   onNewConversation,
   onToggle,
   user = defaultUser
@@ -98,7 +118,11 @@ export function Sidebar({
     history: onOpenHistory,
     growth: onOpenGrowth,
     platform: onOpenPlatform,
-    monitor: onOpenMonitor
+    registry: onOpenRegistry,
+    library: onOpenLibrary,
+    mcp: onOpenMcp,
+    monitor: onOpenMonitor,
+    report: onOpenReport
   };
 
   return (

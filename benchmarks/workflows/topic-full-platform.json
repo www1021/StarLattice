@@ -1,0 +1,157 @@
+{
+  "id": "bench-topic-full-platform",
+  "name": "选题基线 C · 完整编排平台",
+  "version": 1,
+  "description": "检索 → 三评审并行 → 汇总 → 初始验证 → 1 轮 Self-Loop → 评审报告 → 报告终验，复用同一执行器、三层验证与可解释调度。",
+  "inputs": [
+    { "name": "title", "type": "string", "required": true, "description": "论文选题名称" },
+    { "name": "field", "type": "string", "required": true, "description": "学科或研究领域" },
+    { "name": "background", "type": "string", "required": false, "description": "研究背景与已有基础" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.title} ${input.field}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "reviews",
+      "kind": "parallel",
+      "title": "三评审并行",
+      "branches": [
+        {
+          "id": "innovation-review",
+          "kind": "agent",
+          "title": "创新性评审",
+          "agent": "topic-innovation-agent",
+          "inputs": {
+            "title": "${input.title}",
+            "field": "${input.field}",
+            "background": "${input.background}",
+            "citations": "${retrieve.citations}"
+          },
+          "prompt": "评审选题「${input.title}」的创新性：说明新在哪里、与已有研究差异、创新点是否成立，并给出改进方向。"
+        },
+        {
+          "id": "feasibility-review",
+          "kind": "agent",
+          "title": "可行性评审",
+          "agent": "topic-feasibility-agent",
+          "inputs": {
+            "title": "${input.title}",
+            "field": "${input.field}",
+            "background": "${input.background}",
+            "citations": "${retrieve.citations}"
+          },
+          "prompt": "评审选题「${input.title}」的可行性：从数据、方法、时间资源与风险角度判断能否按期完成。"
+        },
+        {
+          "id": "compliance-review",
+          "kind": "agent",
+          "title": "规范性评审",
+          "agent": "topic-compliance-agent",
+          "inputs": {
+            "title": "${input.title}",
+            "field": "${input.field}",
+            "background": "${input.background}",
+            "citations": "${retrieve.citations}"
+          },
+          "prompt": "评审选题「${input.title}」的规范性：检查问题界定、研究伦理、数据来源与学术表述风险。"
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "kind": "agent",
+      "title": "评审汇总",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "innovation": "${innovation-review.output}",
+        "feasibility": "${feasibility-review.output}",
+        "compliance": "${compliance-review.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "整合三份评审意见，输出总体结论、必须修改项、建议修改项与是否建议开题的判断。"
+    },
+    {
+      "id": "verify-initial",
+      "kind": "verify",
+      "title": "初始验证",
+      "verifier": "observer-verifier",
+      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "revise-loop",
+      "kind": "loop",
+      "title": "自循环修正",
+      "maxIterations": 1,
+      "while": "${verify-loop.score} < 0.85",
+      "patience": 2,
+      "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+      "body": [
+        {
+          "id": "revise",
+          "kind": "agent",
+          "title": "修正评审汇总",
+          "agent": "topic-review-agent",
+          "inputs": {
+            "draft": "${loop.artifact}",
+            "issues": "${loop.issues}",
+            "citations": "${retrieve.citations}"
+          },
+          "prompt": "针对验证问题逐条修订评审汇总，保留已通过的部分，补齐缺失证据与可执行建议。"
+        },
+        {
+          "id": "verify-loop",
+          "kind": "verify",
+          "title": "复核",
+          "verifier": "observer-verifier",
+          "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+          "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+          "threshold": 0.85
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成评审报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${revise.output}",
+        "score": "${verify-initial.score}",
+        "title": "选题评审报告",
+        "bodyLabel": "评审意见"
+      }
+    },
+    {
+      "id": "verify-report",
+      "kind": "verify",
+      "title": "报告终验",
+      "verifier": "topic-review-verifier",
+      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "required": ["结论"],
+      "minChars": 600,
+      "threshold": 0.85
+    }
+  ],
+  "edges": [
+    { "from": "retrieve", "to": "reviews" },
+    { "from": "reviews", "to": "summary" },
+    { "from": "summary", "to": "verify-initial" },
+    { "from": "verify-initial", "to": "revise-loop" },
+    { "from": "revise-loop", "to": "report" },
+    { "from": "report", "to": "verify-report" }
+  ]
+}

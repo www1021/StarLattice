@@ -1,4 +1,15 @@
-export const NODE_KINDS = ["agent", "tool", "parallel", "condition", "loop", "verify"] as const;
+export const NODE_KINDS = [
+  "agent",
+  "llm",
+  "tool",
+  "template",
+  "subworkflow",
+  "parallel",
+  "condition",
+  "loop",
+  "verify",
+  "approve"
+] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
 
@@ -22,6 +33,8 @@ export type NodeBase = {
 export type AgentNode = NodeBase & {
   kind: "agent";
   agent: string;
+  /** 指定 Agent 版本；留空时使用注册中心里的最新版本。 */
+  agentVersion?: number;
   prompt?: string;
 };
 
@@ -29,6 +42,33 @@ export type ToolNode = NodeBase & {
   kind: "tool";
   tool: string;
   args?: Record<string, unknown>;
+};
+
+/** 直接调用模型的轻量节点，不依赖注册中心里的 Agent 角色。 */
+export type LlmNode = NodeBase & {
+  kind: "llm";
+  prompt: string;
+  system?: string;
+  model?: string;
+  /** 打开后在产物里保留一段思考摘要。 */
+  thinking?: boolean;
+  temperature?: number;
+  maxTokens?: number;
+};
+
+/** 确定性文本模板，支持 ${节点.字段} 变量，不产生模型调用。 */
+export type TemplateNode = NodeBase & {
+  kind: "template";
+  template: string;
+};
+
+/** 引用另一个工作流并内联执行；子流程拥有独立输入作用域与 trace 前缀。 */
+export type SubWorkflowNode = NodeBase & {
+  kind: "subworkflow";
+  workflowId: string;
+  workflowVersion?: number;
+  /** 对外输出映射：键为父流程引用名，值为子流程作用域内的引用表达式。 */
+  outputs?: Record<string, string>;
 };
 
 export type ParallelNode = NodeBase & {
@@ -43,10 +83,17 @@ export type ConditionNode = NodeBase & {
   else?: WorkflowNode[];
 };
 
+export type LoopBudget = {
+  maxDurationMs?: number;
+  maxTokens?: number;
+};
+
 export type LoopNode = NodeBase & {
   kind: "loop";
   maxIterations: number;
   while?: string;
+  patience?: number;
+  budget?: LoopBudget;
   body: WorkflowNode[];
 };
 
@@ -55,11 +102,43 @@ export type VerifyNode = NodeBase & {
   verifier: string;
   rubric?: string[];
   threshold?: number;
+  required?: string[];
+  expectedKeywords?: string[];
+  minChars?: number;
+  verifiers?: string[];
+  requireEvidence?: boolean;
 };
 
-export type WorkflowNode = AgentNode | ToolNode | ParallelNode | ConditionNode | LoopNode | VerifyNode;
+export type ApproveNode = NodeBase & {
+  kind: "approve";
+  /** 审批说明，会随待审任务展示给审批人。 */
+  instructions?: string;
+  /** 期望审批人/角色，仅作展示与记录，不参与权限校验。 */
+  assignee?: string;
+  /** 超时后运行失败；留空使用平台默认值。 */
+  timeoutMs?: number;
+};
 
-export type LeafNode = AgentNode | ToolNode | VerifyNode;
+export type WorkflowNode =
+  | AgentNode
+  | LlmNode
+  | ToolNode
+  | TemplateNode
+  | SubWorkflowNode
+  | ParallelNode
+  | ConditionNode
+  | LoopNode
+  | VerifyNode
+  | ApproveNode;
+
+export type LeafNode =
+  | AgentNode
+  | LlmNode
+  | ToolNode
+  | TemplateNode
+  | SubWorkflowNode
+  | VerifyNode
+  | ApproveNode;
 
 export type WorkflowEdge = {
   from: string;
@@ -75,6 +154,8 @@ export type WorkflowDefinition = {
   inputs: WorkflowVariable[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  /** 平台级知识库绑定；工具节点未显式指定 knowledgeBaseIds 时作为默认检索范围。 */
+  knowledgeBaseIds?: string[];
 };
 
 export type ComparisonOperator = "<" | "<=" | ">" | ">=" | "==" | "!=";
@@ -95,6 +176,16 @@ export type CompiledStep = {
 
 export type CompiledStatement =
   | { type: "step"; step: CompiledStep }
+  | {
+      type: "subworkflow";
+      path: string;
+      nodeId: string;
+      title: string;
+      node: SubWorkflowNode;
+      /** 编译期展开后的子流程程序；运行时切换独立作用域执行。 */
+      program: CompiledBlock;
+      definition?: WorkflowDefinition;
+    }
   | { type: "parallel"; path: string; nodeId: string; title: string; branches: CompiledBlock[] }
   | {
       type: "condition";
@@ -112,6 +203,8 @@ export type CompiledStatement =
       title: string;
       maxIterations: number;
       while?: CompiledExpression;
+      patience?: number;
+      budget?: LoopBudget;
       body: CompiledBlock;
     };
 
@@ -132,14 +225,45 @@ export type CompiledPlan = {
     rootNodes: number;
     stepCount: number;
     maxDepth: number;
+    subWorkflows: number;
   };
 };
 
-export type RunStatus = "queued" | "running" | "verifying" | "revising" | "succeeded" | "failed" | "rolled_back";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "verifying"
+  | "revising"
+  | "waiting_approval"
+  | "succeeded"
+  | "failed"
+  | "rolled_back";
 
 export type RunMode = "stub" | "live";
 
-export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type StepStatus = "pending" | "running" | "waiting" | "succeeded" | "failed" | "skipped";
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+export type ApprovalRecord = {
+  id: string;
+  runId: string;
+  stepId: string;
+  nodeId: string;
+  title: string;
+  instructions?: string;
+  assignee?: string;
+  status: ApprovalStatus;
+  /** 待审上下文：产物、验证分、问题与节点输入。 */
+  context?: Record<string, unknown>;
+  reviewer?: string;
+  comment?: string;
+  createdAt: string;
+  decidedAt?: string;
+  expiresAt?: string;
+};
+
+export type ApprovalDecision = "approved" | "rejected";
 
 export type RunRecord = {
   id: string;
@@ -149,6 +273,8 @@ export type RunRecord = {
   mode: RunMode;
   input: Record<string, unknown>;
   output?: Record<string, unknown>;
+  /** 运行前调度计划；旧运行没有该字段。 */
+  plan?: unknown;
   error?: string;
   stepCount: number;
   startedAt: string;
@@ -164,6 +290,7 @@ export type StepRecord = {
   nodeId: string;
   nodeKind: NodeKind;
   status: StepStatus;
+  attempts?: number;
   input?: unknown;
   output?: unknown;
   error?: string;
@@ -194,6 +321,60 @@ export type AgentRecord = {
 
 export type AgentWrite = Omit<AgentRecord, "createdAt" | "updatedAt">;
 
+export type AgentVersionRecord = {
+  agentId: string;
+  version: number;
+  snapshot: AgentWrite;
+  createdAt: string;
+};
+
+export type TeamRecord = {
+  id: string;
+  name: string;
+  description: string;
+  agentIds: string[];
+  workflowId?: string;
+  knowledgeBaseIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamWrite = Omit<TeamRecord, "createdAt" | "updatedAt">;
+
+export type RegistryAgentView = AgentRecord & {
+  callCount: number;
+  teamIds: string[];
+};
+
+export type RegistryOverview = {
+  teams: TeamRecord[];
+  agents: RegistryAgentView[];
+};
+
+export type KnowledgeBaseRef = {
+  id: string;
+  name: string;
+  source: string;
+  providerStatus?: string;
+  documentCount: number;
+  createdAt: string;
+  teamIds: string[];
+  workflowIds: string[];
+};
+
+export type KnowledgeWorkflowRef = {
+  id: string;
+  name: string;
+  version: number;
+  knowledgeBaseIds: string[];
+};
+
+export type KnowledgeBaseOverview = {
+  bases: KnowledgeBaseRef[];
+  teams: TeamRecord[];
+  workflows: KnowledgeWorkflowRef[];
+};
+
 export type ToolKind = "builtin" | "mcp" | "http";
 
 export type ToolRecord = {
@@ -209,6 +390,63 @@ export type ToolRecord = {
 };
 
 export type ToolWrite = Omit<ToolRecord, "createdAt" | "updatedAt">;
+
+export type McpTransport = "stdio" | "http";
+
+/** 服务端内部配置，env 可能含密钥，接口层必须脱敏后再返回。 */
+export type McpServerConfig = {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  command?: string;
+  args: string[];
+  env: Record<string, string>;
+  url?: string;
+  enabled: boolean;
+  lastConnectedAt?: string;
+  lastError?: string;
+  /** 最近一次成功握手的信息，用于页面刷新后仍能展示真实协议与服务端版本。 */
+  serverName?: string;
+  serverVersion?: string;
+  protocolVersion?: string;
+  lastLatencyMs?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpServerView = Omit<McpServerConfig, "env"> & {
+  envKeys: string[];
+  toolCount: number;
+};
+
+export type McpServerWrite = {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  command?: string;
+  args: string[];
+  env?: Record<string, string>;
+  url?: string;
+  enabled: boolean;
+};
+
+export type McpToolInfo = {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+};
+
+export type McpCallResult = {
+  serverId: string;
+  serverName: string;
+  tool: string;
+  latencyMs: number;
+  isError: boolean;
+  content: unknown[];
+  text: string;
+  structuredContent?: unknown;
+};
 
 export type RegistrySummary = {
   agentCount: number;
@@ -233,6 +471,7 @@ export type VerifyResultRecord = {
   dimensions: VerifyDimension[];
   issues: string[];
   evidence: string[];
+  detail?: Record<string, unknown>;
   createdAt: string;
 };
 

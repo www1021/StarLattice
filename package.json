@@ -1,4 +1,11 @@
 {
+  "name": "zhijiaoxun-agent-platform",
+  "version": "0.2.0",
+  "description": "易师训 Agent 编排实训平台：DSL 编译、负载感知调度、三层验证、Self-Loop 与 MCP 工具接入",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "predev": "node scripts/prepare-voice-assets.mjs",
     "predev:client": "node scripts/prepare-voice-assets.mjs",
@@ -8,7 +15,8 @@
     "dev:client": "vite --host 127.0.0.1",
     "dev:server": "tsx watch server/index.ts",
     "test:knowledge": "tsx --test server/knowledgeService.test.ts",
-    "test:platform": "tsx --test server/platform/workflow/compiler.test.ts server/platform/registry/registry.test.ts server/platform/runtime/stateStore.test.ts server/platform/runtime/executor.test.ts",
+    "test:platform": "tsx --test server/platform/workflow/compiler.test.ts server/platform/registry/registry.test.ts server/platform/runtime/stateStore.test.ts server/platform/runtime/executor.test.ts server/platform/scheduler/scheduler.test.ts server/platform/selfLoop/controller.test.ts server/platform/verify/verifier.test.ts server/platform/metrics/collector.test.ts server/platform/mcp/mcp.test.ts",
+    "bench": "node benchmarks/run-bench.mjs",
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
@@ -23,6 +31,7 @@
     "better-sqlite3": "^12.11.1",
     "docx": "^9.7.1",
     "dotenv": "^17.4.2",
+    "elkjs": "^0.12.1",
     "express": "^5.2.1",
     "framer-motion": "^12.40.0",
     "lucide-react": "^0.468.0",
@@ -34,7 +43,9 @@
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -45,6 +56,7 @@
     "@types/react-dom": "^19.0.1",
     "@types/ws": "^8.18.1",
     "concurrently": "^10.0.3",
+    "promptfoo": "^0.125.1",
     "tsx": "^4.22.4"
   }
 }

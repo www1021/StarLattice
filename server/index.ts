@@ -109,6 +109,15 @@ import {
 } from "./xfyunSpeechService.js";
 import { registerCounseling } from "./counseling/routes.js";
 import { registerPlatform } from "./platform/routes.js";
+import { PlatformStateStore } from "./platform/runtime/stateStore.js";
+import { WorkflowExecutor } from "./platform/runtime/executor.js";
+import { McpManager } from "./platform/mcp/mcpManager.js";
+import {
+  createPlatformLiveHandlers,
+  executeMcpToolNode,
+  isPlatformLiveEnabled
+} from "./platform/runtime/liveHandlers.js";
+import { createLlmDimensionScorer, isLlmVerifyEnabled } from "./platform/verify/liveScorer.js";
 import {
   observeOperation,
   recordTrainingEvaluationScores,
@@ -247,7 +256,7 @@ const speakTrainingSessions = new SpeakTrainingSession();
 const classroomService = new ClassroomService();
 const chatRepository = new SQLiteChatRepository(process.env.TRAINING_DB_PATH);
 const knowledgeProvider = new KnowledgeProviderRegistry(
-  new LocalKnowledgeProvider(),
+  new LocalKnowledgeProvider(process.env.KNOWLEDGE_DB_PATH || undefined),
   new IMAKnowledgeProvider()
 );
 const port = Number(process.env.PORT || 8787);
@@ -273,7 +282,57 @@ const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
 
 app.use(express.json({ limit: "1mb" }));
 const counselingRealtimeServer = registerCounseling(app, httpServer, chatRepository);
-registerPlatform(app);
+const platformStore = new PlatformStateStore();
+const platformLiveEnabled = isPlatformLiveEnabled();
+if (process.env.PLATFORM_LIVE_AGENTS === "1" && !platformLiveEnabled) {
+  console.warn(
+    "[platform] PLATFORM_LIVE_AGENTS=1 但未检测到 QWEN_API_KEY/DASHSCOPE_API_KEY，平台继续使用 stub 执行器。"
+  );
+}
+const platformMcp = new McpManager(platformStore);
+const platformLiveHandlers = createPlatformLiveHandlers({
+  getAgent: (id) => platformStore.getAgent(id),
+  getAgentVersion: (id, version) => platformStore.getAgentVersion(id, version),
+  getTool: (id) => platformStore.getTool(id),
+  callMcpTool: (tool, args) => platformMcp.callToolRecord(tool, args),
+  searchKnowledge
+});
+const platformExecutor = new WorkflowExecutor(
+  platformStore,
+  {
+    ...platformLiveHandlers,
+    // MCP 是确定性工具调用，不依赖 Qwen；stub 模式下也走真实连接，便于零成本演示。
+    mcpTool: async (node, input) => {
+      const tool = platformStore.getTool(node.tool);
+      if (tool?.type !== "mcp") {
+        return undefined;
+      }
+      return executeMcpToolNode(node, input, tool, (target, args) =>
+        platformMcp.callToolRecord(target, args)
+      );
+    }
+  },
+  {
+    ...(platformLiveEnabled
+      ? { timeoutMs: Number(process.env.PLATFORM_STEP_TIMEOUT_MS) || 120_000 }
+      : {}),
+    ...(isLlmVerifyEnabled() ? { dimensionScorer: createLlmDimensionScorer() } : {})
+  }
+);
+registerPlatform(app, {
+  store: platformStore,
+  executor: platformExecutor,
+  mcp: platformMcp,
+  knowledge: {
+    listBases: () => knowledgeProvider.listBases(),
+    createBase: (name) => knowledgeProvider.createBase(name),
+    renameBase: (id, name) => knowledgeProvider.renameBase(id, name),
+    deleteBase: (id) => knowledgeProvider.deleteBase(id),
+    listDocuments: (id) => knowledgeProvider.listDocuments(id),
+    deleteDocument: (baseId, documentId) => knowledgeProvider.deleteDocument(baseId, documentId),
+    search: (options) => searchKnowledge(options)
+  }
+});
 
 async function searchKnowledge(options: {
   query: string;

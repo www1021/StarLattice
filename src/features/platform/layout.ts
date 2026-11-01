@@ -1,9 +1,26 @@
+import ELK from "elkjs/lib/elk.bundled.js";
+import type { ElkNode } from "elkjs";
 import type { NodeKind, RunRecord, StepRecord, WorkflowDefinition, WorkflowNode } from "./types";
 
 export type RunNodeStatus = "succeeded" | "failed" | "running";
 
 const COLUMN_WIDTH = 300;
 const ROW_HEIGHT = 170;
+const ELK_NODE_WIDTH = 250;
+const ELK_NODE_HEIGHT = 120;
+const ELK_LAYER_GAP = 120;
+const ELK_NODE_GAP = 60;
+
+type ElkInstance = InstanceType<typeof ELK>;
+
+let elkInstance: ElkInstance | undefined;
+
+function getElk(): ElkInstance {
+  if (!elkInstance) {
+    elkInstance = new ELK();
+  }
+  return elkInstance;
+}
 
 export function computeLayout(definition: WorkflowDefinition): Map<string, { x: number; y: number }> {
   const layers = new Map<string, number>(definition.nodes.map((node) => [node.id, 0]));
@@ -42,6 +59,48 @@ export function computeLayout(definition: WorkflowDefinition): Map<string, { x: 
   return positions;
 }
 
+/**
+ * 用 ELK 计算顶层 DAG 的坐标。容器内部不展开，只按顶层节点与边布局。
+ * 结果只用于画布展示，不写回 DSL。
+ */
+export async function computeElkLayout(
+  definition: WorkflowDefinition
+): Promise<Map<string, { x: number; y: number }>> {
+  const nodeIds = new Set(definition.nodes.map((node) => node.id));
+  const edges = definition.edges
+    .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to))
+    .map((edge, index) => ({
+      id: `elk-edge-${index}-${edge.from}-${edge.to}`,
+      sources: [edge.from],
+      targets: [edge.to]
+    }));
+
+  const graph: ElkNode = {
+    id: `workflow-${definition.id || "graph"}`,
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.edgeRouting": "ORTHOGONAL",
+      "elk.layered.spacing.nodeNodeBetweenLayers": String(ELK_LAYER_GAP),
+      "elk.spacing.nodeNode": String(ELK_NODE_GAP),
+      "elk.padding": "[top=0,left=0,bottom=0,right=0]"
+    },
+    children: definition.nodes.map((node) => ({
+      id: node.id,
+      width: ELK_NODE_WIDTH,
+      height: ELK_NODE_HEIGHT
+    })),
+    edges
+  };
+
+  const result = await getElk().layout(graph);
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const child of result.children ?? []) {
+    positions.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
+  }
+  return positions;
+}
+
 export function collectNodeIds(nodes: WorkflowNode[], ids = new Set<string>()): Set<string> {
   for (const node of nodes) {
     ids.add(node.id);
@@ -71,8 +130,35 @@ export function createNode(kind: NodeKind, id: string, firstInputName = "topic")
   switch (kind) {
     case "agent":
       return { id, kind, title: "新 Agent 节点", agent: "agent-id", inputs: {} };
+    case "llm":
+      return {
+        id,
+        kind,
+        title: "新模型思考节点",
+        prompt: "分析 ${input.topic}，输出三条可执行建议。",
+        system: "你是一名资深教研专家，回答要具体、可执行。",
+        thinking: true,
+        inputs: {}
+      };
     case "tool":
       return { id, kind, title: "新工具节点", tool: "tool.id", args: {} };
+    case "template":
+      return {
+        id,
+        kind,
+        title: "新文本模板节点",
+        template: "# ${input.topic}\n\n${input.summary}",
+        inputs: {}
+      };
+    case "subworkflow":
+      return {
+        id,
+        kind,
+        title: "新子工作流节点",
+        workflowId: "",
+        inputs: {},
+        outputs: {}
+      };
     case "verify":
       return {
         id,
@@ -81,6 +167,16 @@ export function createNode(kind: NodeKind, id: string, firstInputName = "topic")
         verifier: "verifier-id",
         rubric: ["目标达成", "证据支撑"],
         threshold: 0.8
+      };
+    case "approve":
+      return {
+        id,
+        kind,
+        title: "新人工审批节点",
+        instructions: "确认产物满足要求后通过。",
+        assignee: "教研组长",
+        timeoutMs: 600000,
+        inputs: {}
       };
     case "parallel":
       return { id, kind, title: "并行容器", branches: [child] };
@@ -95,8 +191,26 @@ export function createLeafNode(kind: NodeKind, id: string): WorkflowNode {
   if (kind === "tool") {
     return { id, kind, title: "新工具步骤", tool: "tool.id", args: {} };
   }
+  if (kind === "llm") {
+    return {
+      id,
+      kind,
+      title: "新模型思考步骤",
+      prompt: "分析 ${input.topic}，输出三条可执行建议。",
+      thinking: true
+    };
+  }
+  if (kind === "template") {
+    return { id, kind, title: "新文本模板步骤", template: "${input.topic}" };
+  }
+  if (kind === "subworkflow") {
+    return { id, kind, title: "新子工作流步骤", workflowId: "", inputs: {}, outputs: {} };
+  }
   if (kind === "verify") {
     return { id, kind, title: "新验证步骤", verifier: "verifier-id", rubric: ["目标达成"], threshold: 0.8 };
+  }
+  if (kind === "approve") {
+    return { id, kind, title: "新人工审批步骤", instructions: "确认后通过。", timeoutMs: 600000 };
   }
   return { id, kind: "agent", title: "新 Agent 步骤", agent: "agent-id" };
 }
@@ -128,7 +242,7 @@ export function aggregateStatuses(steps: StepRecord[]): Map<string, RunNodeStatu
     }
     if (step.status === "failed") {
       statuses.set(root, "failed");
-    } else if (step.status === "running") {
+    } else if (step.status === "running" || step.status === "waiting") {
       if (current !== "succeeded") {
         statuses.set(root, "running");
       }
@@ -144,7 +258,13 @@ export function firstInputName(definition: WorkflowDefinition | undefined): stri
 }
 
 export function isActiveRun(status: RunRecord["status"]): boolean {
-  return status === "queued" || status === "running" || status === "verifying" || status === "revising";
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "verifying" ||
+    status === "revising" ||
+    status === "waiting_approval"
+  );
 }
 
 export type RunStatusTone = "running" | "succeeded" | "failed";
@@ -160,11 +280,21 @@ export function stepStatusLabel(status: StepRecord["status"]): string {
   const labels: Record<StepRecord["status"], string> = {
     pending: "等待",
     running: "执行中",
+    waiting: "待审批",
     succeeded: "成功",
     failed: "失败",
     skipped: "跳过"
   };
   return labels[status] ?? status;
+}
+
+export function selfLoopActionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    rewrite: "重写输出",
+    swap_agent: "换 Agent",
+    retrieve: "补检索"
+  };
+  return labels[action] ?? action;
 }
 
 export function runStatusLabel(status: RunRecord["status"]): string {
@@ -175,7 +305,8 @@ export function runStatusLabel(status: RunRecord["status"]): string {
     failed: "失败",
     rolled_back: "已回滚",
     verifying: "验证中",
-    revising: "修正中"
+    revising: "修正中",
+    waiting_approval: "等待审批"
   };
   return labels[status] ?? status;
 }

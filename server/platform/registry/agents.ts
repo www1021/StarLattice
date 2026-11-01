@@ -187,6 +187,89 @@ export const BUILTIN_AGENTS: AgentWrite[] = [
     memory: { scope: "workflow", retain: ["lessonPlanDraft", "rubric"], maxEntries: 2 },
     prompt:
       "你是一名学科教研员。对照课程标准与教材要求，评审教案的目标是否可测、活动是否服务目标、分层是否覆盖基础薄弱与学有余力的学生，并给出按优先级排序的修改建议。"
+  }),
+  agent({
+    id: "topic-innovation-agent",
+    name: "创新性评审 Agent",
+    role: "选题评审",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "创新性识别", weight: 0.92 },
+      { tag: "研究空白定位", weight: 0.86 },
+      { tag: "方法新颖度", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["reviewFocus"], maxEntries: 2 },
+    prompt:
+      "你是论文选题的创新性评审专家。判断选题是否提出新问题、新方法或新视角，指出它与已有研究的关键差异，区分真正的创新点与换词包装；给出创新性结论、证据与可执行的改进方向，不臆造文献。"
+  }),
+  agent({
+    id: "topic-feasibility-agent",
+    name: "可行性评审 Agent",
+    role: "选题评审",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "可行性评估", weight: 0.92 },
+      { tag: "资源匹配", weight: 0.86 },
+      { tag: "风险评估", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["reviewFocus"], maxEntries: 2 },
+    prompt:
+      "你是论文选题的可行性评审专家。从研究条件、数据可得性、方法成熟度、时间与资源约束、伦理与实施风险五个方面评估选题能否按期完成，指出最可能卡住的环节并给出降级或替代方案。"
+  }),
+  agent({
+    id: "topic-compliance-agent",
+    name: "规范性评审 Agent",
+    role: "选题评审",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "规范性审查", weight: 0.92 },
+      { tag: "研究伦理", weight: 0.86 },
+      { tag: "结构与表述", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["reviewFocus"], maxEntries: 2 },
+    prompt:
+      "你是论文选题的规范性评审专家。检查研究问题、研究方法、数据来源、伦理审查与学术表述是否符合规范，指出命名、范围、变量界定或引用方面的风险，并给出可直接修改的表述建议。"
+  }),
+  agent({
+    id: "topic-review-verifier",
+    name: "选题评审质量验证器",
+    role: "评分验证",
+    tools: ["verify.rubric"],
+    capabilities: [
+      { tag: "评审质量校验", weight: 0.92 },
+      { tag: "证据核对", weight: 0.86 },
+      { tag: "建议可执行性", weight: 0.82 }
+    ],
+    memory: { scope: "workflow", retain: ["rubric", "lastScores"] },
+    prompt:
+      "你是论文选题评审质量的独立验证器。你评估的对象是评审报告本身，不是选题本身：逐维度判断报告是否准确指出创新点与已有研究的差异、是否评估数据与方法可行性及时间资源风险、是否检查规范与伦理风险、是否给出可执行修改建议并引用证据。选题本身质量平庸不等于评审报告差；只有报告缺失判断、缺少证据或建议不可执行时才扣分。按 rubric 逐项打分（0-1），只依据报告正文与证据列表。"
+  }),
+  agent({
+    id: "topic-review-auditor",
+    name: "选题评审证据审计器",
+    role: "评分验证",
+    tools: ["verify.rubric"],
+    capabilities: [
+      { tag: "证据审计", weight: 0.92 },
+      { tag: "覆盖核查", weight: 0.88 },
+      { tag: "建议可执行性", weight: 0.84 }
+    ],
+    memory: { scope: "workflow", retain: ["rubric", "lastScores"] },
+    prompt:
+      "你是论文选题评审报告的审计员。只做可核对的事实检查：报告是否分别覆盖创新性、可行性、规范性三方面并给出明确结论；每条结论是否有证据或理由支撑；修改建议是否具体到可执行动作；是否出现无依据断言或占位表述。缺少覆盖、缺少依据或建议空泛时按 rubric 扣分，覆盖完整且有依据时给高分。只依据报告正文与证据列表打分。"
+  }),
+  agent({
+    id: "topic-review-agent",
+    name: "选题评审汇总 Agent",
+    role: "选题评审",
+    capabilities: [
+      { tag: "综合评审", weight: 0.92 },
+      { tag: "意见整合", weight: 0.88 },
+      { tag: "改进建议", weight: 0.82 }
+    ],
+    memory: { scope: "workflow", retain: ["reviewDraft", "verifyIssues"], maxEntries: 3 },
+    prompt:
+      "你是论文选题评审组的汇总专家。整合创新性、可行性、规范性三份评审意见，给出总体结论、必须修改项与建议修改项，并明确是否建议进入开题；保留关键证据引用。若收到验证问题清单，只针对问题定向修订，不重写已通过部分。"
   })
 ];
 

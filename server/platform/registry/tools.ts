@@ -103,6 +103,53 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     enabled: true
   },
   {
+    id: "mcp.teaching-resources.teaching_resource_search",
+    name: "教学资源 MCP · 资源检索",
+    type: "mcp",
+    endpoint: "mcp://teaching-resources/teaching_resource_search",
+    description: "通过真实 MCP 服务器检索教案片段、课堂提问链与实验设计资源；首次调用会自动启动本地示例服务器。",
+    schema: jsonSchema(
+      {
+        query: { type: "string", description: "课题或关键词" },
+        subject: { type: "string", description: "学科，可选" },
+        limit: { type: "number", minimum: 1, maximum: 5, default: 3 }
+      },
+      ["query"]
+    ),
+    enabled: true
+  },
+  {
+    id: "mcp.teaching-resources.lesson_timing_check",
+    name: "教学资源 MCP · 课时校验",
+    type: "mcp",
+    endpoint: "mcp://teaching-resources/lesson_timing_check",
+    description: "校验教学环节时长与总课时是否匹配，并返回可执行的压缩/补充建议。",
+    schema: jsonSchema(
+      {
+        durationMinutes: { type: "number", minimum: 10, maximum: 120 },
+        phases: { type: "array", items: { type: "object" } }
+      },
+      ["durationMinutes", "phases"]
+    ),
+    enabled: true
+  },
+  {
+    id: "mcp.teaching-resources.classroom_feedback",
+    name: "教学资源 MCP · 课堂反馈",
+    type: "mcp",
+    endpoint: "mcp://teaching-resources/classroom_feedback",
+    description: "根据训练得分、优势与问题清单生成结构化课堂改进反馈。",
+    schema: jsonSchema(
+      {
+        score: { type: "number", minimum: 0, maximum: 1 },
+        strengths: { type: "array", items: { type: "string" } },
+        issues: { type: "array", items: { type: "string" } }
+      },
+      ["score"]
+    ),
+    enabled: true
+  },
+  {
     id: "lms.publish",
     name: "学习平台发布（HTTP）",
     type: "http",

@@ -1,0 +1,470 @@
+{
+  "version": 1,
+  "description": "易师训平台三基线评测集：教育场景 20 条 + 选题评审 10 条。promptfoo 用例由 benchmarks/build-cases.mjs 生成，不手工维护第二份。",
+  "categories": {
+    "education": ["normal", "info-missing", "terminology", "interdisciplinary"],
+    "topic": ["normal", "weak-innovation", "weak-feasibility", "weak-compliance"]
+  },
+  "tasks": [
+    {
+      "id": "edu-01",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": { "topic": "分数的意义", "subject": "数学", "grade": "五年级" },
+      "expectedPoints": [
+        "结合具体情境解释分数表示部分与整体的关系",
+        "说明分子、分母与分数单位的含义",
+        "设计学生可操作的活动与分层练习"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-02",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": { "topic": "光合作用", "subject": "生物", "grade": "七年级" },
+      "expectedPoints": [
+        "说明光合作用的原料、产物、条件与场所",
+        "区分光合作用与呼吸作用的物质能量变化",
+        "设计控制变量的验证实验"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-03",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": { "topic": "静夜思", "subject": "语文", "grade": "二年级" },
+      "expectedPoints": [
+        "把握朗读节奏并解释关键字词",
+        "通过想象画面体会思乡情感",
+        "设计适合低年级的背诵与表演活动"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-04",
+      "scenario": "education",
+      "category": "terminology",
+      "difficulty": "medium",
+      "vars": { "topic": "牛顿第一定律", "subject": "物理", "grade": "八年级" },
+      "expectedPoints": [
+        "准确表述牛顿第一定律并说明惯性概念",
+        "区分力维持运动与力改变运动状态两种前概念",
+        "用生活实例解释惯性现象"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-05",
+      "scenario": "education",
+      "category": "terminology",
+      "difficulty": "easy",
+      "vars": { "topic": "现在进行时", "subject": "英语", "grade": "七年级" },
+      "expectedPoints": [
+        "掌握 be 动词加现在分词的结构",
+        "归纳动词 ing 形式的变化规则",
+        "设计真实情境下的问答与对话练习"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-06",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "medium",
+      "vars": { "topic": "辛亥革命", "subject": "历史", "grade": "八年级" },
+      "expectedPoints": [
+        "梳理辛亥革命的时间线、主要人物与纲领",
+        "分析历史意义与局限性",
+        "使用史料作为论证证据"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-07",
+      "scenario": "education",
+      "category": "terminology",
+      "difficulty": "medium",
+      "vars": { "topic": "化学方程式", "subject": "化学", "grade": "九年级" },
+      "expectedPoints": [
+        "说明书写化学方程式的步骤与配平方法",
+        "体现质量守恒定律",
+        "正确标注反应条件、气体与沉淀符号"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-08",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": { "topic": "细胞结构", "subject": "生物", "grade": "七年级" },
+      "expectedPoints": [
+        "说出动植物细胞的主要结构及功能",
+        "描述显微镜观察细胞的基本步骤",
+        "建立结构与功能相适应的观念"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-09",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "medium",
+      "vars": { "topic": "分数的加减法", "subject": "数学", "grade": "五年级" },
+      "expectedPoints": [
+        "区分同分母与异分母分数的计算路径",
+        "用通分说明异分母加减的算理",
+        "设计典型错例诊断与订正活动"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-10",
+      "scenario": "education",
+      "category": "interdisciplinary",
+      "difficulty": "hard",
+      "vars": { "topic": "分数应用题", "subject": "数学", "grade": "六年级" },
+      "expectedPoints": [
+        "准确找到单位“1”并画线段图表示数量关系",
+        "列式解答并说明每一步含义",
+        "把数学建模与生活或科学情境结合"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-11",
+      "scenario": "education",
+      "category": "interdisciplinary",
+      "difficulty": "medium",
+      "vars": { "topic": "光合作用与呼吸作用", "subject": "生物", "grade": "七年级" },
+      "expectedPoints": [
+        "比较光合作用与呼吸作用的场所、原料与产物",
+        "说明两者在物质与能量转化中的联系",
+        "结合化学知识解释气体变化"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-12",
+      "scenario": "education",
+      "category": "info-missing",
+      "difficulty": "hard",
+      "vars": { "topic": "探究光合作用的实验", "subject": "生物", "grade": "七年级" },
+      "expectedPoints": [
+        "明确自变量、因变量与无关变量",
+        "指出题目未给出实验材料与条件，需要补充假设",
+        "给出对照设计、步骤与结果预期"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-13",
+      "scenario": "education",
+      "category": "info-missing",
+      "difficulty": "medium",
+      "vars": { "topic": "静夜思复习", "subject": "语文", "grade": "二年级" },
+      "expectedPoints": [
+        "指出复习课缺少课时、学情与重点信息",
+        "给出字词、朗读、背诵、迁移的复习框架",
+        "设计可观察的形成性评价"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-14",
+      "scenario": "education",
+      "category": "info-missing",
+      "difficulty": "medium",
+      "vars": { "topic": "复习", "subject": "英语", "grade": "七年级" },
+      "expectedPoints": [
+        "识别课题过于宽泛并主动澄清复习范围",
+        "给出词汇、语法、听说读写的通用复习框架",
+        "说明需要补充教材版本与学情后细化"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-15",
+      "scenario": "education",
+      "category": "terminology",
+      "difficulty": "medium",
+      "vars": { "topic": "现在分词的变化规则", "subject": "英语", "grade": "七年级" },
+      "expectedPoints": [
+        "归纳直接加 ing、去 e 加 ing、双写尾字母三类规则",
+        "说明重读闭音节双写的判断条件",
+        "设计拼写辨析与情境运用练习"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-16",
+      "scenario": "education",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": { "topic": "一般现在时", "subject": "英语", "grade": "七年级" },
+      "expectedPoints": [
+        "掌握一般现在时的基本用法",
+        "说明第三人称单数动词变化",
+        "结合日常作息设计问答活动"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-17",
+      "scenario": "education",
+      "category": "interdisciplinary",
+      "difficulty": "medium",
+      "vars": { "topic": "惯性现象与交通安全", "subject": "物理", "grade": "八年级" },
+      "expectedPoints": [
+        "用惯性解释刹车、安全带等交通场景",
+        "把物理原理迁移到安全规则与责任意识",
+        "设计跨学科探究或辩论活动"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-18",
+      "scenario": "education",
+      "category": "terminology",
+      "difficulty": "hard",
+      "vars": { "topic": "三民主义", "subject": "历史", "grade": "八年级" },
+      "expectedPoints": [
+        "解释民族、民权、民生三大主义的内涵",
+        "联系辛亥革命说明其历史作用",
+        "给出有史料支撑的历史评价"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-19",
+      "scenario": "education",
+      "category": "info-missing",
+      "difficulty": "hard",
+      "vars": { "topic": "配平", "subject": "化学", "grade": "九年级" },
+      "expectedPoints": [
+        "识别课题缺少具体反应与教材范围",
+        "归纳观察法、最小公倍数法等配平方法",
+        "用质量守恒解释配平依据并列出常见错误"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "edu-20",
+      "scenario": "education",
+      "category": "interdisciplinary",
+      "difficulty": "hard",
+      "vars": { "topic": "化学方程式在工业生产中的应用", "subject": "化学", "grade": "九年级" },
+      "expectedPoints": [
+        "把化学方程式与工业反应条件、产率联系起来",
+        "分析原料成本、能耗与环保约束",
+        "设计定量计算与工程情境任务"
+      ],
+      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-01",
+      "scenario": "topic",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": {
+        "title": "基于大语言模型的乡村初中数学个性化作业生成研究",
+        "field": "教育技术学",
+        "background": "已收集两所乡村初中的数学作业样本，具备校本教研合作基础。"
+      },
+      "expectedPoints": [
+        "创新点聚焦在乡村学情与个性化作业生成",
+        "数据来源与教研合作使方案可落地",
+        "给出可测量的作业质量与学习效果指标"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-02",
+      "scenario": "topic",
+      "category": "weak-feasibility",
+      "difficulty": "hard",
+      "vars": {
+        "title": "面向自闭症儿童的社交机器人情绪识别研究",
+        "field": "特殊教育 / 人工智能",
+        "background": "团队有机器人原型，但尚无医院或特教学校合作，儿童数据获取未落实。"
+      },
+      "expectedPoints": [
+        "指出儿童情绪数据获取与伦理审查是主要风险",
+        "建议缩小样本并先做可行性预实验",
+        "明确临床或特教机构合作与安全边界"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-03",
+      "scenario": "topic",
+      "category": "weak-compliance",
+      "difficulty": "medium",
+      "vars": {
+        "title": "短视频使用对小学生注意力的影响研究",
+        "field": "教育学 / 心理学",
+        "background": "计划在合作小学发放问卷并采集学生使用时长与注意力测评数据。"
+      },
+      "expectedPoints": [
+        "说明未成年人数据采集需监护人知情同意",
+        "指出相关研究难以直接得出因果结论",
+        "给出数据脱敏、退出机制与伦理审查安排"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-04",
+      "scenario": "topic",
+      "category": "weak-innovation",
+      "difficulty": "hard",
+      "vars": {
+        "title": "基于区块链的中学生学分认证系统研究",
+        "field": "教育技术学",
+        "background": "希望用区块链解决学分互认与防篡改问题，目前仅有概念方案。"
+      },
+      "expectedPoints": [
+        "质疑区块链是否解决真实痛点而非技术堆叠",
+        "与现有学分银行或中心化系统做对比",
+        "给出可验证的最小原型与评价指标"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-05",
+      "scenario": "topic",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": {
+        "title": "乡村教师数字素养提升路径研究",
+        "field": "教育学",
+        "background": "已与县域教师发展中心建立联系，可开展问卷与访谈。"
+      },
+      "expectedPoints": [
+        "问题界定清晰并区分数字技能与教学转化",
+        "调研样本、访谈提纲与分析方法可执行",
+        "提出分层、可持续的培训与支持机制"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-06",
+      "scenario": "topic",
+      "category": "weak-innovation",
+      "difficulty": "hard",
+      "vars": {
+        "title": "多模态学习分析在高校课堂中的应用研究",
+        "field": "教育技术学",
+        "background": "拟采集课堂视频、眼动与平台日志，建设学习分析仪表盘。"
+      },
+      "expectedPoints": [
+        "说明相对已有学习分析研究的新增贡献",
+        "指出多模态数据对齐与标注的技术难点",
+        "处理隐私、知情同意与课堂部署可行性"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-07",
+      "scenario": "topic",
+      "category": "weak-feasibility",
+      "difficulty": "medium",
+      "vars": {
+        "title": "中学生睡眠时长与学业成绩的关系研究",
+        "field": "心理学",
+        "background": "计划用一次横断面问卷同时测量睡眠与成绩，样本来自一所中学。"
+      },
+      "expectedPoints": [
+        "指出横断面设计难以支持因果推断",
+        "识别家庭、作息与学业压力等混杂因素",
+        "建议纵向追踪或准实验设计并控制变量"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-08",
+      "scenario": "topic",
+      "category": "normal",
+      "difficulty": "easy",
+      "vars": {
+        "title": "生成式人工智能辅助高中英语写作反馈研究",
+        "field": "英语教育",
+        "background": "已有两个高一班级可开展对照实验，学校允许使用合规的写作平台。"
+      },
+      "expectedPoints": [
+        "明确反馈有效性、修改行为与写作成绩等指标",
+        "设置人机反馈或常规反馈对照",
+        "说明学术诚信、数据合规与学生依赖风险"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-09",
+      "scenario": "topic",
+      "category": "weak-compliance",
+      "difficulty": "hard",
+      "vars": {
+        "title": "校园欺凌预警模型研究",
+        "field": "教育心理学 / 数据科学",
+        "background": "拟整合学生行为记录、社交关系与心理测评数据训练风险预警模型。"
+      },
+      "expectedPoints": [
+        "识别敏感数据、标签偏差与误报后果",
+        "给出知情同意、最小化采集与人工复核机制",
+        "明确预警后的干预责任与伦理边界"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    },
+    {
+      "id": "topic-10",
+      "scenario": "topic",
+      "category": "normal",
+      "difficulty": "medium",
+      "vars": {
+        "title": "地方非遗进校园的课程开发研究",
+        "field": "课程与教学论",
+        "background": "已与本地非遗保护中心和一所示范校达成合作意向。"
+      },
+      "expectedPoints": [
+        "课程目标与非遗资源、学段特点匹配",
+        "说明校地合作、师资与课时安排",
+        "设计过程性评价与课程迭代机制"
+      ],
+      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "threshold": 0.85
+    }
+  ]
+}
