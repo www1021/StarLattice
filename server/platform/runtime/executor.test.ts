@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { RunStatus, WorkflowDefinition } from "../types.js";
+import type { RunStatus, ToolNode, WorkflowDefinition } from "../types.js";
 import { BUILTIN_AGENTS } from "../registry/agents.js";
 import { loadBuiltinWorkflows } from "../workflow/dsl.js";
 import { WorkflowExecutor } from "./executor.js";
@@ -21,12 +21,40 @@ function createStore() {
   };
 }
 
+/** 模拟已绑定知识库的服务端 handler；stub 执行器本身不再伪造 citation。 */
+function knowledgeHandlers(documentName = "义务教育数学课程标准（2022年版）") {
+  return {
+    knowledgeTool: async (node: ToolNode) => {
+      if (node.tool !== "knowledge.search") {
+        return undefined;
+      }
+      return {
+        mode: "live",
+        tool: node.tool,
+        summary: "命中 1 条引用",
+        citations: [
+          {
+            id: `${documentName}-1`,
+            title: documentName,
+            documentName,
+            knowledgeBaseName: "课标库",
+            snippet: "分数的意义在于把单位“1”平均分。",
+            source: "local",
+            score: 0.9
+          }
+        ],
+        output: `[1] ${documentName}`
+      };
+    }
+  };
+}
+
 test("runs classroom-v1 end to end and records the 0.62 → 0.86 loop", async () => {
   const { store, dispose } = createStore();
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
   assert.ok(workflow);
   try {
-    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+    const { run, steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
       topic: "分数的意义",
       subject: "数学",
       grade: "五年级"
@@ -67,7 +95,7 @@ test("feeds the previous round's artifact and issues into revise", async () => {
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
   assert.ok(workflow);
   try {
-    const { steps } = await new WorkflowExecutor(store).run(workflow, {
+    const { steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
       topic: "分数的意义",
       subject: "数学",
       grade: "五年级"
@@ -94,7 +122,7 @@ test("counts sub-workflow verifications toward the run attempt curve", async () 
     for (const item of loadBuiltinWorkflows()) {
       store.saveWorkflow(item);
     }
-    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+    const { run, steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
       topic: "分数的意义",
       subject: "数学",
       grade: "五年级"
@@ -118,6 +146,140 @@ test("counts sub-workflow verifications toward the run attempt curve", async () 
     assert.equal(overall.score, 0.86);
     assert.ok(overall.evidence.length > 0);
     assert.equal((run.output?.verify as { passed?: boolean } | undefined)?.passed, true);
+
+    // 子流程内的验证不能因为作用域切换而丢掉父流程检索到的证据。
+    assert.equal(verifications.length, 4);
+    assert.ok(
+      verifications.every((result) => result.evidence.length > 0),
+      "四个验证点都应拿到证据池里的引用"
+    );
+  } finally {
+    dispose();
+  }
+});
+
+test("carries evidence across sub-workflow boundaries in both directions", async () => {
+  const { store, dispose } = createStore();
+  const child: WorkflowDefinition = {
+    id: "evidence-child",
+    name: "证据子流程",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "child-retrieve",
+        kind: "tool",
+        tool: "knowledge.search",
+        args: { query: "child" }
+      },
+      {
+        id: "child-check",
+        kind: "verify",
+        verifier: "observer-verifier",
+        rubric: ["证据支撑"],
+        threshold: 0.5
+      }
+    ],
+    edges: [{ from: "child-retrieve", to: "child-check" }]
+  };
+  const parent: WorkflowDefinition = {
+    id: "evidence-parent",
+    name: "证据父流程",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "parent-retrieve",
+        kind: "tool",
+        tool: "knowledge.search",
+        args: { query: "parent" }
+      },
+      { id: "child", kind: "subworkflow", workflowId: "evidence-child" },
+      {
+        id: "parent-check",
+        kind: "verify",
+        verifier: "observer-verifier",
+        rubric: ["证据支撑"],
+        threshold: 0.5
+      }
+    ],
+    edges: [
+      { from: "parent-retrieve", to: "child" },
+      { from: "child", to: "parent-check" }
+    ]
+  };
+
+  try {
+    store.saveWorkflow(child);
+    store.saveWorkflow(parent);
+    const executor = new WorkflowExecutor(store, {
+      knowledgeTool: async (node, input) => {
+        if (node.tool !== "knowledge.search") {
+          return undefined;
+        }
+        const documentName = input.query === "child" ? "子流程课标" : "父流程课标";
+        return {
+          mode: "live",
+          tool: node.tool,
+          summary: "命中 1 条引用",
+          citations: [{ id: documentName, title: documentName, documentName, source: "local" }],
+          output: documentName
+        };
+      }
+    });
+
+    const { run } = await executor.run(parent, {});
+    const steps = store.listSteps(run.id);
+    const verifications = store.listVerifyResults(run.id);
+    const childResult = verifications.find(
+      (result) => result.stepId === steps.find((step) => step.nodeId === "child-check")?.id
+    );
+    const parentResult = verifications.find(
+      (result) => result.stepId === steps.find((step) => step.nodeId === "parent-check")?.id
+    );
+
+    assert.ok(childResult, "子流程验证应写入结果");
+    assert.ok(parentResult, "父流程验证应写入结果");
+    assert.ok(childResult.evidence.includes("父流程课标 · local"), "子流程应继承父流程证据");
+    assert.ok(childResult.evidence.includes("子流程课标 · local"), "子流程应吸收自身检索证据");
+    assert.ok(parentResult.evidence.includes("父流程课标 · local"));
+    assert.ok(parentResult.evidence.includes("子流程课标 · local"), "父流程应合并子流程证据");
+  } finally {
+    dispose();
+  }
+});
+
+test("does not fabricate citations for non-knowledge stub tools", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "stub-tool-evidence-probe",
+    name: "假引用探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "report", kind: "tool", tool: "report.build", args: { title: "报告" } },
+      {
+        id: "check",
+        kind: "verify",
+        verifier: "observer-verifier",
+        rubric: ["证据支撑"],
+        threshold: 0.5
+      }
+    ],
+    edges: [{ from: "report", to: "check" }]
+  };
+
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {});
+    const reportOutput = steps.find((step) => step.nodeId === "report")?.output as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(reportOutput?.citations, undefined);
+
+    const result = store.listVerifyResults(run.id)[0];
+    assert.ok(result);
+    assert.deepEqual(result.evidence, []);
+    assert.ok(result.issues.some((issue) => issue.includes("证据引用")));
   } finally {
     dispose();
   }
@@ -478,7 +640,7 @@ test("self-loop records two rounds, revision directives and a stop reason", asyn
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
   assert.ok(workflow);
   try {
-    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+    const { run, steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
       topic: "分数的意义",
       subject: "数学",
       grade: "五年级"
@@ -843,7 +1005,7 @@ test("keeps verification scores stable across repeated runs", async () => {
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
   assert.ok(workflow);
   try {
-    const executor = new WorkflowExecutor(store);
+    const executor = new WorkflowExecutor(store, knowledgeHandlers());
     const input = { topic: "分数的意义", subject: "数学", grade: "五年级" };
     const first = await executor.run(workflow, input);
     const second = await executor.run(workflow, input);
@@ -993,7 +1155,7 @@ test("runs the topic-review-v1 workflow through the same executor", async () => 
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "topic-review-v1");
   assert.ok(workflow);
   try {
-    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+    const { run, steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
       title: "乡村小学课后服务的家校协同机制研究",
       field: "教育学",
       background: "已联系两所乡村小学，可获取一学期课后服务记录。"

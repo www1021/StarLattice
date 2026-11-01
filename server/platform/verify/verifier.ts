@@ -503,7 +503,7 @@ function collectText(value: unknown, depth = 0): string {
   return "";
 }
 
-function collectCitations(value: unknown, depth = 0): string[] {
+export function collectCitations(value: unknown, depth = 0): string[] {
   if (value === undefined || value === null || depth > 6 || typeof value !== "object") {
     return [];
   }

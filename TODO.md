@@ -788,11 +788,16 @@
 | P2-10 | HTTP 工具没有执行器 | `runLiveTool` 对 http 走 unsupported | 明确边界：HTTP 工具只登记不执行，外部系统一律走 MCP，避免任意 URL 造成 SSRF | [x] |
 | P2-11 | 验证失败不影响运行状态，无异常检测 | 运行状态只反映执行是否抛错 | 顶层 `verification` 结果 + 监控页徽标；徽标明确「验证结论独立于运行状态」 | [x] |
 | P2-12 | README 与实现不一致 | README 写「绑定时自动注入 knowledge.search 节点」 | 改为「绑定为已有 knowledge.search 节点提供默认检索范围」；补团队/记忆/MCP env/HTTP 边界说明 | [x] |
+| P0-13 | 子流程内的验证拿不到父流程证据 | 证据池原先是 scope 级且只扫顶层 `citations`，子 scope 不继承、不回传 | 证据池提到运行级：子流程继承父池、节点输出后递归吸收，子流程结束再合并回父池；loop 快照/单步重跑一并恢复 | [x] |
+| P0-14 | 非知识库 stub 工具伪造引用 | `stubTool` 无条件返回假 `citations`，让证据检查假通过 | 删除假引用，只有真实 `knowledge.search` 结果进入证据池；未绑知识库时证据检查应当如实失败 | [x] |
 
 ### 14.3 证据清单
 
-- [x] `npm run test:platform` 全绿（**83/83**）。新增覆盖：证据对象归一化、stub 真实检索、loop 第二轮输入、KB 注入范围、重启清理、取消、版本升版、单步重跑用快照、团队调度池、跨运行负载、live prompt 注入。
+- [x] `npm run test:platform` 全绿（**85/85**）。新增覆盖：证据对象归一化、stub 真实检索、loop 第二轮输入、KB 注入范围、重启清理、取消、版本升版、单步重跑用快照、团队调度池、跨运行负载、live prompt 注入、子流程双向证据继承、非知识库工具不伪造引用。
 - [x] `npm run build` 通过（tsc + vite）。
+- [x] 子流程证据链回归：父流程 `retrieve` → 子流程 `retrieve` + 子验证 → 父验证，子验证能读到父证据，父验证能读到子流程新证据；`teaching-pipeline-v1` 四个验证点的 evidence 均非空。
+- [x] 反例回归：无知识库绑定时，普通 stub 工具的 `report.build` 输出不含 `citations`，带证据 rubric 的验证判失败并给出「证据引用」问题，不再假通过。
+- [x] 行为变更说明：全新数据库未绑定知识库时，内置流程的证据检查会如实失败、分数下降；演示需先把 `分数的意义-平台知识库` 绑到 `teaching-pipeline-v1` / `classroom-v1` 才能复现 0.86 证据充分的结果。
 - [x] `teaching-pipeline-v1` stub 运行：`retrieve` 命中 3 条真实本地知识库 citation（source=local）；`verify-overall` 得分 **0.86 ≥ 0.85**，`passed=true`，evidence 3 条；`run.output.verify` 带完整三层明细。
 - [x] `classroom-v1` stub 运行：两轮 `revise` 路径均为 `revise-loop/revise`；第二轮 `draft` 等于上一轮 revise 输出（`secondDraftIsFirstOutput=true`），两轮草案不同，且带入上一轮 4 条验证问题。
 - [x] 保存同一工作流两次：版本递增（v1 → v2，`versionBumped=true`），旧版本仍可读取；按 v2 启动的运行带 `definition.version=2`。单步重跑用运行开始时的 DSL 快照。

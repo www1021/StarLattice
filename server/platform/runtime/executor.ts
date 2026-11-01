@@ -33,6 +33,7 @@ import {
   type SelfLoopSummary
 } from "../selfLoop/controller.js";
 import {
+  collectCitations,
   heuristicDimensionScorer,
   LayeredVerifier,
   normalizeEvidence,
@@ -49,6 +50,8 @@ const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
 type RunScope = {
   input: Record<string, unknown>;
   outputs: Map<string, unknown>;
+  /** 运行时证据池：任一节点产生的 citation 都会进入这里，并跨子流程继承。 */
+  evidence: string[];
   verifyRounds: number;
   lastVerifyScore?: number;
   lastVerifyIssues?: string[];
@@ -169,6 +172,7 @@ type ScopeSnapshot = {
   passed?: boolean;
   layers?: VerifyLayers;
   outputs: Map<string, unknown>;
+  evidence: string[];
 };
 
 /**
@@ -319,6 +323,8 @@ export class WorkflowExecutor {
 
     const input = isRecord(original.input) ? original.input : {};
     const previousVerifications = this.store.listVerifyResults(runId);
+    // 单步重跑不重放上游，从已完成步骤的产物里恢复证据池，避免 verify 重跑时证据丢失。
+    const previousSteps = this.store.listSteps(runId);
     const state: RunState = {
       runId,
       workflowId: run.workflowId,
@@ -332,6 +338,7 @@ export class WorkflowExecutor {
       scope: {
         input: run.input,
         outputs: new Map(),
+        evidence: mergeEvidence(previousSteps.flatMap((step) => collectCitations(step.output))),
         verifyRounds: previousVerifications.length,
         lastVerifyScore: previousVerifications[previousVerifications.length - 1]?.score,
         lastVerifyIssues: previousVerifications[previousVerifications.length - 1]?.issues
@@ -404,7 +411,7 @@ export class WorkflowExecutor {
       loopSummaries: [],
       assignments,
       workflowKnowledgeBaseIds: plan.workflow.knowledgeBaseIds ?? [],
-      scope: { input, outputs: new Map(), verifyRounds: 0 }
+      scope: { input, outputs: new Map(), evidence: [], verifyRounds: 0 }
     };
 
     this.setStatus(runId, "running");
@@ -635,11 +642,11 @@ export class WorkflowExecutor {
     const rawInput = node.kind === "tool" ? node.args ?? {} : node.inputs ?? {};
     let input = resolveValue(rawInput, state.scope, frame) as Record<string, unknown>;
     if (node.kind === "verify") {
-      // 未显式映射时，默认验证最近一个非验证节点的输出，证据取整个运行里收集到的引用。
+      // 未显式映射时，默认验证最近一个非验证节点的输出，证据取当前运行已收集的引用池。
       input = {
         ...input,
         ...(input.artifact === undefined ? { artifact: state.scope.lastArtifact } : {}),
-        ...(input.evidence === undefined ? { evidence: collectEvidence(state.scope.outputs) } : {}),
+        ...(input.evidence === undefined ? { evidence: [...state.scope.evidence] } : {}),
         ...(input.targetNodeId === undefined && state.scope.lastArtifactNodeId
           ? { targetNodeId: state.scope.lastArtifactNodeId }
           : {})
@@ -737,7 +744,13 @@ export class WorkflowExecutor {
     const parentIteration = state.iteration;
     const parentKnowledgeBaseIds = state.workflowKnowledgeBaseIds;
     // 验证轮次按整条运行计数：子流程里的验证也算一轮，否则父流程的最终验证会退回首轮基准分。
-    const childScope: RunScope = { input, outputs: new Map(), verifyRounds: parentScope.verifyRounds };
+    // 证据池随进入子流程继承，子流程内也可继续补充引用。
+    const childScope: RunScope = {
+      input,
+      outputs: new Map(),
+      evidence: [...parentScope.evidence],
+      verifyRounds: parentScope.verifyRounds
+    };
 
     try {
       state.scope = childScope;
@@ -751,6 +764,7 @@ export class WorkflowExecutor {
     } finally {
       state.scope = parentScope;
       parentScope.verifyRounds = childScope.verifyRounds;
+      parentScope.evidence = mergeEvidence(parentScope.evidence, childScope.evidence);
       state.loops = parentLoops;
       state.iteration = parentIteration;
       state.workflowKnowledgeBaseIds = parentKnowledgeBaseIds;
@@ -779,6 +793,7 @@ export class WorkflowExecutor {
       ...mapped
     };
     state.scope.outputs.set(node.id, payload);
+    absorbEvidence(state.scope, payload);
     state.scope.lastArtifact = payload;
     state.scope.lastArtifactNodeId = node.id;
     state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
@@ -907,6 +922,7 @@ export class WorkflowExecutor {
           state.scope.lastArtifactNodeId = step.nodeId;
         }
         state.scope.outputs.set(step.nodeId, output);
+        absorbEvidence(state.scope, output);
         state.tokensUsed += estimateTokens(input) + estimateTokens(output);
         this.store.completeStep(stepId, "succeeded", output, undefined, {
           attempts: attempt,
@@ -1093,7 +1109,8 @@ function snapshotScope(scope: RunScope, iteration: number): ScopeSnapshot {
     confidence: scope.lastVerifyConfidence,
     passed: scope.lastVerifyPassed,
     layers: scope.lastVerifyLayers,
-    outputs: new Map(scope.outputs)
+    outputs: new Map(scope.outputs),
+    evidence: [...scope.evidence]
   };
 }
 
@@ -1103,6 +1120,7 @@ function snapshotScope(scope: RunScope, iteration: number): ScopeSnapshot {
  */
 function restoreScope(scope: RunScope, snapshot: ScopeSnapshot, bodySteps: CompiledStep[]) {
   scope.outputs = new Map(snapshot.outputs);
+  scope.evidence = [...snapshot.evidence];
   scope.lastVerifyScore = snapshot.score;
   scope.lastVerifyIssues = snapshot.issues;
   scope.lastVerifyConfidence = snapshot.confidence;
@@ -1210,12 +1228,12 @@ function stubLlm(node: LlmNode, input: Record<string, unknown>) {
 }
 
 function stubTool(node: ToolNode, input: Record<string, unknown>) {
+  // 只有真实知识库检索才能产生 citation；普通 stub 工具不伪造引用，避免证据检查假通过。
   return {
     mode: "stub",
     tool: node.tool,
     summary: `[stub] ${node.title ?? node.id} 已执行`,
     output: `[stub:${node.tool}] ${node.title ?? node.id} 的输出`,
-    citations: [{ id: "stub-citation-1", title: "示例知识片段", source: "stub" }],
     args: input
   };
 }
@@ -1242,26 +1260,22 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function collectEvidence(outputs: Map<string, unknown>): string[] {
-  const evidence: string[] = [];
-  for (const output of outputs.values()) {
-    if (!isRecord(output) || !Array.isArray(output.citations)) {
-      continue;
-    }
-    for (const citation of output.citations) {
-      if (typeof citation === "string") {
-        evidence.push(citation);
-      } else if (isRecord(citation)) {
-        const title = typeof citation.title === "string" ? citation.title : "";
-        const source = typeof citation.source === "string" ? citation.source : "";
-        const text = [title, source].filter(Boolean).join(" · ");
-        if (text) {
-          evidence.push(text);
-        }
-      }
-    }
+const MAX_EVIDENCE = 32;
+
+/** 吸收任一节点产物里的 citation（含嵌套在 inputs/outputs 中的对象），写入当前作用域证据池。 */
+function absorbEvidence(scope: RunScope, output: unknown) {
+  const incoming = collectCitations(output);
+  if (incoming.length > 0) {
+    scope.evidence = mergeEvidence(scope.evidence, incoming);
   }
-  return [...new Set(evidence)].slice(0, 8);
+}
+
+function mergeEvidence(...pools: string[][]): string[] {
+  const merged = pools
+    .flat()
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set(merged)].slice(0, MAX_EVIDENCE);
 }
 
 function verifyDetail(verification: VerifyOutput): Record<string, unknown> | undefined {
