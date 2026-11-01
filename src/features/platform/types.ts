@@ -81,6 +81,7 @@ export type NodeField = {
   help?: string;
   supportsRefs?: boolean;
   options?: string[];
+  optionLabels?: Record<string, string>;
 };
 
 export type NodeBlock = {

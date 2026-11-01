@@ -89,10 +89,10 @@ export const platformApi = {
   saveWorkflow: (dsl: WorkflowDefinition) =>
     request<SaveWorkflowResponse>("/workflows", { method: "POST", body: JSON.stringify({ dsl }) }),
 
-  startRun: (workflowId: string, input: Record<string, unknown>) =>
+  startRun: (workflowId: string, input: Record<string, unknown>, stopAfter?: string) =>
     request<{ run: RunRecord }>("/runs", {
       method: "POST",
-      body: JSON.stringify({ workflowId, input, async: true })
+      body: JSON.stringify({ workflowId, input, async: true, ...(stopAfter ? { stopAfter } : {}) })
     }),
 
   listRuns: (limit = 20) => request<{ runs: RunRecord[] }>(`/runs?limit=${limit}`),

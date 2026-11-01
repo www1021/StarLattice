@@ -47,6 +47,11 @@ import type { PlatformStateStore } from "./stateStore.js";
 const REF_PATTERN = /^\$\{([^}\s]+)\}$/;
 const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
 
+export type RunOptions = {
+  /** 试跑：执行到该顶层节点完成后停下，后续节点保持未执行。 */
+  stopAfter?: string;
+};
+
 type RunScope = {
   input: Record<string, unknown>;
   outputs: Map<string, unknown>;
@@ -273,9 +278,13 @@ export class WorkflowExecutor {
     return approval;
   }
 
-  async run(workflow: WorkflowDefinition, input: Record<string, unknown> = {}): Promise<PlatformRunView> {
-    const { run, plan, schedule } = this.prepare(workflow, input);
-    await this.execute(plan, run.id, input, assignmentsOf(schedule));
+  async run(
+    workflow: WorkflowDefinition,
+    input: Record<string, unknown> = {},
+    options: RunOptions = {}
+  ): Promise<PlatformRunView> {
+    const { run, plan, schedule } = this.prepare(workflow, input, options);
+    await this.execute(plan, run.id, input, assignmentsOf(schedule), options.stopAfter);
     return { run: this.store.getRun(run.id)!, steps: this.store.listSteps(run.id) };
   }
 
@@ -283,9 +292,9 @@ export class WorkflowExecutor {
    * 异步启动：返回刚落库的 running 记录，执行在后台继续，供监控台轮询 trace。
    * 同步调用方仍可用 run() 拿完整结果。
    */
-  start(workflow: WorkflowDefinition, input: Record<string, unknown> = {}) {
-    const { run, plan, schedule } = this.prepare(workflow, input);
-    void this.execute(plan, run.id, input, assignmentsOf(schedule)).catch(() => {
+  start(workflow: WorkflowDefinition, input: Record<string, unknown> = {}, options: RunOptions = {}) {
+    const { run, plan, schedule } = this.prepare(workflow, input, options);
+    void this.execute(plan, run.id, input, assignmentsOf(schedule), options.stopAfter).catch(() => {
       // execute 内部已把失败写回 run，这里只负责吞掉 fire-and-forget 的 rejection。
     });
     return run;
@@ -357,13 +366,16 @@ export class WorkflowExecutor {
     return this.store.getStep(retryStepId)!;
   }
 
-  private prepare(workflow: WorkflowDefinition, input: Record<string, unknown>) {
+  private prepare(workflow: WorkflowDefinition, input: Record<string, unknown>, options: RunOptions = {}) {
     const plan = this.compile(workflow);
     const missing = workflow.inputs
       .filter((variable) => variable.required && input[variable.name] === undefined)
       .map((variable) => variable.name);
     if (missing.length > 0) {
       throw new PlatformError(`缺少必填输入：${missing.join("、")}`, 400);
+    }
+    if (options.stopAfter && !workflow.nodes.some((node) => node.id === options.stopAfter)) {
+      throw new PlatformError(`stopAfter 只能指向顶层节点：${options.stopAfter}`, 400);
     }
 
     const agents = this.scopedAgents(workflow);
@@ -399,7 +411,8 @@ export class WorkflowExecutor {
     plan: ReturnType<typeof compileWorkflow>,
     runId: string,
     input: Record<string, unknown>,
-    assignments: Map<string, string>
+    assignments: Map<string, string>,
+    stopAfter?: string
   ) {
     const state: RunState = {
       runId,
@@ -416,13 +429,14 @@ export class WorkflowExecutor {
 
     this.setStatus(runId, "running");
     try {
-      await this.executeBlock(plan.program, state);
+      await this.executeRoot(plan.program, state, stopAfter);
       this.throwIfCancelled(runId);
       this.finish(runId, "succeeded", {
         mode: this.mode,
         score: state.scope.lastVerifyScore,
         stepCount: state.sequence,
         tokensUsed: state.tokensUsed,
+        ...(stopAfter ? { stoppedAfter: stopAfter } : {}),
         verify: {
           score: state.scope.lastVerifyScore,
           confidence: state.scope.lastVerifyConfidence,
@@ -447,6 +461,16 @@ export class WorkflowExecutor {
         return;
       }
       this.finish(runId, "failed", undefined, message);
+    }
+  }
+
+  /** 顶层程序按节点逐个执行；命中 stopAfter 后停止，用于画布上的单节点试跑。 */
+  private async executeRoot(block: CompiledBlock, state: RunState, stopAfter?: string) {
+    for (const statement of block) {
+      await this.executeStatement(statement, state);
+      if (stopAfter && statementNodeId(statement) === stopAfter) {
+        return;
+      }
     }
   }
 
@@ -1263,6 +1287,10 @@ function stringList(value: unknown): string[] {
 const MAX_EVIDENCE = 32;
 
 /** 吸收任一节点产物里的 citation（含嵌套在 inputs/outputs 中的对象），写入当前作用域证据池。 */
+function statementNodeId(statement: CompiledStatement): string {
+  return statement.type === "step" ? statement.step.nodeId : statement.nodeId;
+}
+
 function absorbEvidence(scope: RunScope, output: unknown) {
   const incoming = collectCitations(output);
   if (incoming.length > 0) {

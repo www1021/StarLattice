@@ -14,6 +14,8 @@ export type NodeField = {
   help?: string;
   supportsRefs?: boolean;
   options?: string[];
+  /** 选项显示名；未命中时前端回退显示 value 本身。 */
+  optionLabels?: Record<string, string>;
 };
 
 export type NodeBlock = {
@@ -56,18 +58,18 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
     fields: [
       {
         key: "agent",
-        label: "Agent ID",
+        label: "Agent",
         type: "select",
         required: true,
         placeholder: "lesson-plan-agent",
-        help: "T1.3 注册中心上线后改用下拉；当前按字符串填写。"
+        help: "从注册中心选择；新注册的 Agent 点画布工具栏「刷新注册项」即可出现。"
       },
       {
         key: "agentVersion",
         label: "指定 Agent 版本",
-        type: "number",
+        type: "select",
         placeholder: "留空使用最新版本",
-        help: "填注册中心里的版本号，运行与 trace 会固定使用该版本快照。"
+        help: "列出所选 Agent 的版本快照；留空跟随最新版。"
       },
       { key: "prompt", label: "附加提示词", type: "textarea", supportsRefs: true, placeholder: "围绕 ${input.topic} 生成教案初稿。" },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "键值对，值支持 ${节点.字段} 引用。" }
@@ -83,11 +85,11 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
     fields: [
       {
         key: "tool",
-        label: "工具 ID",
+        label: "工具",
         type: "select",
         required: true,
         placeholder: "knowledge.search",
-        help: "T1.3 注册中心上线后改用下拉；当前按字符串填写。"
+        help: "从注册中心选择；新注册的工具点画布工具栏「刷新注册项」即可出现。"
       },
       { key: "args", label: "调用参数", type: "json", supportsRefs: true }
     ],

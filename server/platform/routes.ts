@@ -462,11 +462,20 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
   });
 
   app.get("/api/platform/node-types", (_request, response) => {
-    const workflowIds = store.listWorkflows().map((workflow) => workflow.id);
+    const workflows = store.listWorkflows();
+    const agents = store.listAgents().filter((agent) => agent.enabled);
+    const tools = store.listTools().filter((tool) => tool.enabled);
     response.json({
       version: NODE_TYPE_CONTRACT_VERSION,
       commonFields: COMMON_NODE_FIELDS,
-      nodeTypes: withWorkflowOptions(NODE_TYPE_SPECS, workflowIds),
+      nodeTypes: withRegistryOptions(NODE_TYPE_SPECS, {
+        workflows: workflows.map((workflow) => ({ id: workflow.id, label: workflow.name })),
+        agents: agents.map((agent) => ({ id: agent.id, label: agent.name })),
+        tools: tools.map((tool) => ({ id: tool.id, label: `${tool.name}（${tool.type}）` })),
+        verifiers: agents
+          .filter((agent) => agent.tools.includes("verify.rubric"))
+          .map((agent) => ({ id: agent.id, label: agent.name }))
+      }),
       canvas: CANVAS_CONTRACT
     });
   });
@@ -573,12 +582,16 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
         throw new PlatformError("工作流不存在，请先保存 DSL。", 404);
       }
       const input = isRecord(body.input) ? body.input : {};
+      const stopAfter = typeof body.stopAfter === "string" ? body.stopAfter.trim() : undefined;
+      if (stopAfter === "") {
+        throw new PlatformError("stopAfter 不能为空字符串。", 400);
+      }
       if (body.async === true) {
-        const run = executor.start(stored.definition, input);
+        const run = executor.start(stored.definition, input, { stopAfter });
         response.status(202).json({ run });
         return;
       }
-      const result = await executor.run(stored.definition, input);
+      const result = await executor.run(stored.definition, input, { stopAfter });
       response.status(201).json(result);
     } catch (error) {
       fail(response, error);
@@ -737,18 +750,39 @@ function storeWorkflowResolver(store: PlatformStateStore) {
   return (id: string, version?: number) => store.getWorkflow(id, version)?.definition;
 }
 
-function withWorkflowOptions(specs: NodeTypeSpec[], workflowIds: string[]): NodeTypeSpec[] {
-  return specs.map((spec) => {
-    if (spec.kind !== "subworkflow") {
-      return spec;
-    }
-    return {
-      ...spec,
-      fields: spec.fields.map((field) =>
-        field.key === "workflowId" ? { ...field, options: workflowIds } : field
-      )
-    };
+type RegistryOption = { id: string; label: string };
+
+function withRegistryOptions(
+  specs: NodeTypeSpec[],
+  registry: {
+    workflows: RegistryOption[];
+    agents: RegistryOption[];
+    tools: RegistryOption[];
+    verifiers: RegistryOption[];
+  }
+): NodeTypeSpec[] {
+  const toFieldOptions = (options: RegistryOption[]) => ({
+    options: options.map((option) => option.id),
+    optionLabels: Object.fromEntries(options.map((option) => [option.id, option.label]))
   });
+  return specs.map((spec) => ({
+    ...spec,
+    fields: spec.fields.map((field) => {
+      if (spec.kind === "subworkflow" && field.key === "workflowId") {
+        return { ...field, ...toFieldOptions(registry.workflows) };
+      }
+      if (spec.kind === "agent" && field.key === "agent") {
+        return { ...field, ...toFieldOptions(registry.agents) };
+      }
+      if (spec.kind === "tool" && field.key === "tool") {
+        return { ...field, ...toFieldOptions(registry.tools) };
+      }
+      if (spec.kind === "verify" && field.key === "verifier") {
+        return { ...field, ...toFieldOptions(registry.verifiers) };
+      }
+      return field;
+    })
+  }));
 }
 
 function requireKnowledge(options: PlatformOptions): KnowledgeProviderPort {

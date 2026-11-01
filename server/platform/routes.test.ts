@@ -10,6 +10,49 @@ import { registerPlatform } from "./routes.js";
 import { PlatformStateStore } from "./runtime/stateStore.js";
 import type { WorkflowDefinition } from "./types.js";
 
+test("exposes registry agents and tools as node dropdown options", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  const app = express();
+  app.use(express.json());
+  registerPlatform(app, { store });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, () => resolve(listening));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
+
+  try {
+    const payload = await fetch(`${base}/node-types`).then((response) => response.json()) as {
+      nodeTypes: Array<{
+        kind: string;
+        fields: Array<{ key: string; type: string; options?: string[]; optionLabels?: Record<string, string> }>;
+      }>;
+    };
+    const field = (kind: string, key: string) =>
+      payload.nodeTypes.find((spec) => spec.kind === kind)!.fields.find((item) => item.key === key)!;
+
+    const agentField = field("agent", "agent");
+    assert.ok(agentField.options?.includes("lesson-plan-agent"));
+    assert.equal(agentField.optionLabels?.["lesson-plan-agent"], "教案生成 Agent");
+
+    const toolField = field("tool", "tool");
+    assert.ok(toolField.options?.includes("knowledge.search"));
+    assert.match(toolField.optionLabels?.["knowledge.search"] ?? "", /知识库/);
+
+    const workflowField = field("subworkflow", "workflowId");
+    assert.ok((workflowField.options?.length ?? 0) > 0);
+
+    const verifierField = field("verify", "verifier");
+    assert.ok(verifierField.options?.includes("observer-verifier"));
+
+    assert.equal(field("agent", "agentVersion").type, "select");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("saving an existing workflow appends a version and keeps old versions intact", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
   const store = new PlatformStateStore(path.join(directory, "platform.db"));

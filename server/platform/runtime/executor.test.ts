@@ -1598,3 +1598,51 @@ test("runs a nested sub-workflow with parent-child trace paths and mapped output
     dispose();
   }
 });
+
+test("stops after the requested top-level node for a trial run", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "trial-probe",
+    name: "试跑探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      { id: "first", kind: "template", template: "A ${input.topic}" },
+      { id: "second", kind: "template", template: "B ${input.topic}" }
+    ],
+    edges: [{ from: "first", to: "second" }]
+  };
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(
+      workflow,
+      { topic: "分数" },
+      { stopAfter: "first" }
+    );
+    assert.equal(run.status, "succeeded");
+    assert.deepEqual(steps.map((step) => step.nodeId), ["first"]);
+    assert.equal(run.output?.stoppedAfter, "first");
+    assert.match(String((steps[0]!.output as { output?: string }).output), /^A 分数/);
+  } finally {
+    dispose();
+  }
+});
+
+test("rejects stopAfter targets that are not top-level nodes", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "trial-invalid",
+    name: "试跑反例",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "only", kind: "template", template: "hello" }],
+    edges: []
+  };
+  try {
+    await assert.rejects(
+      () => new WorkflowExecutor(store).run(workflow, {}, { stopAfter: "missing" }),
+      /stopAfter 只能指向顶层节点/
+    );
+  } finally {
+    dispose();
+  }
+});

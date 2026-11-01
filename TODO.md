@@ -804,3 +804,26 @@
 - [x] 重启服务：旧的非终态运行（queued/running/verifying/revising/waiting_approval）变为 failed，原因可读（重启中断 / 审批等待点失效）。
 - [ ] 浏览器截图（知识库检索 trace、验证报告引用、运行取消、版本号变化）：本轮以单测与 build 作为代码级证据，未做截图验收。
 - [x] 已知边界记录：Agent `memory` 仅注入 live prompt 并写入 trace，**没有跨运行的持久化记忆库**；HTTP 工具只登记不执行，外部系统走 MCP；MCP env 在本地 SQLite 明文保存，API 只返回 `envKeys`。
+
+---
+
+## 15. 2026-11-01 创作层四项（Coze 式编辑器）
+
+### 15.1 完成项
+
+| 项 | 功能 | 实现 | 状态 |
+|---|---|---|---|
+| ① 注册中心下拉 | Agent / 工具 / 验证器 / 子流程不再手填 ID | `/api/platform/node-types` 注入 `options + optionLabels`；工具栏「刷新注册项」重读；Agent 版本按所选 Agent 拉 `/agents/:id/versions` | [x] |
+| ② 输入 schema 编辑 | 不写 DSL 也能增删改输入 | 头部「输入定义」弹窗，支持 `name / type / required / description`、重复与非法字符校验；保存后运行表单同步 | [x] |
+| ③ 空白新建 | 从空画布开始搭流程 | 头部「新建」弹窗生成未保存草稿（默认带 `topic` 输入）；0 节点保存被拦截；保存后自动进入下拉列表 | [x] |
+| ④ 单节点试跑 | 只跑到选中节点并看输出 | 运行接口新增 `stopAfter`；检查器「试跑到此节点」；运行面板展示该步骤状态、耗时、完整输出 JSON；未编辑时试跑不升版本 | [x] |
+
+### 15.2 验证与边界
+
+- [x] `npm run test:platform` 全绿（**88/88**）。新增：node-types 下拉选项与验证器选项、`stopAfter` 只执行到目标节点、非法 `stopAfter` 拒绝。
+- [x] `npm run build` 通过（tsc + vite）。
+- [x] 浏览器验收：Agent 下拉 17 项、工具下拉 9 项、版本下拉可选；「刷新注册项」提示 17 Agent / 9 工具 / 8 工作流。
+- [x] 浏览器验收：新增输入 `audience`、必填写入、重复名拦截、保存后运行表单出现新字段。
+- [x] 浏览器验收：空白新建 → 0 节点保存被拦截 → 加模板节点保存成功 → 下拉出现新流程。
+- [x] 浏览器验收：`teaching-pipeline-v1` 选中 `retrieve` 试跑，2 条执行记录后停止，输出 JSON 可见，后续节点未执行；连跑不升版本。
+- [x] 已知边界：输入改名不会自动更新节点内的 `${input.名称}`；`stopAfter` 只接受顶层节点 ID；单节点试跑仍会落一条运行记录。

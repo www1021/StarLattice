@@ -21,7 +21,9 @@ import {
   Play,
   Plus,
   Redo2,
+  RefreshCw,
   Save,
+  Trash2,
   Undo2,
   X,
   XCircle
@@ -33,7 +35,6 @@ import {
   computeElkLayout,
   computeLayout,
   createNode,
-  firstInputName,
   isActiveRun,
   runStatusLabel,
   runStatusTone,
@@ -93,8 +94,12 @@ function PlatformWorkspace() {
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [runState, setRunState] = useState<"idle" | "running">("idle");
   const [runOpen, setRunOpen] = useState(false);
+  const [trialTarget, setTrialTarget] = useState<string>();
+  const [inputsOpen, setInputsOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
   const [subflowPreview, setSubflowPreview] = useState<{ workflowId: string; version?: number }>();
   const [layouting, setLayouting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [trace, setTrace] = useState<TraceResponse>();
   const [runValues, setRunValues] = useState<Record<string, string>>({});
   const [loadToken, setLoadToken] = useState(0);
@@ -309,6 +314,31 @@ function PlatformWorkspace() {
     }, 80);
   }
 
+  function handleRefreshRegistry() {
+    if (refreshing) {
+      return;
+    }
+    setRefreshing(true);
+    void (async () => {
+      try {
+        const next = await platformApi.nodeTypes();
+        setContract(next);
+        setWorkflows((await platformApi.listWorkflows()).workflows);
+        const count = (kind: NodeTypeSpec["kind"], key: string = kind) =>
+          next.nodeTypes.find((spec) => spec.kind === kind)?.fields.find((field) => field.key === key)
+            ?.options?.length ?? 0;
+        setBanner({
+          tone: "success",
+          text: `已刷新注册项：${count("agent")} 个 Agent、${count("tool")} 个工具、${count("subworkflow", "workflowId")} 个工作流。`
+        });
+      } catch (error) {
+        setBanner({ tone: "error", text: `刷新注册项失败：${describe(error)}` });
+      } finally {
+        setRefreshing(false);
+      }
+    })();
+  }
+
   function handleAutoLayout() {
     const current = definitionRef.current;
     if (!current || current.nodes.length === 0 || layouting) {
@@ -359,6 +389,33 @@ function PlatformWorkspace() {
     setDirty(true);
   }
 
+  function handleSaveInputs(inputs: WorkflowVariable[]) {
+    patchDefinition((current) => ({ ...current, inputs }));
+    setRunValues((current) => {
+      const next: Record<string, string> = {};
+      for (const variable of inputs) {
+        next[variable.name] = current[variable.name] ?? (variable.type === "boolean" ? "false" : "");
+      }
+      return next;
+    });
+    setInputsOpen(false);
+  }
+
+  function handleCreateWorkflow(draft: WorkflowDefinition) {
+    setNewOpen(false);
+    setWorkflowId(draft.id);
+    positionsRef.current = new Map();
+    setDefinition(draft);
+    definitionTemporal.getState().clear();
+    setSelectedId(undefined);
+    setIssuesByNode({});
+    setTrace(undefined);
+    setRunValues(initialRunValues(draft));
+    setDirty(true);
+    setLoadToken((value) => value + 1);
+    setBanner({ tone: "success", text: "已新建空白流程：添加节点并保存后才会出现在下拉列表里。" });
+  }
+
   function selectNode(id: string) {
     setSelectedId(id);
     const position = positionsRef.current.get(id);
@@ -400,7 +457,17 @@ function PlatformWorkspace() {
     }
     const used = collectNodeIds(definition.nodes);
     const id = uniqueNodeId(kind, used);
-    const node = createNode(kind, id, firstInputName(definition));
+    const options = (specKind: WorkflowNode["kind"], key: string) =>
+      specByKind.get(specKind)?.fields.find((field) => field.key === key)?.options ?? [];
+    const agentOptions = options("agent", "agent");
+    const toolOptions = options("tool", "tool");
+    const verifierOptions = options("verify", "verifier");
+    const node = createNode(kind, id, {
+      input: definition.inputs[0]?.name,
+      agent: agentOptions.includes("lesson-plan-agent") ? "lesson-plan-agent" : agentOptions[0],
+      tool: toolOptions.includes("knowledge.search") ? "knowledge.search" : toolOptions[0],
+      verifier: verifierOptions.includes("observer-verifier") ? "observer-verifier" : verifierOptions[0]
+    });
     patchDefinition((current) => ({
       ...current,
       nodes: [...current.nodes, node],
@@ -456,6 +523,10 @@ function PlatformWorkspace() {
     if (!definition) {
       return undefined;
     }
+    if (definition.nodes.length === 0) {
+      setBanner({ tone: "error", text: "空白流程至少添加一个节点才能保存。" });
+      return undefined;
+    }
     setSaveState("saving");
     setIssuesByNode({});
     setBanner(undefined);
@@ -499,7 +570,8 @@ function PlatformWorkspace() {
   }
 
   async function handleRun() {
-    const saved = await handleSave();
+    // 没有未保存修改时直接运行已存版本，避免每次试跑都无谓地升一个版本。
+    const saved = dirty ? await handleSave() : definition;
     if (!saved) {
       return;
     }
@@ -516,8 +588,9 @@ function PlatformWorkspace() {
     runTokenRef.current = token;
     setRunState("running");
     setTrace(undefined);
+    const target = trialTarget;
     try {
-      const { run } = await platformApi.startRun(saved.id, input);
+      const { run } = await platformApi.startRun(saved.id, input, target);
       let current = await platformApi.trace(run.id);
       if (runTokenRef.current !== token) {
         return;
@@ -530,9 +603,12 @@ function PlatformWorkspace() {
           setTrace(current);
         }
       }
+      const targetLabel = target
+        ? saved.nodes.find((node) => node.id === target)?.title ?? target
+        : undefined;
       setBanner({
         tone: current.run.status === "succeeded" ? "success" : "error",
-        text: `${runStatusLabel(current.run.status)} · ${current.steps.length} 条执行记录 · ${current.run.durationMs ?? 0} ms`
+        text: `${targetLabel ? `试跑到「${targetLabel}」` : ""}${runStatusLabel(current.run.status)} · ${current.steps.length} 条执行记录 · ${current.run.durationMs ?? 0} ms`
       });
     } catch (error) {
       setBanner({ tone: "error", text: describe(error) });
@@ -541,6 +617,12 @@ function PlatformWorkspace() {
         setRunState("idle");
       }
     }
+  }
+
+  function handleStartTrial(nodeId: string) {
+    setTrialTarget(nodeId);
+    setTrace(undefined);
+    setRunOpen(true);
   }
 
   if (loading && !definition) {
@@ -581,6 +663,9 @@ function PlatformWorkspace() {
           {definition.description && <p>{definition.description}</p>}
         </div>
         <div className="platform-head-actions">
+          <button type="button" className="platform-button is-ghost" onClick={() => setNewOpen(true)}>
+            <Plus size={14} /> 新建
+          </button>
           <select
             className="platform-select"
             value={workflowId}
@@ -591,10 +676,21 @@ function PlatformWorkspace() {
                 {workflow.name}
               </option>
             ))}
+            {definition && !workflows.some((workflow) => workflow.id === definition.id) && (
+              <option value={definition.id}>{definition.name}（未保存）</option>
+            )}
           </select>
           <span className={`platform-save-state ${dirty ? "is-dirty" : ""}`}>
             {saveState === "saving" ? "保存中…" : dirty ? "有未保存修改" : "已同步"}
           </span>
+          <button
+            type="button"
+            className="platform-button is-ghost"
+            onClick={() => setInputsOpen(true)}
+            disabled={runState === "running"}
+          >
+            输入定义 · {definition.inputs.length}
+          </button>
           <button
             type="button"
             className="platform-button is-ghost"
@@ -607,7 +703,10 @@ function PlatformWorkspace() {
           <button
             type="button"
             className="platform-button is-primary"
-            onClick={() => setRunOpen(true)}
+            onClick={() => {
+              setTrialTarget(undefined);
+              setRunOpen(true);
+            }}
             disabled={runState === "running" || saveState === "saving"}
           >
             {runState === "running" ? <Loader2 size={14} className="is-spinning" /> : <Play size={14} />}
@@ -662,6 +761,16 @@ function PlatformWorkspace() {
           选中节点后添加会自动连线 · 画布只渲染顶层 DAG
         </span>
         <div className="platform-toolbar-actions">
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={handleRefreshRegistry}
+            disabled={refreshing}
+            title="重新读取注册中心的 Agent、工具与工作流列表"
+          >
+            {refreshing ? <Loader2 size={12} className="is-spinning" /> : <RefreshCw size={12} />}
+            刷新注册项
+          </button>
           <button
             type="button"
             className="platform-chip"
@@ -744,10 +853,44 @@ function PlatformWorkspace() {
               onChange={updateSelectedNode}
               onDelete={() => handleRemoveNodes([selectedNode.id])}
               onOpenSubflow={(workflowId, version) => setSubflowPreview({ workflowId, version })}
+              onTrialRun={() => handleStartTrial(selectedNode.id)}
+              trialState={runState}
             />
           </div>
         )}
       </div>
+
+      {newOpen && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setNewOpen(false)}
+        >
+          <div className="platform-modal" role="dialog" aria-modal="true" aria-label="新建工作流">
+            <NewWorkflowDialog
+              existingIds={new Set(workflows.map((workflow) => workflow.id))}
+              onCreate={handleCreateWorkflow}
+              onClose={() => setNewOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {inputsOpen && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setInputsOpen(false)}
+        >
+          <div className="platform-modal" role="dialog" aria-modal="true" aria-label="输入定义">
+            <InputsEditor
+              inputs={definition.inputs}
+              onSave={handleSaveInputs}
+              onClose={() => setInputsOpen(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {runOpen && (
         <div
@@ -762,6 +905,7 @@ function PlatformWorkspace() {
               runState={runState}
               trace={trace}
               specs={specs}
+              trialTarget={trialTarget}
               onValuesChange={setRunValues}
               onRun={() => void handleRun()}
               onClose={() => setRunOpen(false)}
@@ -929,12 +1073,263 @@ function SubflowNodeTree({
   );
 }
 
+type NewWorkflowDialogProps = {
+  existingIds: Set<string>;
+  onCreate: (draft: WorkflowDefinition) => void;
+  onClose: () => void;
+};
+
+function NewWorkflowDialog({ existingIds, onCreate, onClose }: NewWorkflowDialogProps) {
+  const [name, setName] = useState("");
+  const [id, setId] = useState(() => `workflow-${Date.now().toString(36)}`);
+  const [description, setDescription] = useState("");
+  const trimmedId = id.trim();
+  const issues: string[] = [];
+  if (!name.trim()) {
+    issues.push("请填写流程名称。");
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmedId)) {
+    issues.push("工作流 ID 只能包含字母、数字、下划线和短横线。");
+  } else if (existingIds.has(trimmedId)) {
+    issues.push(`工作流 ID "${trimmedId}" 已存在，请换一个。`);
+  }
+
+  return (
+    <aside className="platform-run-panel platform-new-panel">
+      <header>
+        <div>
+          <span className="platform-inspector-kind">新建</span>
+          <h2>空白工作流</h2>
+        </div>
+        <button type="button" className="platform-modal-close" aria-label="关闭新建工作流" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <p className="platform-inspector-note">
+        从空画布开始：拖节点、加连线、定义输入，保存后才进入工作流列表。默认带一个 <code>topic</code> 输入，可在「输入定义」里改名或删除。
+      </p>
+
+      <div className="platform-field-list">
+        <label className="platform-field">
+          <span>流程名称</span>
+          <input
+            autoFocus
+            value={name}
+            placeholder="我的教研流程"
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label className="platform-field">
+          <span>工作流 ID</span>
+          <input value={id} spellCheck={false} onChange={(event) => setId(event.target.value)} />
+          <small>创建后不可修改；变量引用与运行记录都靠它定位。</small>
+        </label>
+        <label className="platform-field">
+          <span>说明</span>
+          <textarea
+            rows={2}
+            value={description}
+            placeholder="这个流程解决什么问题（可选）"
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </label>
+      </div>
+
+      {issues.length > 0 && (
+        <ul className="platform-input-issues">
+          {issues.map((issue) => (
+            <li key={issue}>{issue}</li>
+          ))}
+        </ul>
+      )}
+
+      <div className="platform-inputs-actions">
+        <button type="button" className="platform-button is-ghost" onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="platform-button is-primary"
+          disabled={issues.length > 0}
+          onClick={() =>
+            onCreate({
+              id: trimmedId,
+              name: name.trim(),
+              version: 1,
+              ...(description.trim() ? { description: description.trim() } : {}),
+              inputs: [{ name: "topic", type: "string", required: true, description: "本次任务的主题" }],
+              nodes: [],
+              edges: []
+            })
+          }
+        >
+          创建空白流程
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+type InputsEditorProps = {
+  inputs: WorkflowVariable[];
+  onSave: (inputs: WorkflowVariable[]) => void;
+  onClose: () => void;
+};
+
+const INPUT_TYPE_LABELS: Record<WorkflowVariable["type"], string> = {
+  string: "文本",
+  number: "数字",
+  boolean: "布尔",
+  object: "JSON 对象"
+};
+
+function InputsEditor({ inputs, onSave, onClose }: InputsEditorProps) {
+  const [draft, setDraft] = useState<WorkflowVariable[]>(() => inputs.map((item) => ({ ...item })));
+  const issues = validateInputDraft(draft);
+
+  const update = (index: number, patch: Partial<WorkflowVariable>) => {
+    setDraft((current) => current.map((item, position) => (position === index ? { ...item, ...patch } : item)));
+  };
+
+  const save = () => {
+    onSave(
+      draft.map((item) => ({
+        name: item.name.trim(),
+        type: item.type,
+        ...(item.required ? { required: true } : {}),
+        ...(item.description?.trim() ? { description: item.description.trim() } : {})
+      }))
+    );
+  };
+
+  return (
+    <aside className="platform-run-panel platform-inputs-panel">
+      <header>
+        <div>
+          <span className="platform-inspector-kind">输入</span>
+          <h2>输入定义</h2>
+        </div>
+        <button type="button" className="platform-modal-close" aria-label="关闭输入定义" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <p className="platform-inspector-note">
+        运行面板按这里的定义生成字段。改名不会自动改节点里的 <code>{"${input.名称}"}</code> 引用，保存后需要手动同步。
+      </p>
+
+      <div className="platform-inputs-list">
+        {draft.length === 0 && <p className="platform-inputs-empty">还没有输入。工作流可以没有任何输入。</p>}
+        {draft.map((variable, index) => (
+          <div className="platform-input-row" key={index}>
+            <label className="platform-field">
+              <span>名称</span>
+              <input
+                value={variable.name}
+                placeholder="topic"
+                spellCheck={false}
+                onChange={(event) => update(index, { name: event.target.value })}
+              />
+            </label>
+            <label className="platform-field">
+              <span>类型</span>
+              <select
+                value={variable.type}
+                onChange={(event) => update(index, { type: event.target.value as WorkflowVariable["type"] })}
+              >
+                {Object.entries(INPUT_TYPE_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="platform-input-required">
+              <input
+                type="checkbox"
+                checked={variable.required === true}
+                onChange={(event) => update(index, { required: event.target.checked || undefined })}
+              />
+              必填
+            </label>
+            <button
+              type="button"
+              className="platform-input-remove"
+              aria-label={`删除输入 ${variable.name || index + 1}`}
+              onClick={() => setDraft((current) => current.filter((_, position) => position !== index))}
+            >
+              <Trash2 size={14} />
+            </button>
+            <label className="platform-field is-wide">
+              <span>说明</span>
+              <input
+                value={variable.description ?? ""}
+                placeholder="展示给填写者的一句话说明"
+                onChange={(event) => update(index, { description: event.target.value })}
+              />
+            </label>
+          </div>
+        ))}
+      </div>
+
+      {issues.length > 0 && (
+        <ul className="platform-input-issues">
+          {issues.map((issue) => (
+            <li key={issue}>{issue}</li>
+          ))}
+        </ul>
+      )}
+
+      <div className="platform-inputs-actions">
+        <button
+          type="button"
+          className="platform-button is-ghost"
+          onClick={() => setDraft((current) => [...current, { name: "", type: "string" }])}
+        >
+          <Plus size={14} /> 添加输入
+        </button>
+        <button
+          type="button"
+          className="platform-button is-primary"
+          disabled={issues.length > 0}
+          onClick={save}
+        >
+          保存输入
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function validateInputDraft(draft: WorkflowVariable[]): string[] {
+  const issues: string[] = [];
+  const seen = new Set<string>();
+  draft.forEach((variable, index) => {
+    const name = variable.name.trim();
+    if (!name) {
+      issues.push(`第 ${index + 1} 行缺少名称。`);
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      issues.push(`输入名 "${name}" 只能包含字母、数字、下划线和短横线。`);
+      return;
+    }
+    if (seen.has(name)) {
+      issues.push(`输入 "${name}" 重复声明。`);
+    }
+    seen.add(name);
+  });
+  return issues;
+}
+
 type RunPanelProps = {
   definition: WorkflowDefinition;
   values: Record<string, string>;
   runState: "idle" | "running";
   trace?: TraceResponse;
   specs: NodeTypesResponse["nodeTypes"];
+  trialTarget?: string;
   onValuesChange: (values: Record<string, string>) => void;
   onRun: () => void;
   onClose: () => void;
@@ -946,19 +1341,26 @@ function RunPanel({
   runState,
   trace,
   specs,
+  trialTarget,
   onValuesChange,
   onRun,
   onClose
 }: RunPanelProps) {
   const kindLabels = new Map(specs.map((spec) => [spec.kind, spec.label]));
   const finalScore = trace ? finalScoreOf(trace.run, trace) : undefined;
+  const trialNode = trialTarget ? definition.nodes.find((node) => node.id === trialTarget) : undefined;
+  const trialLabel = trialNode?.title ?? trialTarget;
+  const trialStep =
+    trialTarget && trace
+      ? [...trace.steps].reverse().find((step) => step.nodeId === trialTarget)
+      : undefined;
 
   return (
     <aside className="platform-run-panel">
       <header>
         <div>
-          <span className="platform-inspector-kind">运行</span>
-          <h2>运行参数</h2>
+          <span className="platform-inspector-kind">{trialTarget ? "试跑" : "运行"}</span>
+          <h2>{trialTarget ? "试跑参数" : "运行参数"}</h2>
         </div>
         <div className="platform-run-head-actions">
           {trace && (
@@ -973,7 +1375,9 @@ function RunPanel({
       </header>
 
       <p className="platform-inspector-note">
-        填写参数后运行；执行轨迹与验证分数会写回平台台账，并在画布上给节点着色。
+        {trialTarget
+          ? `只执行到「${trialLabel}」为止，后续节点保持未执行；参数与整单运行共用。`
+          : "填写参数后运行；执行轨迹与验证分数会写回平台台账，并在画布上给节点着色。"}
       </p>
 
       <div className="platform-field-list">
@@ -994,8 +1398,35 @@ function RunPanel({
         disabled={runState === "running"}
       >
         {runState === "running" ? <Loader2 size={14} className="is-spinning" /> : <Play size={14} />}
-        {runState === "running" ? "运行中…" : "运行工作流"}
+        {runState === "running"
+          ? trialTarget
+            ? "试跑中…"
+            : "运行中…"
+          : trialTarget
+            ? `试跑到「${trialLabel}」`
+            : "运行工作流"}
       </button>
+
+      {trialTarget && (
+        <section className="platform-trace-section">
+          <h3>试跑输出 · {trialLabel}</h3>
+          {trialStep ? (
+            <>
+              <div className="platform-trial-meta">
+                <span>状态 {stepStatusLabel(trialStep.status)}</span>
+                <span>用时 {trialStep.durationMs ?? 0} ms</span>
+                <span>步骤 {trialStep.sequence}</span>
+              </div>
+              {trialStep.error && <p className="platform-error-text">{trialStep.error}</p>}
+              <pre className="platform-trial-output">{formatJson(trialStep.output)}</pre>
+            </>
+          ) : (
+            <p className="platform-inspector-note">
+              {trace ? "该节点本轮没有执行（被条件跳过或运行提前结束）。" : "点击上方按钮试跑，结果会显示在这里。"}
+            </p>
+          )}
+        </section>
+      )}
 
       {trace && (
         <>
@@ -1177,6 +1608,17 @@ function buildRunInput(
     }
   }
   return input;
+}
+
+function formatJson(value: unknown): string {
+  if (value === undefined) {
+    return "（无输出）";
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function issueNodeId(path: string, ids: Set<string>): string | undefined {

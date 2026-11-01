@@ -124,30 +124,41 @@ export function uniqueNodeId(base: string, used: Set<string>): string {
   return `${normalized}-${index}`;
 }
 
-export function createNode(kind: NodeKind, id: string, firstInputName = "topic"): WorkflowNode {
+export type NodeDefaults = {
+  input?: string;
+  agent?: string;
+  tool?: string;
+  verifier?: string;
+};
+
+export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = {}): WorkflowNode {
+  const firstInputName = defaults.input ?? "topic";
+  const agent = defaults.agent ?? "lesson-plan-agent";
+  const tool = defaults.tool ?? "knowledge.search";
+  const verifier = defaults.verifier ?? "observer-verifier";
   const childId = `${id}-step`;
-  const child: WorkflowNode = { id: childId, kind: "agent", title: "步骤 1", agent: "agent-id" };
+  const child: WorkflowNode = { id: childId, kind: "agent", title: "步骤 1", agent };
   switch (kind) {
     case "agent":
-      return { id, kind, title: "新 Agent 节点", agent: "agent-id", inputs: {} };
+      return { id, kind, title: "新 Agent 节点", agent, inputs: {} };
     case "llm":
       return {
         id,
         kind,
         title: "新模型思考节点",
-        prompt: "分析 ${input.topic}，输出三条可执行建议。",
+        prompt: `分析 \${input.${firstInputName}}，输出三条可执行建议。`,
         system: "你是一名资深教研专家，回答要具体、可执行。",
         thinking: true,
         inputs: {}
       };
     case "tool":
-      return { id, kind, title: "新工具节点", tool: "tool.id", args: {} };
+      return { id, kind, title: "新工具节点", tool, args: {} };
     case "template":
       return {
         id,
         kind,
         title: "新文本模板节点",
-        template: "# ${input.topic}\n\n${input.summary}",
+        template: `# \${input.${firstInputName}}\n\n在这里填写模板内容。`,
         inputs: {}
       };
     case "subworkflow":
@@ -164,7 +175,7 @@ export function createNode(kind: NodeKind, id: string, firstInputName = "topic")
         id,
         kind,
         title: "新验证节点",
-        verifier: "verifier-id",
+        verifier,
         rubric: ["目标达成", "证据支撑"],
         threshold: 0.8
       };

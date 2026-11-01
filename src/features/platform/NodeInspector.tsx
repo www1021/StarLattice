@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { ChevronDown, ChevronRight, Eye, Lock, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, Eye, Lock, Play, Trash2 } from "lucide-react";
+import { platformApi } from "./api";
 import {
   blockChildren,
   createLeafNode,
@@ -19,6 +20,8 @@ type InspectorProps = {
   onChange: (next: WorkflowNode) => void;
   onDelete: () => void;
   onOpenSubflow?: (workflowId: string, version?: number) => void;
+  onTrialRun?: () => void;
+  trialState?: "idle" | "running";
 };
 
 const CHILD_KINDS: NodeKind[] = [
@@ -40,7 +43,9 @@ export function NodeInspector({
   status,
   onChange,
   onDelete,
-  onOpenSubflow
+  onOpenSubflow,
+  onTrialRun,
+  trialState
 }: InspectorProps) {
   const [expandedChild, setExpandedChild] = useState<string | undefined>();
   const [childKinds, setChildKinds] = useState<Record<string, NodeKind>>({});
@@ -61,6 +66,25 @@ export function NodeInspector({
         节点 ID <code>{definition.id}</code> 创建后不可修改，引用依赖它定位。
       </p>
 
+      {onTrialRun && (
+        <div className="platform-trial-entry">
+          <button
+            type="button"
+            className="platform-button is-ghost"
+            onClick={onTrialRun}
+            disabled={trialState === "running"}
+          >
+            {trialState === "running" ? (
+              <Play size={14} className="is-spinning" />
+            ) : (
+              <Play size={14} />
+            )}
+            试跑到此节点
+          </button>
+          <small>执行到该节点后停止，后续节点保持未执行；输出在运行面板里查看。</small>
+        </div>
+      )}
+
       <div className="platform-field-list">
         {commonFields
           .filter((field) => field.key !== "id")
@@ -72,14 +96,30 @@ export function NodeInspector({
               onChange={(value) => onChange({ ...definition, [field.key]: value } as WorkflowNode)}
             />
           ))}
-        {spec?.fields.map((field) => (
-          <FieldRow
-            key={`${definition.id}-${field.key}`}
-            field={field}
-            value={(definition as Record<string, unknown>)[field.key]}
-            onChange={(value) => onChange({ ...definition, [field.key]: value } as WorkflowNode)}
-          />
-        ))}
+        {spec?.fields.map((field) =>
+          field.key === "agentVersion" && definition.kind === "agent" ? (
+            <AgentVersionField
+              key={`${definition.id}-${field.key}`}
+              definition={definition}
+              field={field}
+              onChange={(value) => onChange({ ...definition, agentVersion: value } as WorkflowNode)}
+            />
+          ) : (
+            <FieldRow
+              key={`${definition.id}-${field.key}`}
+              field={field}
+              value={(definition as Record<string, unknown>)[field.key]}
+              onChange={(value) =>
+                onChange({
+                  ...definition,
+                  [field.key]: value,
+                  // 换 Agent 后旧版本号不再有意义，留空即跟随新 Agent 的最新版。
+                  ...(field.key === "agent" ? { agentVersion: undefined } : {})
+                } as WorkflowNode)
+              }
+            />
+          )
+        )}
       </div>
 
       {definition.kind === "subworkflow" && (
@@ -268,6 +308,79 @@ type FieldRowProps = {
   onChange: (value: unknown) => void;
 };
 
+function AgentVersionField({
+  definition,
+  field,
+  onChange
+}: {
+  definition: WorkflowNode;
+  field: NodeField;
+  onChange: (value: unknown) => void;
+}) {
+  const agentId = typeof definition.agent === "string" ? definition.agent : "";
+  const current = typeof definition.agentVersion === "number" ? definition.agentVersion : undefined;
+  const [versions, setVersions] = useState<number[]>([]);
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+
+  useEffect(() => {
+    if (!agentId) {
+      setVersions([]);
+      setState("idle");
+      return;
+    }
+    let cancelled = false;
+    setState("loading");
+    platformApi
+      .listAgentVersions(agentId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setVersions([...new Set(response.versions.map((item) => item.version))].sort((a, b) => b - a));
+        setState("idle");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVersions([]);
+          setState("error");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  return (
+    <label className="platform-field">
+      <span>{field.label}</span>
+      <select
+        value={current === undefined ? "" : String(current)}
+        onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+        disabled={!agentId}
+      >
+        <option value="">跟随最新版本</option>
+        {versions.map((version) => (
+          <option key={version} value={version}>
+            v{version}
+          </option>
+        ))}
+        {current !== undefined && !versions.includes(current) && (
+          <option value={current}>v{current}（当前）</option>
+        )}
+      </select>
+      <small>
+        {!agentId
+          ? "先选择 Agent。"
+          : state === "loading"
+            ? "读取版本快照…"
+            : state === "error"
+              ? "版本列表读取失败，留空仍可跟随最新版。"
+              : field.help}
+      </small>
+    </label>
+  );
+}
+
 function FieldRow({ field, value, onChange }: FieldRowProps) {
   if (field.type === "select" && field.options && field.options.length > 0) {
     const current = typeof value === "string" ? value : "";
@@ -280,7 +393,7 @@ function FieldRow({ field, value, onChange }: FieldRowProps) {
           <option value="">请选择…</option>
           {options.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {field.optionLabels?.[option] ?? option}
             </option>
           ))}
         </select>
