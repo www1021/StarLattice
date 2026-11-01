@@ -204,3 +204,33 @@ test("single verifier degrades cross-check and caps confidence", () => {
   assert.ok(report.confidence <= 0.5);
   assert.match(report.issues.join(" "), /仅 1 名验证器/);
 });
+
+test("counts knowledge citations passed as objects as evidence", () => {
+  const report = new LayeredVerifier(() => 0.86).evaluate({
+    node: {
+      id: "check",
+      kind: "verify",
+      verifier: "observer-verifier",
+      rubric: ["证据支撑"],
+      threshold: 0.8,
+      requireEvidence: true
+    },
+    artifact: { summary: "教学设计正文" },
+    evidence: [
+      {
+        id: "citation-1",
+        documentName: "义务教育数学课程标准（2022年版）",
+        knowledgeBaseName: "课标库",
+        snippet: "分数的意义在于把单位“1”平均分。",
+        source: "local"
+      }
+    ],
+    attempt: 1,
+    agents: VERIFIERS
+  });
+
+  const evidenceCheck = report.layers.rule.checks.find((check) => check.key === "evidence");
+  assert.equal(evidenceCheck?.passed, true);
+  assert.ok(report.evidence.some((item) => item.includes("义务教育数学课程标准")));
+  assert.doesNotMatch(report.issues.join(" "), /没有可追溯引用/);
+});

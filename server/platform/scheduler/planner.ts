@@ -12,7 +12,8 @@ export type WorkflowSchedulePlan = SchedulePlan & {
 
 export function buildWorkflowSchedule(
   plan: CompiledPlan,
-  agents: AgentRecord[]
+  agents: AgentRecord[],
+  loads?: Record<string, { inFlight?: number; capacity?: number }>
 ): WorkflowSchedulePlan {
   const agentSteps = plan.steps.filter((step) => step.node.kind === "agent");
   const rootPaths = new Set(agentSteps.map((step) => step.path));
@@ -42,7 +43,7 @@ export function buildWorkflowSchedule(
   });
 
   return {
-    ...createSchedule(tasks, agents, { reserve: true }),
+    ...createSchedule(tasks, agents, { reserve: true, loads }),
     requestedAgentIds
   };
 }

@@ -474,12 +474,17 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
   app.post("/api/platform/workflows", (request, response) => {
     try {
       const body = isRecord(request.body) ? request.body : {};
-      const definition = parseWorkflowDefinition(body.dsl ?? body);
+      const parsed = parseWorkflowDefinition(body.dsl ?? body);
+      // 已有工作流默认追加版本：覆盖同版本会让历史运行与单步重跑失去可复现性。
+      const existing = store.getWorkflow(parsed.id);
+      const version = existing ? Math.max(parsed.version, existing.definition.version + 1) : parsed.version;
+      const definition = version === parsed.version ? parsed : { ...parsed, version };
       const plan = compileWorkflow(definition, { resolveWorkflow: storeWorkflowResolver(store) });
       store.saveWorkflow(definition);
       response.status(201).json({
         workflow: store.getWorkflow(definition.id, definition.version),
-        plan: plan.stats
+        plan: plan.stats,
+        versionBumped: version !== parsed.version
       });
     } catch (error) {
       fail(response, error);
@@ -587,11 +592,21 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
         throw new PlatformError("运行记录不存在。", 404);
       }
       const stored = store.getWorkflow(run.workflowId, run.workflowVersion);
-      if (!stored) {
+      const definition = run.definition ?? stored?.definition;
+      if (!definition) {
         throw new PlatformError("运行对应的工作流版本不存在。", 404);
       }
-      const next = executor.start(stored.definition, run.input);
+      const next = executor.start(definition, run.input);
       response.status(202).json({ run: next, retryOf: run.id });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  app.post("/api/platform/runs/:id/cancel", (request, response) => {
+    try {
+      const run = executor.cancelRun(request.params.id);
+      response.status(202).json({ run });
     } catch (error) {
       fail(response, error);
     }

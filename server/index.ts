@@ -114,6 +114,7 @@ import { WorkflowExecutor } from "./platform/runtime/executor.js";
 import { McpManager } from "./platform/mcp/mcpManager.js";
 import {
   createPlatformLiveHandlers,
+  executeKnowledgeSearchNode,
   executeMcpToolNode,
   isPlatformLiveEnabled
 } from "./platform/runtime/liveHandlers.js";
@@ -301,6 +302,13 @@ const platformExecutor = new WorkflowExecutor(
   platformStore,
   {
     ...platformLiveHandlers,
+    // 知识库检索不依赖模型，stub 模式也接真实 provider，避免默认演示出现假引用。
+    knowledgeTool: async (node, input, context) => {
+      if (node.tool !== "knowledge.search") {
+        return undefined;
+      }
+      return executeKnowledgeSearchNode(node, input, context, searchKnowledge);
+    },
     // MCP 是确定性工具调用，不依赖 Qwen；stub 模式下也走真实连接，便于零成本演示。
     mcpTool: async (node, input) => {
       const tool = platformStore.getTool(node.tool);

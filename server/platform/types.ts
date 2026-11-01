@@ -156,6 +156,8 @@ export type WorkflowDefinition = {
   edges: WorkflowEdge[];
   /** 平台级知识库绑定；工具节点未显式指定 knowledgeBaseIds 时作为默认检索范围。 */
   knowledgeBaseIds?: string[];
+  /** 运行期调度池限定：设置后只在该团队的 Agent 中选择执行者。 */
+  teamId?: string;
 };
 
 export type ComparisonOperator = "<" | "<=" | ">" | ">=" | "==" | "!=";
@@ -237,7 +239,8 @@ export type RunStatus =
   | "waiting_approval"
   | "succeeded"
   | "failed"
-  | "rolled_back";
+  | "rolled_back"
+  | "cancelled";
 
 export type RunMode = "stub" | "live";
 
@@ -275,6 +278,8 @@ export type RunRecord = {
   output?: Record<string, unknown>;
   /** 运行前调度计划；旧运行没有该字段。 */
   plan?: unknown;
+  /** 运行开始时的 DSL 快照；重跑与单步重跑都以它为准，不受后续保存影响。 */
+  definition?: WorkflowDefinition;
   error?: string;
   stepCount: number;
   startedAt: string;

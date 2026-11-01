@@ -199,6 +199,26 @@ export function RunMonitorPage() {
     }
   }
 
+  async function handleCancelRun() {
+    if (!trace) {
+      return;
+    }
+    setBusy("cancel");
+    setBanner(undefined);
+    try {
+      const response = await platformApi.cancelRun(trace.run.id);
+      setBanner({ tone: "info", text: "已请求取消，运行会在当前节点结束后停止。" });
+      window.setTimeout(async () => {
+        setTrace(await platformApi.trace(response.run.id));
+        await refreshAll();
+      }, 250);
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function handleDecision(approval: ApprovalRecord, decision: ApprovalDecision) {
     const comment = (comments[approval.id] ?? "").trim();
     if (decision === "rejected" && !comment) {
@@ -362,6 +382,7 @@ export function RunMonitorPage() {
                   <span className={`platform-run-status is-${runStatusTone(trace.run.status)}`}>
                     {runStatusLabel(trace.run.status)}
                   </span>
+                  <VerificationBadge value={trace.run.output?.verify} />
                   <button
                     type="button"
                     className="platform-button is-ghost"
@@ -369,6 +390,20 @@ export function RunMonitorPage() {
                   >
                     <RefreshCw size={14} />
                     刷新
+                  </button>
+                  <button
+                    type="button"
+                    className="platform-button is-ghost"
+                    onClick={() => void handleCancelRun()}
+                    disabled={busy !== undefined || !isActiveRun(trace.run.status)}
+                    title="停止后续节点，已完成的步骤保留在 trace 中"
+                  >
+                    {busy === "cancel" ? (
+                      <Loader2 size={14} className="is-spinning" />
+                    ) : (
+                      <XCircle size={14} />
+                    )}
+                    取消运行
                   </button>
                   <button
                     type="button"
@@ -390,8 +425,8 @@ export function RunMonitorPage() {
               {trace.run.error && (
                 <div className="monitor-error-box">
                   <div>
-                    <AlertTriangle size={14} />
-                    运行失败
+                    {trace.run.status === "cancelled" ? <XCircle size={14} /> : <AlertTriangle size={14} />}
+                    {trace.run.status === "cancelled" ? "运行已取消" : "运行失败"}
                   </div>
                   <pre>{trace.run.error}</pre>
                 </div>
@@ -828,6 +863,26 @@ function approvalStatusLabel(status: ApprovalRecord["status"]): string {
 
 function shortId(id: string): string {
   return id.replace(/^run_/, "").slice(0, 8);
+}
+
+/** 运行成功只代表执行没抛错；验证结论单独展示，避免把两者混为一谈。 */
+function VerificationBadge({ value }: { value: unknown }) {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const verification = value as { score?: unknown; passed?: unknown };
+  if (typeof verification.passed !== "boolean") {
+    return null;
+  }
+  const score = typeof verification.score === "number" ? verification.score.toFixed(2) : "—";
+  return (
+    <span
+      className={`platform-run-status is-${verification.passed ? "succeeded" : "failed"}`}
+      title="验证结论独立于运行状态记录"
+    >
+      {verification.passed ? "验证通过" : "验证未通过"} {score}
+    </span>
+  );
 }
 
 function formatTime(iso?: string): string {

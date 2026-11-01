@@ -105,8 +105,8 @@
           "title": "修正评审汇总",
           "agent": "topic-review-agent",
           "inputs": {
-            "draft": "${summary.output}",
-            "issues": "${verify-initial.issues}",
+            "draft": "${loop.artifact}",
+            "issues": "${loop.issues}",
             "citations": "${retrieve.citations}"
           },
           "prompt": "针对验证问题逐条修订评审汇总，保留已通过的部分，补齐缺失证据与可执行建议。"

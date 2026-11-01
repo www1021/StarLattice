@@ -30,7 +30,8 @@ export function parseWorkflowDefinition(value: unknown): WorkflowDefinition {
     inputs: root.inputs === undefined ? [] : asArray(root.inputs, "inputs").map((item, index) => parseVariable(item, `inputs[${index}]`)),
     nodes,
     edges: root.edges === undefined ? [] : asArray(root.edges, "edges").map((item, index) => parseEdge(item, `edges[${index}]`)),
-    knowledgeBaseIds: parseKnowledgeBaseIds(root.knowledgeBaseIds)
+    knowledgeBaseIds: parseKnowledgeBaseIds(root.knowledgeBaseIds),
+    teamId: optionalString(root.teamId, "teamId")
   };
 }
 

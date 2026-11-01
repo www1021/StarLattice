@@ -72,7 +72,9 @@ function metricsOf(
 ): RunMetrics {
   const n = runs.length;
   const succeeded = runs.filter((run) => run.status === "succeeded").length;
-  const failed = runs.filter((run) => run.status === "failed" || run.status === "rolled_back").length;
+  const failed = runs.filter(
+    (run) => run.status === "failed" || run.status === "rolled_back" || run.status === "cancelled"
+  ).length;
   const scores = runs
     .map(scoreOf)
     .filter((score): score is number => typeof score === "number");

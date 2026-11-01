@@ -304,6 +304,7 @@ export function runStatusLabel(status: RunRecord["status"]): string {
     succeeded: "成功",
     failed: "失败",
     rolled_back: "已回滚",
+    cancelled: "已取消",
     verifying: "验证中",
     revising: "修正中",
     waiting_approval: "等待审批"

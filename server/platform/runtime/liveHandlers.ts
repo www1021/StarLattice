@@ -148,20 +148,30 @@ async function runLiveAgent(
     model: getPlatformLiveModel(),
     summary: summarize(content, 220),
     output: content,
-    inputs: input
+    inputs: input,
+    tools: agent.tools,
+    memory: agent.memory
   };
 }
 
-function buildAgentSystemPrompt(agent: AgentRecord) {
+/** 注册中心的工具集与记忆配置必须在运行期真正进入提示词，不能只做展示。 */
+export function buildAgentSystemPrompt(agent: AgentRecord) {
   const capabilities = agent.capabilities
     .map((capability) => `${capability.tag}(${capability.weight})`)
     .join("、");
+  const tools = agent.tools.length > 0 ? `可用工具：${agent.tools.join("、")}。需要证据时优先调用知识库检索工具。` : "";
+  const memory =
+    Object.keys(agent.memory).length > 0
+      ? `记忆配置（跨轮次保留）：${JSON.stringify(agent.memory)}。`
+      : "";
   const jsonOnly = /JSON/i.test(agent.prompt);
 
   return [
     `你是「${agent.name}」，在 Agent 编排平台的工作流节点中承担「${agent.role}」职责。`,
     agent.prompt,
     capabilities ? `能力标签：${capabilities}。` : "",
+    tools,
+    memory,
     jsonOnly
       ? "输出要求：只输出合法 JSON，不要使用 Markdown 代码块，不要添加解释性前后缀。"
       : "输出要求：直接给出可交付的成稿，用 Markdown 组织；不要复述任务，不要输出 TODO、待补充、示例占位等占位内容；引用知识库证据时使用 [1][2] 编号，并在结尾列出“引用来源”。"
@@ -250,6 +260,12 @@ async function runLiveTool(
       if (tool?.type === "mcp" && options.callMcpTool) {
         return executeMcpToolNode(node, input, tool, options.callMcpTool);
       }
+      if (tool?.type === "http") {
+        // 已知边界：HTTP 工具只做登记与展示，不执行任意 URL，避免把工作流变成 SSRF 入口。
+        throw new Error(
+          `HTTP 工具「${node.tool}」未启用执行：当前版本只执行内置工具与 MCP，请改用 MCP 连接调用外部系统。`
+        );
+      }
       return unsupportedTool(node, input);
     }
   }
@@ -295,6 +311,22 @@ async function searchKnowledgeTool(
   if (!options.searchKnowledge) {
     throw new Error(`工具「${node.tool}」缺少知识库检索依赖，无法执行节点 ${node.id}。`);
   }
+  return executeKnowledgeSearchNode(node, input, context, options.searchKnowledge);
+}
+
+/**
+ * 知识库检索是确定性工具，不依赖模型。stub 与 live 都走这里，
+ * 避免默认模式下返回假 citation，让「知识库集成」在零 token 时也可验证。
+ */
+export async function executeKnowledgeSearchNode(
+  node: ToolNode,
+  input: Record<string, unknown>,
+  context: ExecutionContext,
+  searchKnowledge?: KnowledgeSearch
+) {
+  if (!searchKnowledge) {
+    throw new Error(`工具「${node.tool}」缺少知识库检索依赖，无法执行节点 ${node.id}。`);
+  }
 
   const query = stringValue(input.query) || stringValue(context.scope.input.topic);
   if (!query) {
@@ -303,7 +335,7 @@ async function searchKnowledgeTool(
   const knowledgeBaseIds = stringList(input.knowledgeBaseIds);
   const topK = clampInt(numberValue(input.topK) ?? 5, 1, 20);
   const citations = knowledgeBaseIds.length > 0
-    ? await options.searchKnowledge({ query, knowledgeBaseIds, topK })
+    ? await searchKnowledge({ query, knowledgeBaseIds, topK })
     : [];
 
   const mapped = citations.map((citation, index) => ({

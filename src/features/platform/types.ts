@@ -159,6 +159,7 @@ export type RunStatus =
   | "succeeded"
   | "failed"
   | "rolled_back"
+  | "cancelled"
   | "verifying"
   | "revising"
   | "waiting_approval";

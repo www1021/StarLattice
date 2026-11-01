@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunStatus, WorkflowDefinition } from "../types.js";
+import { BUILTIN_AGENTS } from "../registry/agents.js";
 import { loadBuiltinWorkflows } from "../workflow/dsl.js";
 import { WorkflowExecutor } from "./executor.js";
 import { PlatformStateStore } from "./stateStore.js";
@@ -56,6 +57,121 @@ test("runs classroom-v1 end to end and records the 0.62 → 0.86 loop", async ()
     assert.equal(iterations[0]?.scoreBefore, 0.62);
     assert.equal(iterations[1]?.scoreAfter, 0.86);
     assert.equal(store.getRun(run.id)?.output?.score, 0.86);
+  } finally {
+    dispose();
+  }
+});
+
+test("feeds the previous round's artifact and issues into revise", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
+  assert.ok(workflow);
+  try {
+    const { steps } = await new WorkflowExecutor(store).run(workflow, {
+      topic: "分数的意义",
+      subject: "数学",
+      grade: "五年级"
+    });
+    const revisions = steps.filter((step) => step.nodeId === "revise");
+    assert.equal(revisions.length, 2);
+
+    const first = revisions[0]!.input as Record<string, unknown>;
+    const second = revisions[1]!.input as Record<string, unknown>;
+    assert.equal(first.citations !== undefined, true);
+    assert.notDeepEqual(second.draft, first.draft);
+    assert.deepEqual(second.draft, revisions[0]!.output);
+    assert.ok(Array.isArray(second.issues) && second.issues.length > 0);
+  } finally {
+    dispose();
+  }
+});
+
+test("counts sub-workflow verifications toward the run attempt curve", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "teaching-pipeline-v1");
+  assert.ok(workflow);
+  try {
+    for (const item of loadBuiltinWorkflows()) {
+      store.saveWorkflow(item);
+    }
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+      topic: "分数的意义",
+      subject: "数学",
+      grade: "五年级"
+    });
+    assert.equal(run.status, "succeeded");
+
+    const verifications = store.listVerifyResults(run.id);
+    // 子流程里的验证也计入整条运行的轮次，因此四层验证依次拿到 0.62 / 0.74 / 0.86 / 0.98。
+    assert.deepEqual(
+      verifications.map((result) => {
+        const layers = result.detail?.layers as { crossCheck: { score: number } } | undefined;
+        return layers?.crossCheck.score;
+      }),
+      [0.62, 0.74, 0.86, 0.98]
+    );
+
+    const overallStep = steps.find((step) => step.nodeId === "verify-overall");
+    assert.ok(overallStep);
+    const overall = verifications.find((result) => result.stepId === overallStep.id);
+    assert.ok(overall);
+    assert.equal(overall.score, 0.86);
+    assert.ok(overall.evidence.length > 0);
+    assert.equal((run.output?.verify as { passed?: boolean } | undefined)?.passed, true);
+  } finally {
+    dispose();
+  }
+});
+
+test("stub mode delegates knowledge.search to the deterministic handler", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "kb-probe",
+    name: "知识库探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "retrieve",
+        kind: "tool",
+        tool: "knowledge.search",
+        args: { query: "分数的意义", knowledgeBaseIds: ["kb-1"], topK: 3 }
+      }
+    ],
+    edges: []
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  try {
+    const executor = new WorkflowExecutor(store, {
+      knowledgeTool: async (node, input) => {
+        if (node.tool !== "knowledge.search") return undefined;
+        calls.push(input);
+        return {
+          mode: "live",
+          tool: node.tool,
+          summary: "命中 1 条引用",
+          citations: [
+            {
+              id: "local-1",
+              documentName: "义务教育数学课程标准（2022年版）",
+              knowledgeBaseName: "课标库",
+              snippet: "分数的意义在于把单位“1”平均分。",
+              source: "local",
+              score: 0.9
+            }
+          ],
+          output: "[1] 课标片段"
+        };
+      }
+    });
+    const { run, steps } = await executor.run(workflow, {});
+
+    assert.equal(run.mode, "stub");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].knowledgeBaseIds, ["kb-1"]);
+    const citations = (steps[0]?.output as { citations: Array<{ id: string }> }).citations;
+    assert.equal(citations.length, 1);
+    assert.equal(citations[0]?.id, "local-1");
   } finally {
     dispose();
   }
@@ -999,6 +1115,125 @@ test("pauses at an approve node, then continues after approval", async () => {
   }
 });
 
+test("cancels a run waiting for approval and skips downstream steps", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(approvalProbe(), {});
+    await waitFor("待审记录", () =>
+      store.listApprovals({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(store.getRun(started.id)?.status, "waiting_approval");
+
+    executor.cancelRun(started.id);
+    const finished = await waitFor("运行取消", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "cancelled" ? run : undefined;
+    });
+    assert.match(finished.error ?? "", /取消/);
+    assert.deepEqual(
+      store.listSteps(started.id).map((step) => step.nodeId),
+      ["draft", "verify", "review"]
+    );
+    assert.equal(store.listSteps(started.id).at(-1)?.status, "failed");
+    assert.equal(store.listApprovals({ runId: started.id })[0]?.status, "rejected");
+  } finally {
+    dispose();
+  }
+});
+
+test("scheduler counts agents reserved by active runs", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "load-probe",
+    name: "调度负载探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "review", kind: "agent", agent: "topic-innovation-agent" }],
+    edges: []
+  };
+  try {
+    store.seedAgents(BUILTIN_AGENTS);
+    store.createRun({
+      workflowId: "load-holder",
+      workflowVersion: 1,
+      workflowInput: {},
+      mode: "stub",
+      status: "running",
+      plan: { decisions: [{ taskId: "review", agentId: "topic-innovation-agent" }] }
+    });
+
+    const { run } = await new WorkflowExecutor(store).run(workflow);
+    const plan = run.plan as {
+      decisions: Array<{ agentId: string; load: { inFlight: number } }>;
+    };
+    const decision = plan.decisions.find((item) => item.agentId === "topic-innovation-agent");
+    assert.equal(decision?.load.inFlight, 1);
+  } finally {
+    dispose();
+  }
+});
+
+test("limits the scheduling pool to the workflow team", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "team-probe",
+    name: "团队调度探针",
+    version: 1,
+    inputs: [],
+    teamId: "narrow-team",
+    nodes: [{ id: "draft", kind: "agent", agent: "lesson-plan-agent" }],
+    edges: []
+  };
+  try {
+    store.seedAgents(BUILTIN_AGENTS);
+    store.saveTeam({
+      id: "narrow-team",
+      name: "窄团队",
+      description: "",
+      agentIds: ["student-silent-agent"],
+      knowledgeBaseIds: []
+    });
+
+    const { run } = await new WorkflowExecutor(store).run(workflow);
+    const plan = run.plan as {
+      decisions: Array<{ agentId: string }>;
+      unassigned: Array<{ taskId: string }>;
+    };
+    assert.equal(plan.decisions.length, 0);
+    assert.equal(plan.unassigned[0]?.taskId, "draft");
+  } finally {
+    dispose();
+  }
+});
+
+test("single-step retry uses the DSL snapshot captured at run start", async () => {
+  const { store, dispose } = createStore();
+  const original: WorkflowDefinition = {
+    id: "snapshot-probe",
+    name: "快照探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "draft", kind: "agent", agent: "lesson-plan-agent", title: "旧版教案节点" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(original);
+    const executor = new WorkflowExecutor(store);
+    const { run, steps } = await executor.run(original);
+
+    store.saveWorkflow({
+      ...original,
+      nodes: [{ id: "draft", kind: "agent", agent: "lesson-plan-agent", title: "新版教案节点" }]
+    });
+
+    const retried = await executor.retryStep(run.id, steps[0]!.id);
+    assert.match(String((retried.output as { summary?: string })?.summary), /旧版教案节点/);
+  } finally {
+    dispose();
+  }
+});
+
 test("rejects at an approve node, stops downstream steps and keeps the reason", async () => {
   const { store, dispose } = createStore();
   try {
@@ -1079,9 +1314,13 @@ test("injects workflow-bound knowledge bases into knowledge.search unless the no
         kind: "tool",
         tool: "knowledge.search",
         args: { query: "网络素养", knowledgeBaseIds: ["kb-b"] }
-      }
+      },
+      { id: "report", kind: "tool", tool: "report.build", args: {} }
     ],
-    edges: [{ from: "search", to: "search-explicit" }]
+    edges: [
+      { from: "search", to: "search-explicit" },
+      { from: "search-explicit", to: "report" }
+    ]
   };
 
   try {
@@ -1091,6 +1330,7 @@ test("injects workflow-bound knowledge bases into knowledge.search unless the no
     const inputOf = (nodeId: string) => (byNode.get(nodeId)?.input ?? {}) as Record<string, unknown>;
     assert.deepEqual(inputOf("search").knowledgeBaseIds, ["kb-a"]);
     assert.deepEqual(inputOf("search-explicit").knowledgeBaseIds, ["kb-b"]);
+    assert.equal("knowledgeBaseIds" in inputOf("report"), false);
   } finally {
     dispose();
   }

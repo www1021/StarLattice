@@ -97,8 +97,9 @@
           "title": "修正教案",
           "agent": "lesson-plan-agent",
           "inputs": {
-            "draft": "${lesson-plan.output}",
-            "issues": "${verify-initial.issues}"
+            "draft": "${loop.artifact}",
+            "issues": "${loop.issues}",
+            "citations": "${retrieve.citations}"
           }
         },
         {

@@ -759,3 +759,43 @@
 9. **D5.5 仓库 push + 在线 Demo**：11/12 前必须可匿名访问。
 
 第一轮完成后的判断标准只有一句话：**打开监控页和方案书，能在 30 秒内说清官方六项能力分别落在哪个页面、哪段 trace、哪张表。**
+
+---
+
+## 14. 2026-11-01 技术审计与修复（功能优先）
+
+> 口径：仓库先保持私有，不做在线 Demo/材料；只修功能与技术正确性。每项必须有「代码 + 一条可复现测试或 trace + 对应页面」三件套。
+
+### 14.1 产品方向（确认）
+
+- **工作流向 Coze 靠**：空白新建 → 拖节点 → 配置输入/输出 schema → 绑 Agent/工具/知识库 → 单节点试跑 → 保存/发布版本。引擎已有 10 类节点、子流程、并行/条件/循环、审批、验证与 trace；缺的是创作层，不是执行内核。
+- **MCP 两条腿**：一条继续接外部 MCP（stdio / Streamable HTTP）；另一条做「自己设计」的最小形态——**把工作流发布成 MCP 工具**（外部 Agent 可发现/调用，带 trace），再加声明式自定义工具（名称 + JSON Schema + HTTP/命令映射）。
+- **明确不做**：完整 MCP IDE、在线托管任意 server 代码、Coze 全量应用市场。19 天不够，且不增加官方评分点。
+
+### 14.2 审计问题与修复状态
+
+| 级别 | 问题 | 根因 | 修复 | 状态 |
+|---|---|---|---|---|
+| P0-1 | 验证节点丢弃知识库引用对象 | `executor` 的 `stringList` 与 `verifier` 的 `uniqueStrings` 只接受字符串 | 共用 `normalizeEvidence()`，支持字符串与 `{title,source,snippet}` | [x] |
+| P0-2 | stub 模式 `knowledge.search` 返回假引用 | tool handler 只在 live 模式注册 | `knowledge.search` 改成与 LLM 无关的确定性 handler，始终接真实 provider | [x] |
+| P1-3 | stub 验证过不了 0.85，旗舰跑显示 failed | stub 分数只看 scope 内轮次，且公式上限低 | 验证 attempt 改运行级计数，保留「0.62→0.74→0.86」曲线；UI 区分运行成功与验证通过 | [x] |
+| P1-4 | Self-Loop 修订输入仍是初稿/首轮问题 | 内置 DSL 写死 `${lesson-plan.output}` / `${verify-initial.issues}` | 改 `${loop.artifact}` / `${loop.issues}`，并补 citations | [x] |
+| P1-5 | 保存覆盖同版本，运行不可复现 | `ON CONFLICT(id,version) DO UPDATE`，保存不升版本，重跑重新编译当前 DSL | 保存默认升版本；运行落 DSL 快照，单步重跑从快照恢复 | [x] |
+| P1-6 | 知识库绑定污染所有 tool 节点 | 只判断 `node.kind === "tool"` | 注入条件加 `node.tool === "knowledge.search"` | [x] |
+| P1-7 | 重启后运行永久卡在 running | 启动只清理 waiting_approval | 启动把非终态运行标失败；新增取消接口 | [x] |
+| P2-8 | 团队/记忆/工具集只在注册中心 | 运行期未消费 | 工作流可选 `teamId` 限定调度池；memory 注入 prompt；tools 至少写入 prompt 与 trace | [x] |
+| P2-9 | 调度器跨运行负载恒为 0 | `buildWorkflowSchedule` 未传 loads | 从活跃运行聚合 inFlight 后传入 | [x] |
+| P2-10 | HTTP 工具没有执行器 | `runLiveTool` 对 http 走 unsupported | 明确边界：HTTP 工具只登记不执行，外部系统一律走 MCP，避免任意 URL 造成 SSRF | [x] |
+| P2-11 | 验证失败不影响运行状态，无异常检测 | 运行状态只反映执行是否抛错 | 顶层 `verification` 结果 + 监控页徽标；徽标明确「验证结论独立于运行状态」 | [x] |
+| P2-12 | README 与实现不一致 | README 写「绑定时自动注入 knowledge.search 节点」 | 改为「绑定为已有 knowledge.search 节点提供默认检索范围」；补团队/记忆/MCP env/HTTP 边界说明 | [x] |
+
+### 14.3 证据清单
+
+- [x] `npm run test:platform` 全绿（**83/83**）。新增覆盖：证据对象归一化、stub 真实检索、loop 第二轮输入、KB 注入范围、重启清理、取消、版本升版、单步重跑用快照、团队调度池、跨运行负载、live prompt 注入。
+- [x] `npm run build` 通过（tsc + vite）。
+- [x] `teaching-pipeline-v1` stub 运行：`retrieve` 命中 3 条真实本地知识库 citation（source=local）；`verify-overall` 得分 **0.86 ≥ 0.85**，`passed=true`，evidence 3 条；`run.output.verify` 带完整三层明细。
+- [x] `classroom-v1` stub 运行：两轮 `revise` 路径均为 `revise-loop/revise`；第二轮 `draft` 等于上一轮 revise 输出（`secondDraftIsFirstOutput=true`），两轮草案不同，且带入上一轮 4 条验证问题。
+- [x] 保存同一工作流两次：版本递增（v1 → v2，`versionBumped=true`），旧版本仍可读取；按 v2 启动的运行带 `definition.version=2`。单步重跑用运行开始时的 DSL 快照。
+- [x] 重启服务：旧的非终态运行（queued/running/verifying/revising/waiting_approval）变为 failed，原因可读（重启中断 / 审批等待点失效）。
+- [ ] 浏览器截图（知识库检索 trace、验证报告引用、运行取消、版本号变化）：本轮以单测与 build 作为代码级证据，未做截图验收。
+- [x] 已知边界记录：Agent `memory` 仅注入 live prompt 并写入 trace，**没有跨运行的持久化记忆库**；HTTP 工具只登记不执行，外部系统走 MCP；MCP env 在本地 SQLite 明文保存，API 只返回 `envKeys`。

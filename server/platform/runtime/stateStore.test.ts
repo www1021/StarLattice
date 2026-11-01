@@ -26,9 +26,11 @@ test("creates the eight platform tables and round-trips a run", () => {
       workflowId: "classroom-v1",
       workflowVersion: 1,
       workflowInput: { topic: "分数的意义" },
-      mode: "stub"
+      mode: "stub",
+      definition: workflow
     });
     assert.equal(run.status, "queued");
+    assert.equal(run.definition?.id, "classroom-v1");
 
     const stepId = store.beginStep({
       runId: run.id,
@@ -68,6 +70,41 @@ test("creates the eight platform tables and round-trips a run", () => {
     assert.equal(store.listVerifyResults(run.id)[0]?.score, 0.62);
     assert.equal(store.listLoopIterations(run.id)[0]?.scoreAfter, 0.74);
     assert.equal(store.listRuns()[0]?.id, run.id);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("marks interrupted runs as failed when the service restarts", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-restart-"));
+  const dbPath = path.join(directory, "platform.db");
+  let store = new PlatformStateStore(dbPath);
+  try {
+    const run = store.createRun({
+      workflowId: "classroom-v1",
+      workflowVersion: 1,
+      workflowInput: { topic: "分数的意义" },
+      mode: "stub",
+      status: "running"
+    });
+    const stepId = store.beginStep({
+      runId: run.id,
+      sequence: 1,
+      path: "retrieve",
+      nodeId: "retrieve",
+      nodeKind: "tool",
+      input: { query: "分数的意义" }
+    });
+
+    store.close();
+    store = new PlatformStateStore(dbPath);
+
+    const reopened = store.getRun(run.id);
+    assert.equal(reopened?.status, "failed");
+    assert.match(reopened?.error ?? "", /服务重启/);
+    assert.equal(store.getStep(stepId)?.status, "failed");
+    assert.equal(store.getStep(stepId)?.error, reopened?.error);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

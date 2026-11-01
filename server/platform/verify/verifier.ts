@@ -53,7 +53,8 @@ export type VerifyRequest = {
   node: VerifyNode;
   artifact: unknown;
   artifactNodeId?: string;
-  evidence?: string[];
+  /** 支持字符串与知识库 citation 对象；执行器与验证器共用同一套归一化。 */
+  evidence?: unknown;
   attempt?: number;
   mode?: "stub" | "live";
   agents?: AgentRecord[];
@@ -187,8 +188,12 @@ export class LayeredVerifier {
     const rubric =
       node.rubric && node.rubric.length > 0 ? node.rubric : [...VERIFY_DEFAULTS.defaultRubric];
     const artifactText = collectText(request.artifact);
-    const evidence = uniqueStrings([
-      ...(request.evidence ?? []),
+    const evidence = normalizeEvidence([
+      ...(Array.isArray(request.evidence)
+        ? request.evidence
+        : request.evidence === undefined
+          ? []
+          : [request.evidence]),
       ...collectCitations(request.artifact)
     ]).slice(0, 8);
 
@@ -544,8 +549,44 @@ function containsField(value: unknown, field: string, depth = 0): boolean {
   return field in record || Object.values(record).some((item) => containsField(item, field, depth + 1));
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.trim() !== ""))];
+/**
+ * 把字符串或知识库 citation 对象归一化为可展示、可计数的证据文本。
+ * 真实检索返回 {documentName, knowledgeBaseName, snippet, source}，stub 返回 {title, source}，
+ * 两者都必须计入规则层与验证器上下文。
+ */
+export function normalizeEvidence(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  const normalized: string[] = [];
+  for (const item of items) {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) {
+        normalized.push(text);
+      }
+      continue;
+    }
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const title = firstText(record.documentName, record.title, record.knowledgeBaseName, record.name, record.id);
+    const source = firstText(record.source, record.knowledgeBaseName);
+    const snippet = firstText(record.snippet, record.text, record.content);
+    const text = [title, source].filter(Boolean).join(" · ") || snippet;
+    if (text) {
+      normalized.push(text);
+    }
+  }
+  return [...new Set(normalized)];
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return "";
 }
 
 function average(values: number[]): number {

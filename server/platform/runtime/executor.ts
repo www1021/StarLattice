@@ -11,6 +11,7 @@ import {
   type LlmNode,
   type PlatformRunView,
   type RunMode,
+  type RunRecord,
   type RunStatus,
   type StepRecord,
   type SubWorkflowNode,
@@ -34,6 +35,7 @@ import {
 import {
   heuristicDimensionScorer,
   LayeredVerifier,
+  normalizeEvidence,
   stubDimensionScorer,
   type DimensionScorer,
   type VerifyLayers,
@@ -79,6 +81,8 @@ export type ExecutorHandlers = {
   tool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 仅处理已注册的 MCP 工具；返回 undefined 时回落到内置 stub，因此不会把整个执行器标记为 live。 */
   mcpTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  /** 确定性内置工具（如 knowledge.search）；stub 模式也可接真实服务，且不改变 live 判定。 */
+  knowledgeTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   verify?: (node: VerifyNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
 };
 
@@ -109,6 +113,13 @@ export class ApprovalRejectedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ApprovalRejectedError";
+  }
+}
+
+export class RunCancelledError extends Error {
+  constructor(message = "运行已取消。") {
+    super(message);
+    this.name = "RunCancelledError";
   }
 }
 
@@ -170,6 +181,7 @@ export class WorkflowExecutor {
   private readonly injectedFailures: Set<string>;
   private readonly verifier: LayeredVerifier;
   private readonly approvals = new ApprovalGate();
+  private readonly cancelledRuns = new Set<string>();
 
   constructor(
     private readonly store: PlatformStateStore,
@@ -209,6 +221,29 @@ export class WorkflowExecutor {
     return compileWorkflow(workflow, {
       resolveWorkflow: (id, version) => this.store.getWorkflow(id, version)?.definition
     });
+  }
+
+  /**
+   * 取消运行：标记后在下一条语句边界停止；审批等待点会被立即唤醒。
+   * 无法中断已经发出的单步调用，但不会再继续执行后续节点。
+   */
+  cancelRun(runId: string): RunRecord {
+    const run = this.store.getRun(runId);
+    if (!run) {
+      throw new PlatformError("运行记录不存在。", 404);
+    }
+    if (!isActiveStatus(run.status)) {
+      throw new PlatformError(`运行已结束（${run.status}），不能取消。`, 409);
+    }
+    this.cancelledRuns.add(runId);
+    if (run.status === "waiting_approval") {
+      for (const approval of this.store.listApprovals({ runId, status: "pending" })) {
+        if (this.approvals.has(approval.id)) {
+          this.approvals.decide(approval.id, "rejected", "system", "运行已取消。");
+        }
+      }
+    }
+    return this.store.getRun(runId)!;
   }
 
   /** 审批 API 入口：校验待审状态后唤醒挂起的运行；驳回必须带意见。 */
@@ -266,10 +301,12 @@ export class WorkflowExecutor {
       throw new PlatformError("执行步骤不存在。", 404);
     }
     const stored = this.store.getWorkflow(run.workflowId, run.workflowVersion);
-    if (!stored) {
+    // 新运行带 DSL 快照，重跑必须按当时的定义执行；旧运行才回落到版本表。
+    const definition = run.definition ?? stored?.definition;
+    if (!definition) {
       throw new PlatformError("运行对应的工作流版本不存在。", 404);
     }
-    const plan = this.compile(stored.definition);
+    const plan = this.compile(definition);
     const compiled =
       plan.steps.find((step) => step.path === original.path) ??
       plan.steps.find((step) => step.nodeId === original.nodeId);
@@ -291,7 +328,7 @@ export class WorkflowExecutor {
       loops: [],
       loopSummaries: [],
       assignments: assignmentsOf(run.plan),
-      workflowKnowledgeBaseIds: stored.definition.knowledgeBaseIds ?? [],
+      workflowKnowledgeBaseIds: definition.knowledgeBaseIds ?? [],
       scope: {
         input: run.input,
         outputs: new Map(),
@@ -322,17 +359,33 @@ export class WorkflowExecutor {
       throw new PlatformError(`缺少必填输入：${missing.join("、")}`, 400);
     }
 
-    const schedule = buildWorkflowSchedule(plan, this.store.listAgents());
+    const agents = this.scopedAgents(workflow);
+    const schedule = buildWorkflowSchedule(plan, agents, this.store.activeAgentLoads());
     const run = this.store.createRun({
       workflowId: workflow.id,
       workflowVersion: workflow.version,
       workflowInput: input,
       mode: this.mode,
       status: "queued",
-      plan: schedule
+      plan: schedule,
+      definition: workflow
     });
     this.options.onStatusChange?.(run.id, "queued");
     return { run, plan, schedule };
+  }
+
+  /** 工作流声明 teamId 时只允许该团队的 Agent 参与调度；未声明的流程保持全局池。 */
+  private scopedAgents(workflow: WorkflowDefinition) {
+    const agents = this.store.listAgents();
+    if (!workflow.teamId) {
+      return agents;
+    }
+    const team = this.store.getTeam(workflow.teamId);
+    if (!team) {
+      throw new PlatformError(`工作流绑定的团队「${workflow.teamId}」不存在。`, 400);
+    }
+    const allowed = new Set(team.agentIds);
+    return agents.filter((agent) => allowed.has(agent.id));
   }
 
   private async execute(
@@ -357,6 +410,7 @@ export class WorkflowExecutor {
     this.setStatus(runId, "running");
     try {
       await this.executeBlock(plan.program, state);
+      this.throwIfCancelled(runId);
       this.finish(runId, "succeeded", {
         mode: this.mode,
         score: state.scope.lastVerifyScore,
@@ -372,6 +426,11 @@ export class WorkflowExecutor {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // 取消优先于其他异常：即使取消正好落在审批驳回路径上，终态也应是 cancelled。
+      if (error instanceof RunCancelledError || this.cancelledRuns.has(runId)) {
+        this.finish(runId, "cancelled", undefined, message);
+        return;
+      }
       // 审批驳回/超时是明确终态，不应被失败快照回滚成 rolled_back。
       if (error instanceof ApprovalRejectedError) {
         this.finish(runId, "failed", undefined, message);
@@ -391,6 +450,7 @@ export class WorkflowExecutor {
   }
 
   private async executeStatement(statement: CompiledStatement, state: RunState) {
+    this.throwIfCancelled(state.runId);
     if (statement.type === "step") {
       await this.executeStep(statement.step, state);
       return;
@@ -585,8 +645,12 @@ export class WorkflowExecutor {
           : {})
       };
     }
-    if (node.kind === "tool" && state.workflowKnowledgeBaseIds.length > 0) {
-      // 节点显式配置了知识库就尊重节点；否则回落到工作流绑定，避免绑定成为摆设。
+    if (
+      node.kind === "tool" &&
+      node.tool === "knowledge.search" &&
+      state.workflowKnowledgeBaseIds.length > 0
+    ) {
+      // 只给知识库检索补默认范围；其他工具（如 report.build）不该收到无关参数。
       const explicit = Array.isArray(input.knowledgeBaseIds)
         ? input.knowledgeBaseIds.filter((item) => typeof item === "string" && item.trim() !== "")
         : [];
@@ -672,7 +736,8 @@ export class WorkflowExecutor {
     const parentLoops = state.loops;
     const parentIteration = state.iteration;
     const parentKnowledgeBaseIds = state.workflowKnowledgeBaseIds;
-    const childScope: RunScope = { input, outputs: new Map(), verifyRounds: 0 };
+    // 验证轮次按整条运行计数：子流程里的验证也算一轮，否则父流程的最终验证会退回首轮基准分。
+    const childScope: RunScope = { input, outputs: new Map(), verifyRounds: parentScope.verifyRounds };
 
     try {
       state.scope = childScope;
@@ -685,6 +750,7 @@ export class WorkflowExecutor {
       throw error;
     } finally {
       state.scope = parentScope;
+      parentScope.verifyRounds = childScope.verifyRounds;
       state.loops = parentLoops;
       state.iteration = parentIteration;
       state.workflowKnowledgeBaseIds = parentKnowledgeBaseIds;
@@ -808,6 +874,7 @@ export class WorkflowExecutor {
   ) {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.options.maxAttempts; attempt += 1) {
+      this.throwIfCancelled(state.runId);
       if (attempt > 1) {
         await sleep(this.retryDelay(attempt));
       }
@@ -889,6 +956,12 @@ export class WorkflowExecutor {
     return Math.min(Math.max(0, delay), this.options.retryMaxDelayMs);
   }
 
+  private throwIfCancelled(runId: string) {
+    if (this.cancelledRuns.has(runId)) {
+      throw new RunCancelledError();
+    }
+  }
+
   private setStatus(runId: string, status: RunStatus) {
     this.store.updateRunStatus(runId, status);
     this.options.onStatusChange?.(runId, status);
@@ -900,6 +973,7 @@ export class WorkflowExecutor {
     output?: Record<string, unknown>,
     error?: string
   ) {
+    this.cancelledRuns.delete(runId);
     this.store.finishRun(runId, status, output, error);
     this.options.onStatusChange?.(runId, status);
   }
@@ -974,6 +1048,12 @@ export class WorkflowExecutor {
       };
     }
     if (node.kind === "tool") {
+      if (this.handlers.knowledgeTool) {
+        const handled = await this.handlers.knowledgeTool(node, input, context);
+        if (handled !== undefined) {
+          return handled;
+        }
+      }
       if (this.handlers.tool) {
         return await this.handlers.tool(node, input, context);
       }
@@ -995,7 +1075,7 @@ export class WorkflowExecutor {
       node,
       artifact: input.artifact,
       artifactNodeId: typeof input.targetNodeId === "string" ? input.targetNodeId : undefined,
-      evidence: stringList(input.evidence),
+      evidence: normalizeEvidence(input.evidence),
       attempt: state.scope.verifyRounds + 1,
       mode: this.mode,
       agents: this.store.listAgents()
@@ -1086,6 +1166,16 @@ function retentionNote(best: ScopeSnapshot | undefined, iteration: number): stri
     return `循环结束：保留初始产物，丢弃第 ${iteration} 轮。`;
   }
   return `循环结束：保留第 ${best.iteration} 轮产物，丢弃第 ${iteration} 轮。`;
+}
+
+function isActiveStatus(status: RunStatus): boolean {
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "verifying" ||
+    status === "revising" ||
+    status === "waiting_approval"
+  );
 }
 
 function stubAgent(node: AgentNode, input: Record<string, unknown>) {

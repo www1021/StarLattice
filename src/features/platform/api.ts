@@ -108,6 +108,9 @@ export const platformApi = {
   },
 
 
+  cancelRun: (runId: string) =>
+    request<{ run: RunRecord }>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
+
   retryRun: (runId: string) =>
     request<{ run: RunRecord; retryOf: string }>(`/runs/${encodeURIComponent(runId)}/retry`, {
       method: "POST"

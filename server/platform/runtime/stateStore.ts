@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS platform_runs (
   mode TEXT NOT NULL DEFAULT 'stub',
   input TEXT NOT NULL DEFAULT '{}',
   plan TEXT,
+  definition TEXT,
   output TEXT,
   error TEXT,
   step_count INTEGER NOT NULL DEFAULT 0,
@@ -301,6 +302,7 @@ type RunRow = {
   mode: RunMode;
   input: string;
   plan: string | null;
+  definition: string | null;
   output: string | null;
   error: string | null;
   step_count: number;
@@ -446,21 +448,29 @@ export class PlatformStateStore {
     this.ensureVerifyColumns();
     this.ensureRunColumns();
     this.ensureMcpColumns();
-    this.expireStaleApprovals();
+    this.failInterruptedRuns();
   }
 
-  /** 审批等待点是进程内的；服务重启后没有运行可以恢复，把残留待审明确置为失败/超时。 */
-  private expireStaleApprovals() {
+  /**
+   * 执行上下文与审批等待点都在进程内，重启后没有任何非终态运行能继续。
+   * 启动时统一标失败并写明原因，避免监控台永久显示“运行中”。
+   */
+  private failInterruptedRuns() {
     const now = new Date().toISOString();
-    const reason = "服务重启，审批等待点已失效，请重新运行工作流。";
-    const waitingRuns = this.db
-      .prepare("SELECT id FROM platform_runs WHERE status = 'waiting_approval'")
-      .all() as Array<{ id: string }>;
-    if (waitingRuns.length === 0) {
+    const runs = this.db
+      .prepare(
+        "SELECT id, status FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval')"
+      )
+      .all() as Array<{ id: string; status: RunStatus }>;
+    if (runs.length === 0) {
       return;
     }
     const transaction = this.db.transaction(() => {
-      for (const run of waitingRuns) {
+      for (const run of runs) {
+        const reason =
+          run.status === "waiting_approval"
+            ? "服务重启，审批等待点已失效，请重新运行工作流。"
+            : "服务重启，运行已中断，请重新运行工作流。";
         this.db
           .prepare(
             `
@@ -473,7 +483,7 @@ export class PlatformStateStore {
           .run(reason, now, now, run.id);
         this.db
           .prepare(
-            "UPDATE platform_run_steps SET status = 'failed', error = ?, finished_at = ? WHERE run_id = ? AND status = 'waiting'"
+            "UPDATE platform_run_steps SET status = 'failed', error = ?, finished_at = ? WHERE run_id = ? AND status IN ('pending', 'running', 'waiting')"
           )
           .run(reason, now, run.id);
         this.db
@@ -509,8 +519,12 @@ export class PlatformStateStore {
     const columns = this.db
       .prepare("PRAGMA table_info(platform_runs)")
       .all() as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === "plan")) {
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("plan")) {
       this.db.exec("ALTER TABLE platform_runs ADD COLUMN plan TEXT");
+    }
+    if (!names.has("definition")) {
+      this.db.exec("ALTER TABLE platform_runs ADD COLUMN definition TEXT");
     }
   }
 
@@ -1104,14 +1118,15 @@ export class PlatformStateStore {
     mode: RunMode;
     status?: RunStatus;
     plan?: unknown;
+    definition?: WorkflowDefinition;
   }): RunRecord {
     const id = `run_${randomUUID()}`;
     this.db
       .prepare(
         `
         INSERT INTO platform_runs
-          (id, workflow_id, workflow_version, status, mode, input, plan, step_count, started_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+          (id, workflow_id, workflow_version, status, mode, input, plan, definition, step_count, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         `
       )
       .run(
@@ -1122,9 +1137,18 @@ export class PlatformStateStore {
         input.mode,
         JSON.stringify(input.workflowInput),
         input.plan === undefined ? null : JSON.stringify(input.plan),
+        input.definition === undefined ? null : JSON.stringify(input.definition),
         new Date().toISOString()
       );
     return this.getRun(id)!;
+  }
+
+  /** 保存时默认追加版本，避免覆盖已被历史运行引用的 DSL。 */
+  nextWorkflowVersion(id: string): number {
+    const row = this.db
+      .prepare("SELECT MAX(version) AS version FROM platform_workflows WHERE id = ?")
+      .get(id) as { version: number | null } | undefined;
+    return (row?.version ?? 0) + 1;
   }
 
   updateRunStatus(id: string, status: RunStatus) {
@@ -1159,6 +1183,30 @@ export class PlatformStateStore {
       .prepare("SELECT * FROM platform_runs ORDER BY started_at DESC, rowid DESC LIMIT ?")
       .all(Math.min(Math.max(limit, 1), 100)) as RunRow[];
     return rows.map(toRunRecord);
+  }
+
+  /** 活跃运行占用的 Agent：调度器据此把并发压力算进可用度，而不是每次从 0 开始。 */
+  activeAgentLoads(): Record<string, { inFlight: number }> {
+    const rows = this.db
+      .prepare(
+        "SELECT plan FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval')"
+      )
+      .all() as Array<{ plan: string | null }>;
+    const loads: Record<string, { inFlight: number }> = {};
+    for (const row of rows) {
+      const plan = row.plan === null ? undefined : fromJson<{ decisions?: unknown }>(row.plan);
+      const decisions = Array.isArray(plan?.decisions) ? plan.decisions : [];
+      for (const decision of decisions) {
+        const agentId =
+          typeof decision === "object" && decision !== null && typeof (decision as { agentId?: unknown }).agentId === "string"
+            ? (decision as { agentId: string }).agentId
+            : undefined;
+        if (agentId) {
+          loads[agentId] = { inFlight: (loads[agentId]?.inFlight ?? 0) + 1 };
+        }
+      }
+    }
+    return loads;
   }
 
   listRunsForMetrics(workflowIds: string[] = [], limit = 1000): RunRecord[] {
@@ -1517,6 +1565,7 @@ function toRunRecord(row: RunRow): RunRecord {
     mode: row.mode,
     input: fromJson<Record<string, unknown>>(row.input) ?? {},
     plan: row.plan === null ? undefined : fromJson(row.plan),
+    definition: row.definition === null ? undefined : fromJson<WorkflowDefinition>(row.definition),
     output: row.output === null ? undefined : fromJson<Record<string, unknown>>(row.output),
     error: row.error ?? undefined,
     stepCount: row.step_count,
