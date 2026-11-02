@@ -3,7 +3,7 @@
   width: 100%;
   height: 100%;
   justify-content: flex-start;
-  overflow: hidden;
+  overflow: auto;
   padding-top: clamp(14px, 2.2vh, 24px);
   padding-bottom: clamp(14px, 2.2vh, 24px);
 }
@@ -112,12 +112,16 @@
 .platform-head-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .platform-select {
   height: 32px;
   max-width: 220px;
+  min-width: 150px;
   padding: 0 10px;
   border: 1px solid #e3e6ea;
   border-radius: 10px;
@@ -154,6 +158,8 @@
   gap: 6px;
   height: 32px;
   padding: 0 14px;
+  flex-shrink: 0;
+  white-space: nowrap;
   border-radius: 10px;
   border: 1px solid transparent;
   font-size: 12.5px;
@@ -330,7 +336,7 @@
 .platform-canvas-wrap {
   position: relative;
   flex: 1;
-  min-height: 0;
+  min-height: 320px;
   min-width: 0;
   display: flex;
 }
@@ -4451,4 +4457,31 @@
   color: #0f766e;
   font-size: 10px;
   font-weight: 600;
+}
+
+/* 窄窗口：顶栏按钮不竖排，工具栏横向滚动，画布保留最小高度 */
+@media (max-width: 940px) {
+  .platform-head {
+    align-items: flex-start;
+  }
+
+  .platform-head-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .platform-toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 7px;
+  }
+
+  .platform-toolbar-label {
+    display: none;
+  }
+
+  .platform-chip,
+  .platform-toolbar-actions {
+    flex-shrink: 0;
+  }
 }

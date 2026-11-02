@@ -61,6 +61,7 @@ import type {
 import "./platform.css";
 
 const nodeTypes = { platform: PlatformNodeCard };
+const EMPTY_SPECS: NodeTypeSpec[] = [];
 const EDGE_COLOR = "#94a3b8";
 
 type Banner = {
@@ -114,7 +115,7 @@ function PlatformWorkspace() {
   const [nodes, setNodes, onNodesChange] = useNodesState<PlatformFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  const specs = contract?.nodeTypes ?? [];
+  const specs = contract?.nodeTypes ?? EMPTY_SPECS;
   const specByKind = useMemo(() => new Map(specs.map((spec) => [spec.kind, spec])), [specs]);
   const topLevelIds = useMemo(() => new Set(definition?.nodes.map((node) => node.id) ?? []), [definition]);
   const runStatuses = useMemo(
@@ -215,7 +216,7 @@ function PlatformWorkspace() {
     }
     fittedTokenRef.current = loadToken;
     const timer = window.setTimeout(() => {
-      void fitView({ padding: 0.12, duration: 280 });
+      void fitView({ padding: 0.1, minZoom: 0.55, duration: 280 });
     }, 120);
     return () => window.clearTimeout(timer);
   }, [loadToken, nodes.length, fitView]);
@@ -310,7 +311,7 @@ function PlatformWorkspace() {
     );
     window.clearTimeout(fitTimerRef.current);
     fitTimerRef.current = window.setTimeout(() => {
-      void fitView({ padding: 0.12, duration: 280 });
+      void fitView({ padding: 0.1, minZoom: 0.55, duration: 280 });
     }, 80);
   }
 

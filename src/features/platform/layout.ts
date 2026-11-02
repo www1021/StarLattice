@@ -6,10 +6,10 @@ export type RunNodeStatus = "succeeded" | "failed" | "running";
 
 const COLUMN_WIDTH = 300;
 const ROW_HEIGHT = 170;
-const ELK_NODE_WIDTH = 250;
-const ELK_NODE_HEIGHT = 120;
-const ELK_LAYER_GAP = 120;
-const ELK_NODE_GAP = 60;
+const ELK_NODE_WIDTH = 216;
+const ELK_NODE_HEIGHT = 96;
+const ELK_LAYER_GAP = 70;
+const ELK_NODE_GAP = 44;
 
 type ElkInstance = InstanceType<typeof ELK>;
 
