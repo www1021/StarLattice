@@ -50,6 +50,33 @@ export const COMMON_NODE_FIELDS: NodeField[] = [
 
 export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
   {
+    kind: "start",
+    label: "开始节点",
+    description: "流程入口：把本次运行输入原样传入画布，不覆盖最近一次真实产物。",
+    shape: "node",
+    accent: "#16a34a",
+    fields: [],
+    blocks: []
+  },
+  {
+    kind: "end",
+    label: "结束节点",
+    description: "流程出口：把输入映射汇总为最终结果，适合声明对外返回字段。",
+    shape: "node",
+    accent: "#0f766e",
+    fields: [
+      {
+        key: "inputs",
+        label: "结果映射",
+        type: "json",
+        supportsRefs: true,
+        placeholder: "{\"plan\":\"${report.output}\"}",
+        help: "键为对外字段名，值支持 ${节点.字段} 引用；留空则汇总整个上下文。"
+      }
+    ],
+    blocks: []
+  },
+  {
     kind: "agent",
     label: "Agent 节点",
     description: "调用一个已注册 Agent，读取 inputs 并把输出写入自己的节点 id。",
@@ -92,6 +119,90 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         help: "从注册中心选择；新注册的工具点画布工具栏「刷新注册项」即可出现。"
       },
       { key: "args", label: "调用参数", type: "json", supportsRefs: true }
+    ],
+    blocks: []
+  },
+  {
+    kind: "knowledge",
+    label: "知识库检索节点",
+    description: "确定性知识库检索，不调用模型；可选范围留空时使用工作流默认知识库。",
+    shape: "node",
+    accent: "#0284c7",
+    fields: [
+      {
+        key: "query",
+        label: "检索问题",
+        type: "textarea",
+        required: true,
+        supportsRefs: true,
+        placeholder: "${input.topic}"
+      },
+      {
+        key: "knowledgeBaseIds",
+        label: "知识库范围",
+        type: "list",
+        placeholder: "kb-xxxx",
+        help: "留空时使用工作流绑定的知识库；多个 ID 每行一个。"
+      },
+      {
+        key: "topK",
+        label: "召回条数",
+        type: "number",
+        defaultValue: 5,
+        help: "1 到 20，默认 5。"
+      },
+      { key: "inputs", label: "输入映射", type: "json", supportsRefs: true }
+    ],
+    blocks: []
+  },
+  {
+    kind: "http",
+    label: "HTTP 请求节点",
+    description: "调用外部 HTTP API；仅允许公网 http/https，拒绝内网、回环与云元数据地址。",
+    shape: "node",
+    accent: "#f97316",
+    fields: [
+      {
+        key: "method",
+        label: "请求方法",
+        type: "select",
+        required: true,
+        defaultValue: "GET",
+        options: ["GET", "POST", "PUT", "PATCH", "DELETE"]
+      },
+      {
+        key: "url",
+        label: "请求地址",
+        type: "text",
+        required: true,
+        supportsRefs: true,
+        placeholder: "https://api.example.com/v1/query",
+        help: "只允许 http / https 公网地址；本地与内网地址会被拒绝。"
+      },
+      {
+        key: "headers",
+        label: "请求头",
+        type: "json",
+        supportsRefs: true,
+        placeholder: "{\"Content-Type\":\"application/json\"}",
+        help: "键值对；运行轨迹里只记录键名，不记录值。"
+      },
+      {
+        key: "requestBody",
+        label: "请求体",
+        type: "json",
+        supportsRefs: true,
+        placeholder: "{\"query\":\"${input.topic}\"}",
+        help: "JSON 对象会序列化后发送；GET / DELETE 可留空。"
+      },
+      {
+        key: "timeoutMs",
+        label: "超时时间（毫秒）",
+        type: "number",
+        placeholder: "默认 15000",
+        help: "1000 到 120000。"
+      },
+      { key: "inputs", label: "输入映射", type: "json", supportsRefs: true }
     ],
     blocks: []
   },

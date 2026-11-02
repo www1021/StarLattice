@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useStore } from "zustand";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MarkerType,
+  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -14,15 +16,21 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
+  Clock3,
+  FileText,
   LayoutGrid,
+  LayoutTemplate,
   Loader2,
   Play,
   Plus,
   Redo2,
   RefreshCw,
   Save,
+  ShieldCheck,
+  Sparkles,
   Trash2,
   Undo2,
   X,
@@ -35,6 +43,7 @@ import {
   computeElkLayout,
   computeLayout,
   createNode,
+  defaultEdgeLabel,
   isActiveRun,
   runStatusLabel,
   runStatusTone,
@@ -45,8 +54,14 @@ import {
 } from "./layout";
 import { PlatformNodeCard, type PlatformFlowNode, type PlatformNodeData } from "./PlatformNodeCard";
 import { NodeInspector } from "./NodeInspector";
+import { NodePalette } from "./NodePalette";
+import { CanvasEdgeContext } from "./canvasEdgeContext";
+import { WorkflowEdge } from "./WorkflowEdge";
+import { applyTemplate, WORKFLOW_TEMPLATES, type WorkflowTemplate } from "./templates";
+import { NODE_VISUALS } from "./nodeVisuals";
 import { definitionTemporal, useDefinitionHistory } from "./useDefinitionHistory";
 import type {
+  NodeKind,
   NodeTypeSpec,
   NodeTypesResponse,
   PlatformIssue,
@@ -61,8 +76,10 @@ import type {
 import "./platform.css";
 
 const nodeTypes = { platform: PlatformNodeCard };
+const edgeTypes = { workflow: WorkflowEdge };
 const EMPTY_SPECS: NodeTypeSpec[] = [];
 const EDGE_COLOR = "#94a3b8";
+const PENDING_NODE_KEY = "platform:pending-node";
 
 type Banner = {
   tone: "error" | "success" | "info";
@@ -79,7 +96,7 @@ export function WorkflowCanvasPage() {
 }
 
 function PlatformWorkspace() {
-  const { fitView, getZoom, setCenter } = useReactFlow();
+  const { fitView, getZoom, setCenter, screenToFlowPosition } = useReactFlow();
   const [contract, setContract] = useState<NodeTypesResponse>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>();
@@ -104,11 +121,17 @@ function PlatformWorkspace() {
   const [trace, setTrace] = useState<TraceResponse>();
   const [runValues, setRunValues] = useState<Record<string, string>>({});
   const [loadToken, setLoadToken] = useState(0);
+  const [paletteOpen, setPaletteOpen] = useState(true);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string>();
+  const [pendingInsertEdge, setPendingInsertEdge] = useState<string>();
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const fittedTokenRef = useRef(0);
   const runTokenRef = useRef(0);
   const layoutTokenRef = useRef(0);
   const fitTimerRef = useRef<number | undefined>(undefined);
+  const hoverTimerRef = useRef<number | undefined>(undefined);
+  const pendingAppliedRef = useRef(false);
   const definitionRef = useRef<WorkflowDefinition | undefined>(undefined);
   definitionRef.current = definition;
 
@@ -122,7 +145,26 @@ function PlatformWorkspace() {
     () => (trace ? aggregateStatuses(trace.steps) : new Map<string, RunNodeStatus>()),
     [trace]
   );
+  const nodeDurations = useMemo(() => {
+    const durations = new Map<string, number>();
+    for (const step of trace?.steps ?? []) {
+      const root = step.path.split("/")[0];
+      if (!root) {
+        continue;
+      }
+      durations.set(root, (durations.get(root) ?? 0) + (step.durationMs ?? 0));
+    }
+    return durations;
+  }, [trace]);
+  const nodeById = useMemo(
+    () => new Map(definition?.nodes.map((node) => [node.id, node]) ?? []),
+    [definition]
+  );
   const selectedNode = definition?.nodes.find((node) => node.id === selectedId);
+  const pendingEdge = pendingInsertEdge
+    ? definition?.edges.find((edge) => edgeIdOf(edge) === pendingInsertEdge)
+    : undefined;
+  const runScore = trace ? finalScoreOf(trace.run, trace) : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -184,7 +226,9 @@ function PlatformWorkspace() {
           label: spec?.label ?? node.kind,
           accent: spec?.accent ?? "#6366f1",
           status: runStatuses.get(node.id),
-          issues: issuesByNode[node.id] ?? []
+          durationMs: nodeDurations.get(node.id),
+          issues: issuesByNode[node.id] ?? [],
+          inputs: inputNamesOf(node, definition)
         };
         const existing = currentById.get(node.id);
         return existing
@@ -197,18 +241,36 @@ function PlatformWorkspace() {
             };
       });
     });
+    const activeRun = trace ? isActiveRun(trace.run.status) : false;
     setEdges(
-      definition.edges.map((edge) => ({
-        id: `${edge.from}->${edge.to}`,
-        source: edge.from,
-        target: edge.to,
-        type: "smoothstep",
-        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: EDGE_COLOR },
-        style: { stroke: EDGE_COLOR, strokeWidth: 1.8 },
-        label: edge.label
-      }))
+      definition.edges.map((edge) => {
+        const sourceNode = nodeById.get(edge.from);
+        const accent = (sourceNode && specByKind.get(sourceNode.kind)?.accent) || EDGE_COLOR;
+        const running =
+          activeRun &&
+          (runStatuses.get(edge.from) === "running" || runStatuses.get(edge.to) === "running");
+        return {
+          id: `${edge.from}->${edge.to}`,
+          source: edge.from,
+          target: edge.to,
+          type: "workflow",
+          data: { accent, running },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: accent },
+          label: edge.label ?? defaultEdgeLabel(sourceNode)
+        };
+      })
     );
-  }, [definition, specByKind, runStatuses, issuesByNode, setNodes, setEdges]);
+  }, [
+    definition,
+    specByKind,
+    nodeById,
+    runStatuses,
+    nodeDurations,
+    issuesByNode,
+    trace,
+    setNodes,
+    setEdges
+  ]);
 
   useEffect(() => {
     if (!loadToken || nodes.length === 0 || fittedTokenRef.current === loadToken) {
@@ -272,6 +334,60 @@ function PlatformWorkspace() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [subflowPreview]);
+
+  useEffect(() => {
+    if (!pendingInsertEdge) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPendingInsertEdge(undefined);
+        setBanner(undefined);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [pendingInsertEdge]);
+
+  useEffect(() => () => window.clearTimeout(hoverTimerRef.current), []);
+
+  // MCP 服务页「加入画布」把节点写入 sessionStorage，回到画布后落到当前流程。
+  useEffect(() => {
+    // 等当前工作流真正加载完再落节点，否则重进画布时会用旧定义把补丁覆盖掉。
+    if (loading || !definition || pendingAppliedRef.current) {
+      return;
+    }
+    pendingAppliedRef.current = true;
+    const raw = sessionStorage.getItem(PENDING_NODE_KEY);
+    if (!raw) {
+      return;
+    }
+    sessionStorage.removeItem(PENDING_NODE_KEY);
+    try {
+      const pending = JSON.parse(raw) as {
+        title?: string;
+        tool?: string;
+        args?: Record<string, unknown>;
+      };
+      if (!pending.tool) {
+        return;
+      }
+      const id = uniqueNodeId("mcp-tool", collectNodeIds(definition.nodes));
+      const node: WorkflowNode = {
+        id,
+        kind: "tool",
+        title: pending.title || "MCP 工具",
+        tool: pending.tool,
+        args: pending.args ?? {}
+      };
+      positionsRef.current.set(id, { x: 80, y: 80 });
+      patchDefinition((current) => ({ ...current, nodes: [...current.nodes, node] }));
+      window.setTimeout(() => selectNode(id), 220);
+      setBanner({ tone: "success", text: `已从 MCP 服务加入工具节点「${node.title}」。` });
+    } catch {
+      setBanner({ tone: "error", text: "MCP 节点导入失败：数据格式不正确。" });
+    }
+  }, [definition, loading]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -421,7 +537,7 @@ function PlatformWorkspace() {
     setSelectedId(id);
     const position = positionsRef.current.get(id);
     if (position) {
-      void setCenter(position.x + 108, position.y + 60, {
+      void setCenter(position.x + 126, position.y + 80, {
         zoom: Math.max(getZoom(), 0.55),
         duration: 240
       });
@@ -452,43 +568,193 @@ function PlatformWorkspace() {
       .finally(() => setLoading(false));
   }
 
-  function handleAddNode(kind: WorkflowNode["kind"]) {
-    if (!definition) {
+  function handleAddNode(
+    kind: WorkflowNode["kind"],
+    options: { position?: { x: number; y: number }; insertEdgeId?: string } = {}
+  ) {
+    const current = definitionRef.current;
+    if (!current) {
       return;
     }
-    const used = collectNodeIds(definition.nodes);
+    const insertEdgeId = options.insertEdgeId ?? pendingInsertEdge;
+    const insertEdge = insertEdgeId
+      ? current.edges.find((edge) => edgeIdOf(edge) === insertEdgeId)
+      : undefined;
+    if (insertEdgeId && !insertEdge) {
+      setPendingInsertEdge(undefined);
+      setBanner({ tone: "error", text: "找不到要插入的连线，可能已被删除。" });
+      return;
+    }
+    if (insertEdge && (kind === "start" || kind === "end")) {
+      setBanner({ tone: "error", text: "开始 / 结束节点只能位于流程两端，不能插入连线中间。" });
+      return;
+    }
+    if (kind === "start" && current.nodes.some((node) => node.kind === "start")) {
+      const existing = current.nodes.find((node) => node.kind === "start");
+      setBanner({ tone: "info", text: "每个流程只保留一个开始节点。" });
+      if (existing) {
+        window.setTimeout(() => selectNode(existing.id), 80);
+      }
+      return;
+    }
+
+    const used = collectNodeIds(current.nodes);
     const id = uniqueNodeId(kind, used);
-    const options = (specKind: WorkflowNode["kind"], key: string) =>
+    const sourceId = insertEdge?.from ?? (kind === "start" ? undefined : selectedId);
+    const fieldOptions = (specKind: WorkflowNode["kind"], key: string) =>
       specByKind.get(specKind)?.fields.find((field) => field.key === key)?.options ?? [];
-    const agentOptions = options("agent", "agent");
-    const toolOptions = options("tool", "tool");
-    const verifierOptions = options("verify", "verifier");
+    const agentOptions = fieldOptions("agent", "agent");
+    const toolOptions = fieldOptions("tool", "tool");
+    const verifierOptions = fieldOptions("verify", "verifier");
     const node = createNode(kind, id, {
-      input: definition.inputs[0]?.name,
+      input: current.inputs[0]?.name,
+      sourceId,
       agent: agentOptions.includes("lesson-plan-agent") ? "lesson-plan-agent" : agentOptions[0],
       tool: toolOptions.includes("knowledge.search") ? "knowledge.search" : toolOptions[0],
       verifier: verifierOptions.includes("observer-verifier") ? "observer-verifier" : verifierOptions[0]
     });
-    patchDefinition((current) => ({
-      ...current,
-      nodes: [...current.nodes, node],
-      edges: selectedId ? [...current.edges, { from: selectedId, to: id }] : current.edges
-    }));
+    // 接在已有节点后面时，新节点默认读取上游产物，而不是继续引用流程输入。
+    if (sourceId && kind === "knowledge") {
+      node.query = `\${${sourceId}.output}`;
+      node.inputs = {};
+    }
+
+    const sourcePosition = sourceId ? positionsRef.current.get(sourceId) : undefined;
+    const targetPosition = insertEdge ? positionsRef.current.get(insertEdge.to) : undefined;
+    const position =
+      options.position ??
+      (insertEdge
+        ? midpoint(sourcePosition, targetPosition)
+        : sourcePosition
+          ? { x: sourcePosition.x + 330, y: sourcePosition.y }
+          : { x: 120, y: 120 });
+    positionsRef.current.set(id, position);
+
+    patchDefinition((next) => {
+      const rest = insertEdge
+        ? next.edges.filter((edge) => edgeIdOf(edge) !== edgeIdOf(insertEdge))
+        : next.edges;
+      const added = insertEdge
+        ? [
+            { from: insertEdge.from, to: id },
+            { from: id, to: insertEdge.to, ...(insertEdge.label ? { label: insertEdge.label } : {}) }
+          ]
+        : sourceId && kind !== "start"
+          ? [{ from: sourceId, to: id }]
+          : [];
+      return {
+        ...next,
+        nodes: [...next.nodes, node],
+        edges: [...rest, ...added]
+      };
+    });
+    setPendingInsertEdge(undefined);
     window.setTimeout(() => selectNode(id), 140);
+  }
+
+  function validateConnection(source?: string | null, target?: string | null): string | undefined {
+    const current = definitionRef.current;
+    if (!current) {
+      return "画布尚未就绪。";
+    }
+    if (!source || !target) {
+      return "连线缺少起点或终点。";
+    }
+    if (source === target) {
+      return "不能把节点连接到自身。";
+    }
+    const sourceNode = current.nodes.find((node) => node.id === source);
+    const targetNode = current.nodes.find((node) => node.id === target);
+    if (!sourceNode || !targetNode) {
+      return "连线端点不存在。";
+    }
+    if (targetNode.kind === "start") {
+      return "开始节点只能有出边，不能接收入边。";
+    }
+    if (sourceNode.kind === "end") {
+      return "结束节点只能接收入边，不能再往后连线。";
+    }
+    if (current.edges.some((edge) => edge.from === source && edge.to === target)) {
+      return "这条连线已经存在。";
+    }
+    if (pathExists(current.edges, target, source)) {
+      return "这条连线会形成环；需要重复执行请改用循环容器。";
+    }
+    return undefined;
   }
 
   function handleConnect(connection: Connection) {
     const { source, target } = connection;
-    if (!source || !target || source === target) {
+    const issue = validateConnection(source, target);
+    if (issue) {
+      setBanner({ tone: "error", text: issue });
+      return;
+    }
+    if (!source || !target) {
       return;
     }
     patchDefinition((current) => ({
       ...current,
-      edges: [
-        ...current.edges.filter((edge) => !(edge.from === source && edge.to === target)),
-        { from: source, to: target }
-      ]
+      edges: [...current.edges, { from: source, to: target }]
     }));
+  }
+
+  function handleEdgeHover(edgeId: string) {
+    window.clearTimeout(hoverTimerRef.current);
+    setHoveredEdgeId(edgeId);
+  }
+
+  function keepEdgeHover(edgeId: string) {
+    window.clearTimeout(hoverTimerRef.current);
+    setHoveredEdgeId(edgeId);
+  }
+
+  function scheduleEdgeLeave() {
+    window.clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = window.setTimeout(() => setHoveredEdgeId(undefined), 160);
+  }
+
+  function insertOnEdge(edgeId: string) {
+    window.clearTimeout(hoverTimerRef.current);
+    setHoveredEdgeId(edgeId);
+    setPendingInsertEdge(edgeId);
+    setSelectedId(undefined);
+    setBanner({
+      tone: "info",
+      text: "已选定连线：在左侧节点库点一个节点，或直接拖到画布，即可插入两端之间。按 Esc 取消。"
+    });
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const kind = event.dataTransfer.getData("application/x-platform-node") as NodeKind;
+    if (!kind || !NODE_VISUALS[kind]) {
+      return;
+    }
+    const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    handleAddNode(kind, { position });
+  }
+
+  function handleApplyTemplate(template: WorkflowTemplate) {
+    const current = definitionRef.current;
+    if (!current) {
+      return;
+    }
+    if (current.nodes.length > 0 && !window.confirm(`应用「${template.name}」会覆盖当前画布的节点与连线，确定继续？`)) {
+      return;
+    }
+    const next = applyTemplate(current, template);
+    positionsRef.current = new Map();
+    setDefinition(next);
+    definitionTemporal.getState().clear();
+    setSelectedId(undefined);
+    setIssuesByNode({});
+    setTrace(undefined);
+    setRunValues(initialRunValues(next));
+    setDirty(true);
+    setTemplateOpen(false);
+    setLoadToken((value) => value + 1);
+    setBanner({ tone: "success", text: `已应用模板「${template.name}」，保存后才会写入工作流版本。` });
   }
 
   function handleRemoveNodes(ids: string[]) {
@@ -741,27 +1007,35 @@ function PlatformWorkspace() {
       )}
 
       <div className="platform-toolbar">
-        <span className="platform-toolbar-label">添加节点</span>
-        {specs.map((spec) => (
-          <button
-            key={spec.kind}
-            type="button"
-            className="platform-chip"
-            onClick={() => handleAddNode(spec.kind)}
-            title={spec.description}
-          >
-            <span className="platform-chip-dot" style={{ background: spec.accent }} />
-            {spec.label}
-            <Plus size={12} />
-          </button>
-        ))}
+        <span className="platform-toolbar-label">画布</span>
+        <span className="platform-toolbar-meta">
+          {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条连线
+        </span>
         <span
           className="platform-toolbar-hint"
           title="只渲染顶层 DAG；并行 / 条件 / 循环容器折叠显示，内部步骤在右侧面板按列表编辑。变量引用 ${节点ID.字段}，条件形如 ${verify.score} < 0.85。"
         >
-          选中节点后添加会自动连线 · 画布只渲染顶层 DAG
+          从左侧节点库点击或拖入画布 · 选中节点后添加会自动连线
         </span>
         <div className="platform-toolbar-actions">
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={() => setPaletteOpen((value) => !value)}
+            title="显示或收起左侧节点库"
+          >
+            <LayoutGrid size={12} />
+            {paletteOpen ? "收起节点库" : "节点库"}
+          </button>
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={() => setTemplateOpen(true)}
+            title="用内置模板替换当前画布的节点与连线"
+          >
+            <LayoutTemplate size={12} />
+            模板库
+          </button>
           <button
             type="button"
             className="platform-chip"
@@ -805,36 +1079,118 @@ function PlatformWorkspace() {
         </div>
       </div>
 
-      <div className="platform-canvas-wrap">
-        <div className="platform-canvas">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={handleConnect}
-            onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
-            onEdgesDelete={(deleted) => {
-              const removed = new Set(deleted.map((edge) => `${edge.source}->${edge.target}`));
-              patchDefinition((current) => ({
-                ...current,
-                edges: current.edges.filter((edge) => !removed.has(`${edge.from}->${edge.to}`))
-              }));
-            }}
-            onNodeClick={(_event, node) => selectNode(node.id)}
-            onPaneClick={() => setSelectedId(undefined)}
-            minZoom={0.25}
-            maxZoom={1.6}
-            deleteKeyCode={["Backspace", "Delete"]}
+      {trace && (
+        <div className={`platform-run-strip is-${runStatusTone(trace.run.status)}`}>
+          <span className="platform-run-strip-dot" />
+          <strong>{runStatusLabel(trace.run.status)}</strong>
+          <span className="platform-run-strip-mode">
+            {trace.run.mode === "live" ? "Live 模型" : "Stub 演示"}
+          </span>
+          <div className="platform-run-strip-metrics">
+            <span>
+              <Activity size={12} /> {trace.steps.length} 步
+            </span>
+            <span>
+              <Clock3 size={12} /> {trace.run.durationMs ?? 0} ms
+            </span>
+            <span>
+              <ShieldCheck size={12} /> {runScore === undefined ? "未评分" : runScore.toFixed(2)}
+            </span>
+          </div>
+          <button type="button" className="platform-run-strip-link" onClick={() => setRunOpen(true)}>
+            查看轨迹
+          </button>
+          <button
+            type="button"
+            className="platform-icon-button"
+            title="收起运行摘要"
+            aria-label="收起运行摘要"
+            onClick={() => setTrace(undefined)}
           >
-            <Background gap={22} size={1.4} color="#e2e7f0" />
-            <Controls showInteractive={false} />
-          </ReactFlow>
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      <div className={`platform-canvas-wrap ${paletteOpen ? "has-palette" : "is-palette-collapsed"}`}>
+        <NodePalette
+          specs={specs}
+          open={paletteOpen}
+          onToggle={() => setPaletteOpen((value) => !value)}
+          onAdd={(kind) => handleAddNode(kind)}
+        />
+        <div
+          className="platform-canvas"
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={handleDrop}
+        >
+          <CanvasEdgeContext.Provider
+            value={{ hoveredEdgeId, keepEdgeHover, scheduleEdgeLeave, insertOnEdge }}
+          >
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={handleConnect}
+              isValidConnection={(connection) =>
+                validateConnection(connection.source, connection.target) === undefined
+              }
+              onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
+              onEdgesDelete={(deleted) => {
+                const removed = new Set(deleted.map((edge) => `${edge.source}->${edge.target}`));
+                patchDefinition((current) => ({
+                  ...current,
+                  edges: current.edges.filter((edge) => !removed.has(`${edge.from}->${edge.to}`))
+                }));
+              }}
+              onNodeClick={(_event, node) => selectNode(node.id)}
+              onNodeDragStop={(_event, node) => positionsRef.current.set(node.id, node.position)}
+              onPaneClick={() => setSelectedId(undefined)}
+              onEdgeMouseEnter={(_event, edge) => handleEdgeHover(edge.id)}
+              onEdgeMouseLeave={scheduleEdgeLeave}
+              connectionLineStyle={{ stroke: "#6366f1", strokeWidth: 2, strokeDasharray: "6 5" }}
+              minZoom={0.25}
+              maxZoom={1.6}
+              deleteKeyCode={["Backspace", "Delete"]}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d9dfea" />
+              <Controls showInteractive={false} />
+              <MiniMap
+                className="platform-minimap"
+                pannable
+                zoomable
+                nodeBorderRadius={7}
+                nodeStrokeWidth={2}
+                maskColor="rgba(247, 249, 252, 0.78)"
+                nodeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
+                nodeStrokeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
+              />
+              {pendingEdge && (
+                <div className="platform-insert-hint">
+                  <Sparkles size={13} />
+                  <span>
+                    正在为 <code>{pendingEdge.from}</code> → <code>{pendingEdge.to}</code> 选择插入节点
+                  </span>
+                  <button type="button" onClick={() => setPendingInsertEdge(undefined)}>
+                    取消
+                  </button>
+                </div>
+              )}
+            </ReactFlow>
+          </CanvasEdgeContext.Provider>
           <div className="platform-canvas-badge">
             {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条边
             {trace && ` · 上次运行 ${runStatusLabel(trace.run.status)}`}
           </div>
+          {definition.nodes.length === 0 && (
+            <CanvasEmptyState onApply={handleApplyTemplate} onOpenPalette={() => setPaletteOpen(true)} />
+          )}
         </div>
 
         {selectedNode && (
@@ -889,6 +1245,42 @@ function PlatformWorkspace() {
               onSave={handleSaveInputs}
               onClose={() => setInputsOpen(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {templateOpen && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setTemplateOpen(false)}
+        >
+          <div
+            className="platform-modal platform-template-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="模板库"
+          >
+            <aside className="platform-run-panel platform-template-panel">
+              <header>
+                <div>
+                  <span className="platform-inspector-kind">模板库</span>
+                  <h2>从模板开始</h2>
+                </div>
+                <button
+                  type="button"
+                  className="platform-modal-close"
+                  aria-label="关闭模板库"
+                  onClick={() => setTemplateOpen(false)}
+                >
+                  <X size={16} />
+                </button>
+              </header>
+              <p className="platform-inspector-note">
+                模板会替换当前画布的输入、节点与连线。应用后先检查 Agent / 验证器是否已注册，再保存为新版本。
+              </p>
+              <TemplateCards onApply={handleApplyTemplate} />
+            </aside>
           </div>
         </div>
       )}
@@ -1654,4 +2046,161 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function edgeIdOf(edge: WorkflowDefinition["edges"][number]): string {
+  return `${edge.from}->${edge.to}`;
+}
+
+function pathExists(edges: WorkflowDefinition["edges"], from: string, to: string): boolean {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to]);
+  }
+  const stack = [from];
+  const visited = new Set<string>();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || visited.has(current)) {
+      continue;
+    }
+    if (current === to) {
+      return true;
+    }
+    visited.add(current);
+    stack.push(...(adjacency.get(current) ?? []));
+  }
+  return false;
+}
+
+function midpoint(
+  a: { x: number; y: number } | undefined,
+  b: { x: number; y: number } | undefined
+): { x: number; y: number } {
+  if (a && b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + 30 };
+  }
+  if (a) {
+    return { x: a.x + 330, y: a.y };
+  }
+  if (b) {
+    return { x: b.x - 330, y: b.y };
+  }
+  return { x: 120, y: 120 };
+}
+
+const REF_PATTERN = /\$\{([^}\s]+)\}/g;
+
+function collectRefs(value: unknown, refs: Set<string>) {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(REF_PATTERN)) {
+      if (match[1]) {
+        refs.add(match[1]);
+      }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectRefs(item, refs);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) {
+      collectRefs(item, refs);
+    }
+  }
+}
+
+function inputNamesOf(node: WorkflowNode, definition: WorkflowDefinition): string[] {
+  if (node.kind === "start") {
+    return definition.inputs.map((variable) => `input.${variable.name}`);
+  }
+  const refs = new Set<string>();
+  collectRefs(node.inputs, refs);
+  collectRefs(node.args, refs);
+  collectRefs(node.outputs, refs);
+  collectRefs(node.prompt, refs);
+  collectRefs(node.query, refs);
+  collectRefs(node.template, refs);
+  collectRefs(node.url, refs);
+  collectRefs(node.when, refs);
+  collectRefs(node.instructions, refs);
+  return [...refs].slice(0, 6);
+}
+
+type TemplateCardsProps = {
+  onApply: (template: WorkflowTemplate) => void;
+  compact?: boolean;
+};
+
+function TemplateCards({ onApply, compact }: TemplateCardsProps) {
+  return (
+    <div className={`platform-template-grid ${compact ? "is-compact" : ""}`}>
+      {WORKFLOW_TEMPLATES.map((template) => {
+        const kinds = [...new Set(template.nodes.map((node) => node.kind))];
+        return (
+          <button
+            key={template.id}
+            type="button"
+            className="platform-template-card"
+            onClick={() => onApply(template)}
+          >
+            <span className="platform-template-top">
+              <span className="platform-template-badge">
+                <FileText size={11} />
+                {template.badge}
+              </span>
+              <span className="platform-template-count">
+                {template.nodes.length} 节点 · {template.inputs.length} 输入
+              </span>
+            </span>
+            <strong>{template.name}</strong>
+            <p>{template.description}</p>
+            <span className="platform-template-icons" aria-hidden>
+              {kinds.slice(0, 7).map((kind) => {
+                const visual = NODE_VISUALS[kind];
+                const Icon = visual.icon;
+                return (
+                  <span
+                    key={kind}
+                    className="platform-template-icon"
+                    style={{ background: `${visual.tint}14`, color: visual.tint }}
+                  >
+                    <Icon size={12} strokeWidth={2} />
+                  </span>
+                );
+              })}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CanvasEmptyState({
+  onApply,
+  onOpenPalette
+}: {
+  onApply: (template: WorkflowTemplate) => void;
+  onOpenPalette: () => void;
+}) {
+  return (
+    <div className="platform-canvas-empty">
+      <span className="platform-canvas-empty-icon">
+        <Sparkles size={19} />
+      </span>
+      <h3>从第一个节点开始</h3>
+      <p>从左侧节点库拖入，或选择一套模板快速搭出可运行的教学流程。</p>
+      <div className="platform-canvas-empty-actions">
+        <button type="button" className="platform-button is-ghost" onClick={onOpenPalette}>
+          <Plus size={14} /> 打开节点库
+        </button>
+      </div>
+      <span className="platform-canvas-empty-label">或从模板开始</span>
+      <TemplateCards onApply={onApply} compact />
+    </div>
+  );
 }

@@ -1,4 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
+import { AlertTriangle, Clock3 } from "lucide-react";
+import { categoryLabel, categoryOf, NODE_VISUALS } from "./nodeVisuals";
 import type { PlatformIssue, WorkflowNode } from "./types";
 
 export type PlatformNodeData = {
@@ -6,13 +8,18 @@ export type PlatformNodeData = {
   label: string;
   accent: string;
   status?: "succeeded" | "failed" | "running";
+  durationMs?: number;
   issues: PlatformIssue[];
+  inputs: string[];
 };
 
 export type PlatformFlowNode = Node<PlatformNodeData, "platform">;
 
 export function PlatformNodeCard({ data, selected }: NodeProps<PlatformFlowNode>) {
-  const { definition, label, accent, status, issues } = data;
+  const { definition, label, accent, status, durationMs, issues, inputs } = data;
+  const Icon = NODE_VISUALS[definition.kind].icon;
+  const category = categoryOf(definition.kind);
+
   return (
     <div
       className={`platform-node ${selected ? "is-selected" : ""} ${status ? `is-${status}` : ""} ${
@@ -20,29 +27,100 @@ export function PlatformNodeCard({ data, selected }: NodeProps<PlatformFlowNode>
       }`}
     >
       <Handle type="target" position={Position.Left} className="platform-handle" />
+
       <div className="platform-node-head">
-        <span className="platform-node-kind" style={{ background: `${accent}1a`, color: accent }}>
+        <span
+          className="platform-node-icon"
+          style={{ background: `${accent}14`, color: accent }}
+          aria-hidden
+        >
+          <Icon size={17} strokeWidth={1.9} />
+        </span>
+        <div className="platform-node-ident">
+          <strong className="platform-node-title">{definition.title || definition.id}</strong>
+          <code className="platform-node-id">{definition.id}</code>
+        </div>
+        {status ? (
+          <span className={`platform-node-status is-${status}`}>
+            <span className="platform-node-status-dot" />
+            {statusLabel(status)}
+          </span>
+        ) : (
+          <span className="platform-node-category">{categoryLabel(category)}</span>
+        )}
+      </div>
+
+      <p className="platform-node-summary">{summarize(definition)}</p>
+
+      <div className="platform-node-io">
+        <div className="platform-node-io-row">
+          <span>输入</span>
+          <strong title={inputs.join(" · ")}>
+            {inputs.length > 0 ? inputs.slice(0, 3).join(" · ") : "—"}
+          </strong>
+        </div>
+        <div className="platform-node-io-row">
+          <span>输出</span>
+          <strong className="is-ref">{`\${${definition.id}}`}</strong>
+        </div>
+      </div>
+
+      <div className="platform-node-foot">
+        <span className="platform-node-kind" style={{ background: `${accent}14`, color: accent }}>
           {label}
         </span>
-        {status && <span className={`platform-node-dot is-${status}`} />}
+        {durationMs !== undefined && (
+          <span className="platform-node-time">
+            <Clock3 size={11} />
+            {formatDuration(durationMs)}
+          </span>
+        )}
+        {issues.length > 0 && (
+          <span className="platform-node-issue" title={issues[0]?.message}>
+            <AlertTriangle size={11} />
+            {issues.length}
+          </span>
+        )}
       </div>
-      <strong className="platform-node-title">{definition.title || definition.id}</strong>
-      <code className="platform-node-id">{definition.id}</code>
-      <p className="platform-node-summary">{summarize(definition)}</p>
-      {issues.length > 0 && <p className="platform-node-issue">{issues[0].message}</p>}
+
       <Handle type="source" position={Position.Right} className="platform-handle" />
     </div>
   );
 }
 
+function statusLabel(status: "succeeded" | "failed" | "running"): string {
+  if (status === "succeeded") {
+    return "成功";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  return "运行中";
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.max(0, Math.round(ms))} ms`;
+  }
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
 function summarize(node: WorkflowNode): string {
   switch (node.kind) {
+    case "start":
+      return "流程入口 · 接收工作流输入";
+    case "end":
+      return "流程出口 · 汇总最终结果";
     case "agent":
       return `调用 ${node.agent || "未配置 Agent"}`;
     case "llm":
       return `${node.model || "默认模型"}${node.thinking === false ? "" : " · 思考摘要"}`;
+    case "knowledge":
+      return `检索 ${node.query || "未设置查询"}`;
     case "tool":
       return `调用 ${node.tool || "未配置工具"}`;
+    case "http":
+      return `${node.method ?? "GET"} ${shortUrl(node.url)}`;
     case "template":
       return `模板拼接 · ${(node.template ?? "").length} 字符`;
     case "subworkflow":
@@ -59,5 +137,16 @@ function summarize(node: WorkflowNode): string {
       return `then ${node.then?.length ?? 0} · else ${node.else?.length ?? 0}`;
     case "loop":
       return `最多 ${node.maxIterations ?? 1} 轮 · 循环体 ${node.body?.length ?? 0} 步`;
+  }
+}
+
+function shortUrl(url: string | undefined): string {
+  if (!url) {
+    return "未配置地址";
+  }
+  try {
+    return new URL(url).host + new URL(url).pathname;
+  } catch {
+    return url;
   }
 }

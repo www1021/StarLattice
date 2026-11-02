@@ -32,9 +32,13 @@ type Banner = {
 };
 
 const NODE_KIND_LABELS: Record<NodeKind, string> = {
+  start: "开始",
+  end: "结束",
   agent: "Agent",
   llm: "模型思考",
+  knowledge: "知识检索",
   tool: "工具",
+  http: "HTTP 请求",
   template: "文本模板",
   subworkflow: "子工作流",
   parallel: "并行",

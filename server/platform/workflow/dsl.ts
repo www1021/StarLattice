@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   NODE_KINDS,
+  type HttpMethod,
   type NodeKind,
   type WorkflowDefinition,
   type WorkflowEdge,
@@ -11,6 +12,7 @@ import {
 } from "../types.js";
 
 const VARIABLE_TYPES = new Set<WorkflowVariableType>(["string", "number", "boolean", "object"]);
+const HTTP_METHODS = new Set<string>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
 export class WorkflowSyntaxError extends Error {
   constructor(readonly path: string, message: string) {
@@ -68,6 +70,10 @@ function parseNode(value: unknown, location: string): WorkflowNode {
   };
 
   switch (kind as NodeKind) {
+    case "start":
+      return { ...base, kind: "start" };
+    case "end":
+      return { ...base, kind: "end" };
     case "agent":
       return {
         ...base,
@@ -83,6 +89,44 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         tool: requireString(record.tool, `${location}.tool`),
         args: record.args === undefined ? undefined : asRecord(record.args, `${location}.args`)
       };
+    case "knowledge":
+      return {
+        ...base,
+        kind: "knowledge",
+        query: requireString(record.query, `${location}.query`),
+        knowledgeBaseIds:
+          record.knowledgeBaseIds === undefined
+            ? undefined
+            : parseStringArray(record.knowledgeBaseIds, `${location}.knowledgeBaseIds`),
+        topK:
+          record.topK === undefined
+            ? undefined
+            : requireInteger(record.topK, `${location}.topK`)
+      };
+    case "http": {
+      const method = requireString(record.method, `${location}.method`).toUpperCase();
+      if (!HTTP_METHODS.has(method)) {
+        throw new WorkflowSyntaxError(
+          `${location}.method`,
+          `HTTP 方法只支持 ${[...HTTP_METHODS].join(" / ")}`
+        );
+      }
+      return {
+        ...base,
+        kind: "http",
+        method: method as HttpMethod,
+        url: requireString(record.url, `${location}.url`),
+        headers:
+          record.headers === undefined
+            ? undefined
+            : parseStringRecord(record.headers, `${location}.headers`),
+        requestBody: record.requestBody,
+        timeoutMs:
+          record.timeoutMs === undefined
+            ? undefined
+            : requireInteger(record.timeoutMs, `${location}.timeoutMs`)
+      };
+    }
     case "llm":
       return {
         ...base,

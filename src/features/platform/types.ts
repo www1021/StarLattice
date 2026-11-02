@@ -1,7 +1,11 @@
 export type NodeKind =
+  | "start"
+  | "end"
   | "agent"
   | "llm"
+  | "knowledge"
   | "tool"
+  | "http"
   | "template"
   | "subworkflow"
   | "parallel"
@@ -21,6 +25,13 @@ export type WorkflowNode = {
   inputs?: Record<string, unknown>;
   tool?: string;
   args?: Record<string, unknown>;
+  query?: string;
+  knowledgeBaseIds?: string[];
+  topK?: number;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  url?: string;
+  headers?: Record<string, string>;
+  requestBody?: unknown;
   branches?: WorkflowNode[];
   when?: string;
   then?: WorkflowNode[];

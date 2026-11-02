@@ -119,6 +119,7 @@ import {
   isPlatformLiveEnabled
 } from "./platform/runtime/liveHandlers.js";
 import { createLlmDimensionScorer, isLlmVerifyEnabled } from "./platform/verify/liveScorer.js";
+import { executeHttpNode } from "./platform/runtime/httpNode.js";
 import {
   observeOperation,
   recordTrainingEvaluationScores,
@@ -309,6 +310,11 @@ const platformExecutor = new WorkflowExecutor(
       }
       return executeKnowledgeSearchNode(node, input, context, searchKnowledge);
     },
+    // 独立 knowledge 节点与 knowledge.search 工具共用检索服务，stub / live 均可用。
+    knowledgeNode: async (node, input, context) =>
+      executeKnowledgeSearchNode(node, input, context, searchKnowledge),
+    // HTTP 节点自带 SSRF 防护与响应大小上限；调用外部 API 不依赖模型是否启用。
+    http: async (node, input) => executeHttpNode(node, input),
     // MCP 是确定性工具调用，不依赖 Qwen；stub 模式下也走真实连接，便于零成本演示。
     mcpTool: async (node, input) => {
       const tool = platformStore.getTool(node.tool);

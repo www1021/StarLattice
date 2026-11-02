@@ -166,9 +166,13 @@ test("resolves ${loop.*} only inside a loop body", () => {
 
 test("node-type contract stays in sync with the parser for all node kinds", () => {
   const acceptedFields: Record<NodeKind, string[]> = {
+    start: [],
+    end: ["inputs"],
     agent: ["agent", "agentVersion", "prompt", "inputs"],
     llm: ["prompt", "system", "model", "thinking", "temperature", "maxTokens", "inputs"],
+    knowledge: ["query", "knowledgeBaseIds", "topK", "inputs"],
     tool: ["tool", "args"],
+    http: ["method", "url", "headers", "requestBody", "timeoutMs", "inputs"],
     template: ["template", "inputs"],
     subworkflow: ["workflowId", "workflowVersion", "inputs", "outputs"],
     parallel: [],
@@ -208,6 +212,113 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
     COMMON_NODE_FIELDS.map((field) => field.key),
     ["id", "title", "description"]
   );
+});
+
+test("accepts start/end anchors with knowledge and http leaves", () => {
+  const workflow: WorkflowDefinition = {
+    id: "anchor-probe",
+    name: "锚点探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      { id: "begin", kind: "start" },
+      {
+        id: "recall",
+        kind: "knowledge",
+        query: "${input.topic} 的课标要求",
+        knowledgeBaseIds: ["kb-1"],
+        topK: 3
+      },
+      {
+        id: "fetch",
+        kind: "http",
+        method: "POST",
+        url: "https://example.com/api/plan",
+        headers: { "content-type": "application/json" },
+        requestBody: { topic: "${input.topic}" },
+        timeoutMs: 5000
+      },
+      { id: "finish", kind: "end", inputs: { draft: "${fetch.output}" } }
+    ],
+    edges: [
+      { from: "begin", to: "recall" },
+      { from: "recall", to: "fetch" },
+      { from: "fetch", to: "finish" }
+    ]
+  };
+
+  const plan = compileWorkflow(workflow);
+  assert.deepEqual(plan.order, ["begin", "recall", "fetch", "finish"]);
+  assert.equal(plan.steps.find((step) => step.nodeId === "recall")?.node.kind, "knowledge");
+  assert.equal(plan.steps.find((step) => step.nodeId === "fetch")?.node.kind, "http");
+});
+
+test("rejects duplicate anchors and edges that cross the start/end boundary", () => {
+  const duplicateStart: WorkflowDefinition = {
+    id: "two-starts",
+    name: "双开始",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "s1", kind: "start" },
+      { id: "s2", kind: "start" }
+    ],
+    edges: []
+  };
+  assert.equal(compileError(duplicateStart).issues[0]?.code, "duplicate-start");
+
+  const incoming: WorkflowDefinition = {
+    id: "start-incoming",
+    name: "开始节点入边",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "begin", kind: "start" },
+      { id: "work", kind: "agent", agent: "agent-a" }
+    ],
+    edges: [{ from: "work", to: "begin" }]
+  };
+  assert.ok(compileError(incoming).issues.some((issue) => issue.code === "start-has-incoming"));
+
+  const outgoing: WorkflowDefinition = {
+    id: "end-outgoing",
+    name: "结束节点出边",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "work", kind: "agent", agent: "agent-a" },
+      { id: "finish", kind: "end" }
+    ],
+    edges: [{ from: "finish", to: "work" }]
+  };
+  assert.ok(compileError(outgoing).issues.some((issue) => issue.code === "end-has-outgoing"));
+});
+
+test("rejects invalid knowledge and http node settings", () => {
+  const badTopK = singleNodeWorkflow({
+    id: "recall",
+    kind: "knowledge",
+    query: "分数的意义",
+    topK: 50
+  });
+  assert.ok(compileError(badTopK).issues.some((issue) => issue.code === "invalid-knowledge-top-k"));
+
+  const badProtocol = singleNodeWorkflow({
+    id: "fetch",
+    kind: "http",
+    method: "GET",
+    url: "ftp://example.com/data"
+  });
+  assert.ok(compileError(badProtocol).issues.some((issue) => issue.code === "invalid-http-url"));
+
+  const badTimeout = singleNodeWorkflow({
+    id: "fetch",
+    kind: "http",
+    method: "GET",
+    url: "https://example.com",
+    timeoutMs: 500
+  });
+  assert.ok(compileError(badTimeout).issues.some((issue) => issue.code === "invalid-http-timeout"));
 });
 
 function childDefinition(id = "child-probe"): WorkflowDefinition {

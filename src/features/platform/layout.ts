@@ -4,12 +4,12 @@ import type { NodeKind, RunRecord, StepRecord, WorkflowDefinition, WorkflowNode 
 
 export type RunNodeStatus = "succeeded" | "failed" | "running";
 
-const COLUMN_WIDTH = 300;
-const ROW_HEIGHT = 170;
-const ELK_NODE_WIDTH = 216;
-const ELK_NODE_HEIGHT = 96;
-const ELK_LAYER_GAP = 70;
-const ELK_NODE_GAP = 44;
+const COLUMN_WIDTH = 330;
+const ROW_HEIGHT = 205;
+const ELK_NODE_WIDTH = 252;
+const ELK_NODE_HEIGHT = 150;
+const ELK_LAYER_GAP = 72;
+const ELK_NODE_GAP = 50;
 
 type ElkInstance = InstanceType<typeof ELK>;
 
@@ -129,6 +129,7 @@ export type NodeDefaults = {
   agent?: string;
   tool?: string;
   verifier?: string;
+  sourceId?: string;
 };
 
 export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = {}): WorkflowNode {
@@ -139,6 +140,34 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
   const childId = `${id}-step`;
   const child: WorkflowNode = { id: childId, kind: "agent", title: "步骤 1", agent };
   switch (kind) {
+    case "start":
+      return { id, kind, title: "流程开始" };
+    case "end":
+      return {
+        id,
+        kind,
+        title: "流程结束",
+        inputs: defaults.sourceId ? { result: `\${${defaults.sourceId}.output}` } : {}
+      };
+    case "knowledge":
+      return {
+        id,
+        kind,
+        title: "知识库检索",
+        query: `\${input.${firstInputName}}`,
+        topK: 5,
+        inputs: { query: `\${input.${firstInputName}}` }
+      };
+    case "http":
+      return {
+        id,
+        kind,
+        title: "HTTP 请求",
+        method: "GET",
+        url: "https://",
+        headers: {},
+        inputs: {}
+      };
     case "agent":
       return { id, kind, title: "新 Agent 节点", agent, inputs: {} };
     case "llm":
@@ -199,6 +228,12 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
 }
 
 export function createLeafNode(kind: NodeKind, id: string): WorkflowNode {
+  if (kind === "knowledge") {
+    return { id, kind, title: "新知识库检索步骤", query: "${input.topic}", topK: 5 };
+  }
+  if (kind === "http") {
+    return { id, kind, title: "新 HTTP 请求步骤", method: "GET", url: "https://", headers: {} };
+  }
   if (kind === "tool") {
     return { id, kind, title: "新工具步骤", tool: "tool.id", args: {} };
   }
@@ -224,6 +259,22 @@ export function createLeafNode(kind: NodeKind, id: string): WorkflowNode {
     return { id, kind, title: "新人工审批步骤", instructions: "确认后通过。", timeoutMs: 600000 };
   }
   return { id, kind: "agent", title: "新 Agent 步骤", agent: "agent-id" };
+}
+
+/** 连线上的语义标签：只在容器/验证/审批出边自动补，普通数据流保持干净。 */
+export function defaultEdgeLabel(source: WorkflowNode | undefined): string | undefined {
+  switch (source?.kind) {
+    case "approve":
+      return "通过";
+    case "condition":
+      return "分支后";
+    case "loop":
+      return "循环后";
+    case "parallel":
+      return "并行后";
+    default:
+      return undefined;
+  }
 }
 
 export const BLOCK_KEYS = ["branches", "then", "else", "body"] as const;

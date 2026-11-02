@@ -7,6 +7,7 @@ import type { RunStatus, ToolNode, WorkflowDefinition } from "../types.js";
 import { BUILTIN_AGENTS } from "../registry/agents.js";
 import { loadBuiltinWorkflows } from "../workflow/dsl.js";
 import { WorkflowExecutor } from "./executor.js";
+import { assertSafeHttpUrl, isPrivateAddress } from "./httpNode.js";
 import { PlatformStateStore } from "./stateStore.js";
 
 function createStore() {
@@ -337,6 +338,148 @@ test("stub mode delegates knowledge.search to the deterministic handler", async 
   } finally {
     dispose();
   }
+});
+
+test("start forwards workflow input and end maps upstream artifacts", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "anchor-run-probe",
+    name: "锚点执行探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      { id: "begin", kind: "start" },
+      { id: "think", kind: "llm", prompt: "围绕 ${input.topic} 写要点" },
+      { id: "finish", kind: "end", inputs: { draft: "${think.output}", topic: "${input.topic}" } }
+    ],
+    edges: [
+      { from: "begin", to: "think" },
+      { from: "think", to: "finish" }
+    ]
+  };
+
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+      topic: "分数的意义"
+    });
+    assert.equal(run.status, "succeeded");
+
+    const begin = steps.find((step) => step.nodeId === "begin");
+    assert.ok(begin);
+    assert.deepEqual(begin.input, { topic: "分数的意义" });
+    const beginOutput = begin.output as Record<string, unknown>;
+    assert.equal(beginOutput.kind, "start");
+    assert.deepEqual(beginOutput.input, { topic: "分数的意义" });
+
+    const finish = steps.find((step) => step.nodeId === "finish");
+    assert.ok(finish);
+    const finishOutput = finish.output as Record<string, unknown>;
+    assert.equal(finishOutput.kind, "end");
+    const mapped = finishOutput.outputs as Record<string, unknown>;
+    assert.equal(mapped.topic, "分数的意义");
+    assert.match(String(mapped.draft), /stub:llm/);
+  } finally {
+    dispose();
+  }
+});
+
+test("knowledge nodes call the knowledge handler with query, bases and topK", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "knowledge-node-probe",
+    name: "知识节点探针",
+    version: 1,
+    inputs: [{ name: "topic", type: "string", required: true }],
+    nodes: [
+      {
+        id: "recall",
+        kind: "knowledge",
+        query: "${input.topic} 的课标要求",
+        knowledgeBaseIds: ["kb-1"],
+        topK: 3
+      }
+    ],
+    edges: []
+  };
+  const calls: Array<Record<string, unknown>> = [];
+
+  try {
+    const { run, steps } = await new WorkflowExecutor(store, {
+      knowledgeNode: async (_node, input) => {
+        calls.push(input);
+        return {
+          mode: "live",
+          kind: "knowledge",
+          tool: "knowledge.search",
+          summary: "命中 1 条引用",
+          citations: [{ id: "local-1", documentName: "课标", source: "local" }]
+        };
+      }
+    }).run(workflow, { topic: "分数的意义" });
+
+    assert.equal(run.status, "succeeded");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], {
+      query: "分数的意义 的课标要求",
+      knowledgeBaseIds: ["kb-1"],
+      topK: 3
+    });
+    const output = steps[0]?.output as { kind?: string; citations?: unknown[] };
+    assert.equal(output.kind, "knowledge");
+    assert.equal(output.citations?.length, 1);
+  } finally {
+    dispose();
+  }
+});
+
+test("http nodes stay in stub mode without network access when no handler is configured", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "http-stub-probe",
+    name: "HTTP stub 探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "fetch",
+        kind: "http",
+        method: "GET",
+        url: "https://example.com/api/plan",
+        headers: { authorization: "Bearer secret" }
+      }
+    ],
+    edges: []
+  };
+
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {});
+    assert.equal(run.status, "succeeded");
+    const output = steps[0]?.output as Record<string, unknown>;
+    assert.equal(output.kind, "http");
+    assert.equal(output.mode, "stub");
+    assert.equal(output.method, "GET");
+    assert.equal(output.url, "https://example.com/api/plan");
+    assert.match(String(output.output), /未实际发送/);
+  } finally {
+    dispose();
+  }
+});
+
+test("rejects loopback, private and metadata HTTP targets", async () => {
+  assert.equal(isPrivateAddress("127.0.0.1"), true);
+  assert.equal(isPrivateAddress("10.0.0.8"), true);
+  assert.equal(isPrivateAddress("172.20.1.1"), true);
+  assert.equal(isPrivateAddress("192.168.1.10"), true);
+  assert.equal(isPrivateAddress("169.254.169.254"), true);
+  assert.equal(isPrivateAddress("::1"), true);
+  assert.equal(isPrivateAddress("::ffff:10.0.0.1"), true);
+  assert.equal(isPrivateAddress("8.8.8.8"), false);
+
+  await assert.rejects(() => assertSafeHttpUrl("http://127.0.0.1/admin"), /内网|保留地址/);
+  await assert.rejects(() => assertSafeHttpUrl("http://169.254.169.254/latest/meta-data"), /内网|保留地址/);
+  await assert.rejects(() => assertSafeHttpUrl("http://localhost:3000/api"), /内网|元数据/);
+  await assert.rejects(() => assertSafeHttpUrl("file:///etc/passwd"), /http/);
+  await assert.rejects(() => assertSafeHttpUrl("https://user:pass@example.com"), /用户名或密码/);
 });
 
 test("follows the branch selected by a condition", async () => {

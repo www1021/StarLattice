@@ -1,7 +1,11 @@
 export const NODE_KINDS = [
+  "start",
+  "end",
   "agent",
   "llm",
+  "knowledge",
   "tool",
+  "http",
   "template",
   "subworkflow",
   "parallel",
@@ -36,6 +40,36 @@ export type AgentNode = NodeBase & {
   /** 指定 Agent 版本；留空时使用注册中心里的最新版本。 */
   agentVersion?: number;
   prompt?: string;
+};
+
+/** 流程入口：把工作流输入原样作为产物，不覆盖最近一次真实产物。 */
+export type StartNode = NodeBase & {
+  kind: "start";
+};
+
+/** 流程出口：汇总输入映射作为最终结果。 */
+export type EndNode = NodeBase & {
+  kind: "end";
+};
+
+/** 确定性知识库检索节点，不依赖模型；未配置范围时使用工作流默认知识库。 */
+export type KnowledgeNode = NodeBase & {
+  kind: "knowledge";
+  query: string;
+  knowledgeBaseIds?: string[];
+  topK?: number;
+};
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** 受 SSRF 防护约束的 HTTP 请求节点：仅 http/https，拒绝内网与元数据地址。 */
+export type HttpNode = NodeBase & {
+  kind: "http";
+  method: HttpMethod;
+  url: string;
+  headers?: Record<string, string>;
+  requestBody?: unknown;
+  timeoutMs?: number;
 };
 
 export type ToolNode = NodeBase & {
@@ -120,9 +154,13 @@ export type ApproveNode = NodeBase & {
 };
 
 export type WorkflowNode =
+  | StartNode
+  | EndNode
   | AgentNode
   | LlmNode
+  | KnowledgeNode
   | ToolNode
+  | HttpNode
   | TemplateNode
   | SubWorkflowNode
   | ParallelNode
@@ -132,9 +170,13 @@ export type WorkflowNode =
   | ApproveNode;
 
 export type LeafNode =
+  | StartNode
+  | EndNode
   | AgentNode
   | LlmNode
+  | KnowledgeNode
   | ToolNode
+  | HttpNode
   | TemplateNode
   | SubWorkflowNode
   | VerifyNode

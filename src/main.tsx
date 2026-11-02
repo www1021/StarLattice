@@ -10863,7 +10863,7 @@ function App() {
           </div>
         ) : activeSection === "mcp" ? (
           <div className="workspace-inner platform-workspace">
-            <McpPage />
+            <McpPage onOpenCanvas={() => setActiveSection("platform")} />
           </div>
         ) : activeSection === "monitor" ? (
           <div className="workspace-inner platform-workspace">

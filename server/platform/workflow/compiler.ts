@@ -20,6 +20,7 @@ const REF_PATTERN = /\$\{([^}\s]+)\}/g;
 const EXPRESSION_PATTERN = /^\s*\$\{([^}\s]+)\}\s*(?:(<=|>=|==|!=|<|>)\s*(.+?))?\s*$/;
 /** loop 是保留作用域名，指向进入本轮前的循环状态，不作为节点 id 解析。 */
 const LOOP_SCOPE_KEYS = new Set(["artifact", "issues", "score", "iteration", "retrievalQuery"]);
+const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
 export type WorkflowResolver = (id: string, version?: number) => WorkflowDefinition | undefined;
 
@@ -81,6 +82,7 @@ class Compiler {
   private compilePlan(): CompiledPlan {
     this.validateHeader();
     this.collect(this.workflow.nodes, this.pathPrefix, this.baseDepth);
+    this.validateAnchors();
     const order = this.topologicalOrder();
     const program = this.issues.length ? [] : this.expandRoot(order);
     if (this.issues.length === 0) {
@@ -122,6 +124,18 @@ class Compiler {
     });
   }
 
+  /** 顶层只允许一个开始/结束节点；它们不参与容器内部执行。 */
+  private validateAnchors() {
+    const starts = this.workflow.nodes.filter((node) => node.kind === "start");
+    const ends = this.workflow.nodes.filter((node) => node.kind === "end");
+    if (starts.length > 1) {
+      this.error("duplicate-start", starts[1].id, "每个工作流只允许一个开始节点");
+    }
+    if (ends.length > 1) {
+      this.error("duplicate-end", ends[1].id, "每个工作流只允许一个结束节点");
+    }
+  }
+
   private collect(nodes: WorkflowNode[], parentPath: string, depth: number) {
     if (depth > MAX_DEPTH) {
       this.error("max-depth", parentPath || "nodes", `嵌套层级超过 ${MAX_DEPTH} 层`);
@@ -141,10 +155,50 @@ class Compiler {
       }
 
       switch (node.kind) {
+        case "start":
+        case "end":
+          if (depth > this.baseDepth) {
+            this.error("anchor-in-container", location, "开始 / 结束节点只能放在工作流顶层，不能嵌套在容器里");
+          }
+          break;
         case "agent":
         case "tool":
         case "template":
           break;
+        case "knowledge":
+          if (
+            node.topK !== undefined &&
+            (!Number.isInteger(node.topK) || node.topK < 1 || node.topK > 20)
+          ) {
+            this.error("invalid-knowledge-top-k", location, "knowledge.topK 必须在 1 到 20 之间");
+          }
+          for (const [index, id] of (node.knowledgeBaseIds ?? []).entries()) {
+            if (id.trim() === "") {
+              this.error("invalid-knowledge-base", `${location}.knowledgeBaseIds[${index}]`, "知识库 ID 不能为空");
+            }
+          }
+          break;
+        case "http": {
+          if (!HTTP_METHODS.has(node.method)) {
+            this.error("invalid-http-method", location, `HTTP 方法不支持 "${node.method}"`);
+          }
+          let url: URL | undefined;
+          try {
+            url = new URL(node.url);
+          } catch {
+            this.error("invalid-http-url", `${location}.url`, "HTTP 节点地址不是合法 URL");
+          }
+          if (url && url.protocol !== "http:" && url.protocol !== "https:") {
+            this.error("invalid-http-url", `${location}.url`, "HTTP 节点只支持 http / https 地址");
+          }
+          if (
+            node.timeoutMs !== undefined &&
+            (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 120_000)
+          ) {
+            this.error("invalid-http-timeout", location, "http.timeoutMs 必须在 1000 到 120000 之间");
+          }
+          break;
+        }
         case "llm":
           if (node.temperature !== undefined && (node.temperature < 0 || node.temperature > 2)) {
             this.error("invalid-llm-temperature", location, "llm.temperature 必须在 0 到 2 之间");
@@ -313,6 +367,14 @@ class Compiler {
         this.error("unknown-edge-node", location, `边引用了不存在的节点 "${edge.to}"`);
         return;
       }
+      if (this.nodesById.get(edge.to)!.kind === "start") {
+        this.error("start-has-incoming", location, `开始节点 "${edge.to}" 不能有入边`);
+        return;
+      }
+      if (this.nodesById.get(edge.from)!.kind === "end") {
+        this.error("end-has-outgoing", location, `结束节点 "${edge.from}" 不能有出边`);
+        return;
+      }
       if (!declarationIndex.has(edge.from) || !declarationIndex.has(edge.to)) {
         this.error("nested-edge", location, "边只能连接顶层节点；嵌套节点请写在 parallel/condition/loop 内部");
         return;
@@ -404,9 +466,13 @@ class Compiler {
     }
 
     if (
+      node.kind === "start" ||
+      node.kind === "end" ||
       node.kind === "agent" ||
       node.kind === "llm" ||
+      node.kind === "knowledge" ||
       node.kind === "tool" ||
+      node.kind === "http" ||
       node.kind === "template" ||
       node.kind === "verify" ||
       node.kind === "approve"
@@ -660,6 +726,12 @@ function collectNodeRefs(node: LeafNode): string[] {
   }
   if (node.kind === "llm") {
     values.push(node.prompt, node.system);
+  }
+  if (node.kind === "knowledge") {
+    values.push(node.query, node.knowledgeBaseIds);
+  }
+  if (node.kind === "http") {
+    values.push(node.url, node.headers, node.requestBody);
   }
   if (node.kind === "template") {
     values.push(node.template);

@@ -1,4 +1,12 @@
-import type { AgentNode, AgentRecord, LlmNode, McpCallResult, ToolNode, ToolRecord } from "../types.js";
+import type {
+  AgentNode,
+  AgentRecord,
+  KnowledgeNode,
+  LlmNode,
+  McpCallResult,
+  ToolNode,
+  ToolRecord
+} from "../types.js";
 import { completeQwenChat, getPlatformLiveModel, isQwenConfigured } from "../../qwenOpenAiClient.js";
 import type { ExecutionContext, ExecutorHandlers } from "./executor.js";
 
@@ -319,13 +327,14 @@ async function searchKnowledgeTool(
  * 避免默认模式下返回假 citation，让「知识库集成」在零 token 时也可验证。
  */
 export async function executeKnowledgeSearchNode(
-  node: ToolNode,
+  node: ToolNode | KnowledgeNode,
   input: Record<string, unknown>,
   context: ExecutionContext,
   searchKnowledge?: KnowledgeSearch
 ) {
+  const toolName = node.kind === "knowledge" ? "knowledge.search" : node.tool;
   if (!searchKnowledge) {
-    throw new Error(`工具「${node.tool}」缺少知识库检索依赖，无法执行节点 ${node.id}。`);
+    throw new Error(`工具「${toolName}」缺少知识库检索依赖，无法执行节点 ${node.id}。`);
   }
 
   const query = stringValue(input.query) || stringValue(context.scope.input.topic);
@@ -350,7 +359,7 @@ export async function executeKnowledgeSearchNode(
 
   return {
     mode: "live",
-    tool: node.tool,
+    tool: toolName,
     summary:
       mapped.length > 0
         ? `检索「${query}」命中 ${mapped.length} 条引用`

@@ -8,6 +8,8 @@ import {
   type CompiledExpression,
   type CompiledStatement,
   type CompiledStep,
+  type HttpNode,
+  type KnowledgeNode,
   type LlmNode,
   type PlatformRunView,
   type RunMode,
@@ -91,6 +93,10 @@ export type ExecutorHandlers = {
   mcpTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 确定性内置工具（如 knowledge.search）；stub 模式也可接真实服务，且不改变 live 判定。 */
   knowledgeTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  /** 独立的 knowledge 节点；与工具节点共用同一检索服务，但语义更清晰。 */
+  knowledgeNode?: (node: KnowledgeNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  /** HTTP 节点；实现方必须负责 SSRF 防护与响应大小限制。 */
+  http?: (node: HttpNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   verify?: (node: VerifyNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
 };
 
@@ -663,7 +669,27 @@ export class WorkflowExecutor {
   private async executeStep(step: CompiledStep, state: RunState) {
     const node = step.node;
     const frame = findLoopFrame(state, step.path);
-    const rawInput = node.kind === "tool" ? node.args ?? {} : node.inputs ?? {};
+    const rawInput =
+      node.kind === "tool"
+        ? node.args ?? {}
+        : node.kind === "start"
+          ? state.scope.input
+          : node.kind === "knowledge"
+            ? {
+                query: node.query,
+                knowledgeBaseIds: node.knowledgeBaseIds,
+                topK: node.topK,
+                ...(node.inputs ?? {})
+              }
+            : node.kind === "http"
+              ? {
+                  method: node.method,
+                  url: node.url,
+                  headers: node.headers,
+                  body: node.requestBody,
+                  ...(node.inputs ?? {})
+                }
+              : node.inputs ?? {};
     let input = resolveValue(rawInput, state.scope, frame) as Record<string, unknown>;
     if (node.kind === "verify") {
       // 未显式映射时，默认验证最近一个非验证节点的输出，证据取当前运行已收集的引用池。
@@ -677,8 +703,8 @@ export class WorkflowExecutor {
       };
     }
     if (
-      node.kind === "tool" &&
-      node.tool === "knowledge.search" &&
+      (node.kind === "knowledge" ||
+        (node.kind === "tool" && node.tool === "knowledge.search")) &&
       state.workflowKnowledgeBaseIds.length > 0
     ) {
       // 只给知识库检索补默认范围；其他工具（如 report.build）不该收到无关参数。
@@ -942,8 +968,11 @@ export class WorkflowExecutor {
           });
           output = verification;
         } else {
-          state.scope.lastArtifact = output;
-          state.scope.lastArtifactNodeId = step.nodeId;
+          // 开始节点只转发输入；若把它记成最近产物，后续验证会把原始输入误当成待验证产物。
+          if (step.node.kind !== "start") {
+            state.scope.lastArtifact = output;
+            state.scope.lastArtifactNodeId = step.nodeId;
+          }
         }
         state.scope.outputs.set(step.nodeId, output);
         absorbEvidence(state.scope, output);
@@ -1068,6 +1097,36 @@ export class WorkflowExecutor {
     // 演示/演练用：PLATFORM_FAIL_NODE_IDS 让 stub 在指定节点抛错，用于验证重试与回滚。
     if (this.mode === "stub" && this.injectedFailures.has(node.id)) {
       throw new Error(`[stub] 注入失败：节点 ${node.id}`);
+    }
+    if (node.kind === "start") {
+      return {
+        mode: this.mode,
+        kind: "start",
+        summary: `流程开始 · ${Object.keys(state.scope.input).length} 个输入`,
+        input: state.scope.input,
+        output: state.scope.input
+      };
+    }
+    if (node.kind === "end") {
+      return {
+        mode: this.mode,
+        kind: "end",
+        summary: `流程结束 · ${Object.keys(input).length} 个输出字段`,
+        outputs: input,
+        ...input
+      };
+    }
+    if (node.kind === "knowledge") {
+      if (this.handlers.knowledgeNode) {
+        return await this.handlers.knowledgeNode(node, input, context);
+      }
+      return stubKnowledgeNode(node, input, this.mode);
+    }
+    if (node.kind === "http") {
+      if (this.handlers.http) {
+        return await this.handlers.http(node, input, context);
+      }
+      return stubHttpNode(node, input, this.mode);
     }
     if (node.kind === "agent") {
       return this.handlers.agent ? await this.handlers.agent(node, input, context) : stubAgent(node, input);
@@ -1259,6 +1318,40 @@ function stubTool(node: ToolNode, input: Record<string, unknown>) {
     summary: `[stub] ${node.title ?? node.id} 已执行`,
     output: `[stub:${node.tool}] ${node.title ?? node.id} 的输出`,
     args: input
+  };
+}
+
+/** stub 知识检索不伪造引用，只返回明确的“无可引用片段”提示。 */
+function stubKnowledgeNode(node: KnowledgeNode, input: Record<string, unknown>, mode: string) {
+  const query = typeof input.query === "string" ? input.query : "";
+  return {
+    mode,
+    kind: "knowledge",
+    tool: "knowledge.search",
+    summary: `[${mode}] 知识库检索「${query || node.title || node.id}」`,
+    query,
+    knowledgeBaseIds: stringList(input.knowledgeBaseIds),
+    citations: [],
+    output: "知识库未召回可引用片段，请基于学科常识作答并说明缺少资料支撑。",
+    args: input
+  };
+}
+
+/** stub HTTP 不发起网络请求，避免默认演示产生外呼与不可控延迟。 */
+function stubHttpNode(node: HttpNode, input: Record<string, unknown>, mode: string) {
+  const method = typeof input.method === "string" ? input.method : node.method;
+  const url = typeof input.url === "string" ? input.url : node.url;
+  return {
+    mode,
+    kind: "http",
+    method,
+    url,
+    status: 0,
+    ok: false,
+    summary: `[${mode}] 未发起 HTTP 请求 ${method} ${url}`,
+    output: `[${mode}:http] ${method} ${url} 未实际发送；配置 live 执行器后才会调用外部 API。`,
+    headers: Object.keys(node.headers ?? {}),
+    requestBody: input.body
   };
 }
 

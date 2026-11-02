@@ -27,7 +27,9 @@ type InspectorProps = {
 const CHILD_KINDS: NodeKind[] = [
   "agent",
   "llm",
+  "knowledge",
   "tool",
+  "http",
   "template",
   "subworkflow",
   "verify",

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Boxes,
   Cable,
   CheckCircle2,
   Clock3,
@@ -52,7 +53,9 @@ const EMPTY_FORM: ServerForm = {
   enabled: true
 };
 
-export function McpPage() {
+const PENDING_NODE_KEY = "platform:pending-node";
+
+export function McpPage({ onOpenCanvas }: { onOpenCanvas?: () => void }) {
   const [servers, setServers] = useState<McpServerView[]>([]);
   const [tools, setTools] = useState<ToolRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -249,6 +252,30 @@ export function McpPage() {
     setTestTool(tool);
     setTestResult(undefined);
     setTestArgs(JSON.stringify(exampleArgs(tool), null, 2));
+  }
+
+  function addToCanvas(tool: ToolRecord) {
+    try {
+      sessionStorage.setItem(
+        PENDING_NODE_KEY,
+        JSON.stringify({
+          title: displayNameOf(tool),
+          tool: toolNameOf(tool),
+          args: exampleArgs(tool)
+        })
+      );
+    } catch (error) {
+      setBanner({ tone: "error", text: `无法写入画布数据：${describe(error)}` });
+      return;
+    }
+    if (onOpenCanvas) {
+      onOpenCanvas();
+      return;
+    }
+    setBanner({
+      tone: "success",
+      text: `已暂存工具「${displayNameOf(tool)}」，打开编排画布后会自动加入流程。`
+    });
   }
 
   async function runTest() {
@@ -467,14 +494,24 @@ export function McpPage() {
                 onClick={() => setSelectedId(server.id)}
               >
                 <div className="mcp-card-head">
+                  <span
+                    className={`mcp-server-tile ${server.transport === "stdio" ? "is-stdio" : "is-http"}`}
+                  >
+                    {server.transport === "stdio" ? <Terminal size={16} /> : <Globe2 size={16} />}
+                  </span>
+                  <div className="mcp-card-title">
+                    <strong>{server.name}</strong>
+                    <small>
+                      <code>{server.id}</code>
+                    </small>
+                  </div>
                   <span className={`mcp-status ${statusClass(server)}`} />
-                  {server.transport === "stdio" ? <Terminal size={15} /> : <Globe2 size={15} />}
-                  <strong>{server.name}</strong>
                 </div>
                 <div className="mcp-card-meta">
-                  <span>{server.transport}</span>
-                  <span>{server.toolCount} 个工具</span>
-                  <span>{statusLabel(server)}</span>
+                  <span className={`mcp-badge is-transport`}>{transportLabel(server.transport)}</span>
+                  <span className={`mcp-badge ${statusClass(server)}`}>{statusLabel(server)}</span>
+                  <span>{server.toolCount} 工具</span>
+                  {server.lastLatencyMs !== undefined && <span>{formatMs(server.lastLatencyMs)}</span>}
                 </div>
                 {server.lastError && <small className="mcp-card-error">{truncate(server.lastError, 72)}</small>}
               </button>
@@ -486,12 +523,24 @@ export function McpPage() {
           {selected ? (
             <>
               <header className="mcp-detail-head">
-                <div>
-                  <h2>{selected.name}</h2>
-                  <small>
-                    <code>{selected.id}</code> · {selected.transport === "stdio" ? "stdio 进程" : "Streamable HTTP"} ·{" "}
-                    {statusLabel(selected)}
-                  </small>
+                <div className="mcp-detail-identity">
+                  <span
+                    className={`mcp-server-tile is-large ${selected.transport === "stdio" ? "is-stdio" : "is-http"}`}
+                  >
+                    {selected.transport === "stdio" ? <Terminal size={19} /> : <Globe2 size={19} />}
+                  </span>
+                  <div>
+                    <div className="mcp-detail-title">
+                      <h2>{selected.name}</h2>
+                      <span className={`mcp-badge is-transport`}>{transportLabel(selected.transport)}</span>
+                      <span className={`mcp-badge ${statusClass(selected)}`}>{statusLabel(selected)}</span>
+                    </div>
+                    <small>
+                      <code>{selected.id}</code> ·{" "}
+                      {selected.transport === "stdio" ? "stdio 本地进程" : "Streamable HTTP 远程服务"} ·{" "}
+                      {selected.toolCount} 个工具
+                    </small>
+                  </div>
                 </div>
                 <div className="mcp-detail-actions">
                   <button
@@ -576,7 +625,7 @@ export function McpPage() {
                     已发现工具
                     <span>{serverTools.length}</span>
                   </h3>
-                  <span className="mcp-note">工具已同步到注册中心，工作流节点可直接引用。</span>
+                  <span className="mcp-note">工具已同步到注册中心，可直接加入编排画布。</span>
                 </header>
 
                 {serverTools.length === 0 ? (
@@ -585,22 +634,28 @@ export function McpPage() {
                   </div>
                 ) : (
                   <div className="mcp-tool-list">
-                    {serverTools.map((tool) => {
-                      const required = requiredFields(tool);
-                      return (
-                        <article className="mcp-tool" key={tool.id}>
-                          <div>
-                            <strong>{tool.name.split(" · ").slice(1).join(" · ") || tool.name}</strong>
-                            <small>
-                              <code>{toolNameOf(tool)}</code>
-                            </small>
-                            <p>{tool.description}</p>
-                            {required.length > 0 && (
-                              <span className="mcp-tool-required">
-                                必填参数：{required.join("、")}
-                              </span>
-                            )}
-                          </div>
+                    {serverTools.map((tool) => (
+                      <article className="mcp-tool" key={tool.id}>
+                        <span className="mcp-tool-icon">
+                          <Wrench size={15} />
+                        </span>
+                        <div className="mcp-tool-body">
+                          <strong>{displayNameOf(tool)}</strong>
+                          <small>
+                            <code>{toolNameOf(tool)}</code>
+                          </small>
+                          {tool.description && <p>{tool.description}</p>}
+                          <ToolSchema tool={tool} />
+                        </div>
+                        <div className="mcp-tool-actions">
+                          <button
+                            type="button"
+                            className="platform-button is-ghost"
+                            onClick={() => addToCanvas(tool)}
+                          >
+                            <Boxes size={13} />
+                            加入画布
+                          </button>
                           <button
                             type="button"
                             className="platform-button is-ghost"
@@ -609,9 +664,9 @@ export function McpPage() {
                             <Play size={13} />
                             测试调用
                           </button>
-                        </article>
-                      );
-                    })}
+                        </div>
+                      </article>
+                    ))}
                   </div>
                 )}
               </section>
@@ -696,6 +751,46 @@ function statusLabel(server: McpServerView) {
     return "已连接";
   }
   return "未连接";
+}
+
+function transportLabel(transport: McpTransport) {
+  return transport === "stdio" ? "stdio 本地" : "HTTP 远程";
+}
+
+function ToolSchema({ tool }: { tool: ToolRecord }) {
+  const params = toolParams(tool);
+  if (params.length === 0) {
+    return <span className="mcp-tool-required">无入参</span>;
+  }
+  return (
+    <div className="mcp-schema">
+      {params.map((param) => (
+        <span className="mcp-schema-item" key={param.name} title={param.description}>
+          <code>{param.name}</code>
+          <em>{param.type}</em>
+          {param.required && <i>必填</i>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function toolParams(tool: ToolRecord) {
+  const properties =
+    typeof tool.schema.properties === "object" && tool.schema.properties !== null
+      ? (tool.schema.properties as Record<string, Record<string, unknown>>)
+      : {};
+  const required = new Set(requiredFields(tool));
+  return Object.entries(properties).map(([name, schema]) => ({
+    name,
+    type: typeof schema.type === "string" ? schema.type : "any",
+    required: required.has(name),
+    description: typeof schema.description === "string" ? schema.description : undefined
+  }));
+}
+
+function displayNameOf(tool: ToolRecord) {
+  return tool.name.split(" · ").slice(1).join(" · ") || tool.name;
 }
 
 function toolNameOf(tool: ToolRecord) {
