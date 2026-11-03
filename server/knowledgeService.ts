@@ -83,7 +83,7 @@ export type StarterKnowledgePack = {
   id: string;
   name: string;
   description: string;
-  recommendedFor: Array<"教案诊断" | "说课陪练" | "模拟课堂" | "实习反思">;
+  recommendedFor: string[];
   documentCount: number;
 };
 
@@ -200,6 +200,30 @@ const starterKnowledgePacks: Array<StarterKnowledgePack & {
         name: "示例育人表达：公平参与与鼓励性反馈.txt",
         content: "课堂评价应兼顾不同基础学生。对暂未完整回答的学生，先肯定其已说出的线索，再通过追问帮助补全；对表达积极的学生，邀请其说明理由而非只给出结论。这样能让公平参与和尊重差异落实为可观察的课堂行为。",
         metadata: { resourceType: "教研资料", subject: "通用", schoolStage: "通用", tags: ["示例", "师德育人", "评价"] }
+      }
+    ]
+  },
+  {
+    id: "business-metrics-demo",
+    name: "经营分析指标口径包",
+    description: "统一销售额、退款、毛利额与毛利率的计算口径，避免报告口径不一致。",
+    recommendedFor: ["经营分析", "指标口径", "报告复核"],
+    documentCount: 3,
+    documents: [
+      {
+        name: "指标口径：销售额、退款与毛利.txt",
+        content: "毛销售额是订单原始金额之和；退款额必须从毛销售额中扣除，得到净销售额。毛利额 = 净销售额 − 销货成本，毛利率 = 毛利额 ÷ 净销售额。任何以毛销售额计算毛利额的口径都会高估经营表现，报告初稿若出现这类数字，应由验证环节拦截并重算。",
+        metadata: { resourceType: "教研资料", subject: "经营分析", schoolStage: "通用", tags: ["经营分析", "指标口径", "毛利额"] }
+      },
+      {
+        name: "分析规范：区域与品类对比.txt",
+        content: "区域与品类汇总统一使用净额口径：先按维度汇总净销售额，再汇总销货成本并计算毛利额。区域退款应归属到产生退款的区域；默认按净销售额从高到低排序，必要时补充销量与退款额，避免只看金额忽略结构变化。",
+        metadata: { resourceType: "教研资料", subject: "经营分析", schoolStage: "通用", tags: ["经营分析", "区域", "品类"] }
+      },
+      {
+        name: "报告结构：结论到行动建议.txt",
+        content: "经营分析报告按结论、数据概况、区域表现、品类表现、毛利核算、口径说明组织。每个结论都应能追溯到工具返回的数字；先说明本期整体表现，再指出增长来源与拖累项，最后给出可执行的下一步行动，例如调整品类结构或核查高退款渠道。",
+        metadata: { resourceType: "教研资料", subject: "经营分析", schoolStage: "通用", tags: ["经营分析", "报告", "行动建议"] }
       }
     ]
   }

@@ -41,10 +41,10 @@ export const COMMON_NODE_FIELDS: NodeField[] = [
     label: "节点 ID",
     type: "text",
     required: true,
-    placeholder: "lesson-plan",
+    placeholder: "task-1",
     help: "全流程唯一，只允许字母、数字、下划线和短横线；变量引用靠它定位。"
   },
-  { key: "title", label: "显示名称", type: "text", placeholder: "教案生成" },
+  { key: "title", label: "显示名称", type: "text", placeholder: "任务执行" },
   { key: "description", label: "说明", type: "textarea" }
 ];
 
@@ -88,7 +88,7 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         label: "Agent",
         type: "select",
         required: true,
-        placeholder: "lesson-plan-agent",
+        placeholder: "planner-agent",
         help: "从注册中心选择；新注册的 Agent 点画布工具栏「刷新注册项」即可出现。"
       },
       {
@@ -98,7 +98,7 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         placeholder: "留空使用最新版本",
         help: "列出所选 Agent 的版本快照；留空跟随最新版。"
       },
-      { key: "prompt", label: "附加提示词", type: "textarea", supportsRefs: true, placeholder: "围绕 ${input.topic} 生成教案初稿。" },
+      { key: "prompt", label: "附加提示词", type: "textarea", supportsRefs: true, placeholder: "围绕 ${input.topic} 生成任务初稿。" },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "键值对，值支持 ${节点.字段} 引用。" }
     ],
     blocks: []
@@ -219,14 +219,14 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         type: "textarea",
         required: true,
         supportsRefs: true,
-        placeholder: "根据 ${input.topic} 分析教案的薄弱点，并给出三条改进建议。"
+        placeholder: "根据 ${input.topic} 分析产物的薄弱点，并给出三条改进建议。"
       },
       {
         key: "system",
         label: "系统提示词",
         type: "textarea",
         supportsRefs: true,
-        placeholder: "你是一名教研专家，回答要具体、可执行。"
+        placeholder: "你是一名评审专家，回答要具体、可执行。"
       },
       {
         key: "model",
@@ -261,7 +261,7 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         type: "textarea",
         required: true,
         supportsRefs: true,
-        placeholder: "# ${input.topic} 教学设计\n\n${lesson-design.plan}"
+        placeholder: "# ${input.topic} 任务报告\n\n${draft.output}"
       },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true }
     ],
@@ -300,7 +300,7 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         label: "输出映射",
         type: "json",
         supportsRefs: true,
-        placeholder: "{\"plan\":\"${lesson-plan.output}\",\"score\":\"${verify-plan.score}\"}",
+        placeholder: "{\"result\":\"${task-1.output}\",\"score\":\"${verify-task.score}\"}",
         help: "值为子流程作用域内的引用；映射结果会挂到父流程对本节点的引用上。"
       }
     ],
@@ -383,21 +383,21 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         key: "verifiers",
         label: "交叉验证 Agent",
         type: "list",
-        placeholder: "observer-verifier / teaching-expert-agent",
+        placeholder: "quality-verifier / reviewer-agent",
         help: "留空时自动选主验证器 + 其他带 verify.rubric 工具的 Agent，最多 3 个。"
       },
       {
         key: "required",
         label: "必需内容",
         type: "list",
-        placeholder: "教学目标 / 学生活动",
+        placeholder: "结论 / 证据",
         help: "规则层：输出必须包含的字段或小节名称。"
       },
       {
         key: "expectedKeywords",
         label: "标准要点",
         type: "list",
-        placeholder: "分数的意义 / 分层练习",
+        placeholder: "关键结论 / 支撑证据",
         help: "基准层：标准答案关键词，缺失会直接列入问题清单。"
       },
       {
@@ -412,7 +412,14 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         type: "boolean",
         help: "留空时根据评分维度是否含“证据/引用/来源”自动判断。"
       },
-      { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "可不填 artifact，默认验证最近一个非验证节点的输出。" }
+      {
+        key: "checks",
+        label: "数值核对",
+        type: "json",
+        placeholder: "[{\"type\":\"number_match\",\"tolerance\":0.01}]",
+        help: "规则层：产物中的每个数字都必须能在 reference 里找到；tolerance 为相对容差，0–1。"
+      },
+      { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "可不填 artifact，默认验证最近一个非验证节点的输出；checks 需要 reference。" }
     ],
     blocks: []
   },
@@ -427,14 +434,14 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         key: "instructions",
         label: "审批说明",
         type: "textarea",
-        placeholder: "确认教案目标、活动与评价一致后通过。",
+        placeholder: "确认产出目标、内容与评价一致后通过。",
         help: "会展示在运行监控的待审卡片上。"
       },
       {
         key: "assignee",
         label: "审批人/角色",
         type: "text",
-        placeholder: "教研组长",
+        placeholder: "负责人",
         help: "仅作展示与记录，当前版本不做权限校验。"
       },
       {

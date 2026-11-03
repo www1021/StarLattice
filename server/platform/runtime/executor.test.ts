@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunStatus, ToolNode, WorkflowDefinition } from "../types.js";
 import { BUILTIN_AGENTS } from "../registry/agents.js";
+import { McpClient } from "../mcp/client.js";
 import { loadBuiltinWorkflows } from "../workflow/dsl.js";
 import { WorkflowExecutor } from "./executor.js";
 import { assertSafeHttpUrl, isPrivateAddress } from "./httpNode.js";
@@ -1200,6 +1201,132 @@ test("flags a deliberately wrong artifact with layered issues", async () => {
     assert.match(issues, /占位标记/);
     assert.match(issues, /基准比对缺少要点：分数的意义/);
   } finally {
+    dispose();
+  }
+});
+
+test("number_match reads the reference bound through verify inputs", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "number-match-probe",
+    name: "数值核对探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "source", kind: "agent", agent: "writer-agent" },
+      { id: "analysis", kind: "agent", agent: "writer-agent" },
+      {
+        id: "check",
+        kind: "verify",
+        verifier: "observer-verifier",
+        rubric: ["数据一致性"],
+        threshold: 0.9,
+        checks: [{ type: "number_match", tolerance: 0.01 }],
+        inputs: { reference: "${source.output}" }
+      }
+    ],
+    edges: [
+      { from: "source", to: "analysis" },
+      { from: "analysis", to: "check" }
+    ]
+  };
+  let revenue = "1234.56";
+
+  try {
+    const executor = new WorkflowExecutor(store, {
+      agent: (node) =>
+        node.id === "source" ? { output: "营收 1,234.56 万元" } : { output: `营收 ${revenue} 万元` }
+    });
+    type VerifyOutput = { verify?: { layers?: { rule: { score: number } } } } | undefined;
+
+    const good = await executor.run(workflow);
+    const goodRule = (good.run.output as VerifyOutput)?.verify?.layers?.rule.score;
+    assert.equal(goodRule, 1);
+
+    revenue = "1500";
+    const bad = await executor.run(workflow);
+    const badRule = (bad.run.output as VerifyOutput)?.verify?.layers?.rule.score;
+    assert.ok((badRule ?? 1) < 1, `rule=${badRule}`);
+    assert.match(store.listVerifyResults(bad.run.id)[0]?.issues.join(" ") ?? "", /数值一致未通过/);
+  } finally {
+    dispose();
+  }
+});
+
+test("business-analysis-v1 blocks gross-profit errors and passes after net recalculation", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "business-analysis-v1");
+  assert.ok(workflow);
+  const entry = path.resolve("scripts", "data-analysis-mcp.mjs");
+  const { client } = await McpClient.open({
+    transport: "stdio",
+    command: process.execPath,
+    args: [entry]
+  });
+
+  try {
+    const executor = new WorkflowExecutor(store, {
+      // 与 server/index.ts 的 mcpTool 接线一致：节点产物正文取 MCP 返回文本。
+      mcpTool: async (node, input) => {
+        const toolName = node.tool.split(".").pop() ?? "";
+        const result = await client.callTool(toolName, input);
+        const text = result.content
+          .map((item) =>
+            typeof item === "object" && item !== null && "text" in item
+              ? String((item as { text?: unknown }).text ?? "")
+              : ""
+          )
+          .join("\n");
+        return {
+          mode: "live",
+          tool: node.tool,
+          output: text,
+          structuredContent: result.structuredContent,
+          isError: result.isError
+        };
+      }
+    });
+    const { run, steps } = await executor.run(workflow, {
+      question: "本月各区域与品类的毛利表现如何？"
+    });
+
+    assert.equal(run.status, "succeeded");
+    const verifyResults = store.listVerifyResults(run.id);
+    assert.equal(verifyResults.length, 2);
+    const [initial, repaired] = verifyResults;
+    assert.ok(initial.score < 0.7, `initial=${initial.score}`);
+    assert.equal(initial.issues.some((issue) => /数值一致未通过/.test(issue)), true);
+    assert.ok(repaired.score >= 0.7, `repaired=${repaired.score}`);
+
+    const loops = store.listLoopIterations(run.id);
+    assert.equal(loops.length, 1);
+    assert.ok((loops[0]?.scoreBefore ?? 1) < 0.7);
+    assert.ok((loops[0]?.scoreAfter ?? 0) >= 0.7);
+
+    const metrics = steps.find((step) => step.nodeId === "metrics")?.output as
+      | { structuredContent?: { revenueBasis?: string; grossProfit?: number } }
+      | undefined;
+    assert.equal(metrics?.structuredContent?.revenueBasis, "gross");
+    assert.equal(metrics?.structuredContent?.grossProfit, 45990);
+
+    const recalc = steps.find((step) => step.nodeId === "recalc")?.output as
+      | { structuredContent?: { revenueBasis?: string; grossProfit?: number } }
+      | undefined;
+    assert.equal(recalc?.structuredContent?.revenueBasis, "net");
+    assert.equal(recalc?.structuredContent?.grossProfit, 42290);
+
+    const initialReport = steps.find((step) => step.nodeId === "report")?.output as
+      | { output?: string }
+      | undefined;
+    assert.match(initialReport?.output ?? "", /毛利额：45,990\.00 元/);
+
+    const repairedReport = steps.find((step) => step.nodeId === "rebuild")?.output as
+      | { output?: string }
+      | undefined;
+    assert.match(repairedReport?.output ?? "", /毛利额：42,290\.00 元/);
+    assert.doesNotMatch(repairedReport?.output ?? "", /45,990\.00/);
+  } finally {
+    await client.close();
     dispose();
   }
 });

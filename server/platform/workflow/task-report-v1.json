@@ -1,0 +1,109 @@
+{
+  "id": "task-report-v1",
+  "name": "任务报告流水线",
+  "version": 1,
+  "description": "通用任务链路：资料检索 → 任务规划 → 报告起草 → 独立验证 → 自循环修订 → 定稿；不含领域词，替换输入即可复用。",
+  "inputs": [
+    { "name": "topic", "type": "string", "required": true, "description": "任务主题，例如“Q3 客户反馈汇总”" },
+    { "name": "audience", "type": "string", "required": false, "description": "报告读者，例如“管理层”" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "参与检索的知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "资料检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.topic}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "plan",
+      "kind": "agent",
+      "title": "任务规划",
+      "agent": "planner-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "audience": "${input.audience}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "围绕「${input.topic}」拆解任务：目标、交付契约、依赖与验收标准；读者是 ${input.audience}。"
+    },
+    {
+      "id": "draft",
+      "kind": "agent",
+      "title": "报告起草",
+      "agent": "reporter-agent",
+      "inputs": {
+        "plan": "${plan.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "依据任务规划起草报告，结论在前、证据在后，逐条标注引用来源。"
+    },
+    {
+      "id": "verify-initial",
+      "kind": "verify",
+      "title": "独立验证",
+      "verifier": "quality-verifier",
+      "verifiers": ["quality-verifier", "reviewer-agent"],
+      "rubric": ["结构完整", "论证清晰", "可执行性"],
+      "threshold": 0.7,
+      "inputs": { "artifact": "${draft.output}" }
+    },
+    {
+      "id": "revise-loop",
+      "kind": "loop",
+      "title": "自循环修订",
+      "maxIterations": 2,
+      "while": "${verify-loop.score} < 0.7",
+      "patience": 2,
+      "budget": {
+        "maxDurationMs": 120000,
+        "maxTokens": 0
+      },
+      "body": [
+        {
+          "id": "revise",
+          "kind": "agent",
+          "title": "按问题修订",
+          "agent": "reviewer-agent",
+          "inputs": {
+            "draft": "${loop.artifact}",
+            "issues": "${loop.issues}",
+            "citations": "${retrieve.citations}"
+          },
+          "prompt": "根据问题清单修订报告，保留已达标部分：\n${loop.issues}"
+        },
+        {
+          "id": "verify-loop",
+          "kind": "verify",
+          "title": "复核",
+          "verifier": "quality-verifier",
+          "verifiers": ["quality-verifier", "reviewer-agent"],
+          "rubric": ["结构完整", "论证清晰", "可执行性"],
+          "threshold": 0.7
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "kind": "template",
+      "title": "定稿",
+      "template": "# ${input.topic} 任务报告\n\n${revise.output}",
+      "inputs": {
+        "title": "${input.topic}",
+        "body": "${revise.output}"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "retrieve", "to": "plan" },
+    { "from": "plan", "to": "draft" },
+    { "from": "draft", "to": "verify-initial" },
+    { "from": "verify-initial", "to": "revise-loop" },
+    { "from": "revise-loop", "to": "report" }
+  ]
+}

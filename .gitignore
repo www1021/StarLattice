@@ -8,6 +8,8 @@ generated/
 data/*
 !data/eval/
 !data/eval/tasks.json
+!data/demo/
+!data/demo/sales.csv
 .env
 .env.local
 

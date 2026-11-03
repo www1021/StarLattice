@@ -234,3 +234,68 @@ test("counts knowledge citations passed as objects as evidence", () => {
   assert.ok(report.evidence.some((item) => item.includes("义务教育数学课程标准")));
   assert.doesNotMatch(report.issues.join(" "), /没有可追溯引用/);
 });
+
+const NUMBER_NODE = {
+  id: "check",
+  kind: "verify" as const,
+  verifier: "observer-verifier",
+  rubric: ["数据一致性"],
+  threshold: 0.8,
+  checks: [{ type: "number_match" as const, tolerance: 0.01 }]
+};
+
+test("number_match passes when every artifact number matches the reference within tolerance", () => {
+  const report = new LayeredVerifier(() => 0.9).evaluate({
+    node: NUMBER_NODE,
+    artifact: { summary: "华东区营收 1,234.56 万元，同比增长 12.5%，毛利率 32.1%。" },
+    reference: "华东区营收 1234.56 万元，同比增长 12.5%，毛利率 32.0%。",
+    attempt: 1,
+    agents: VERIFIERS
+  });
+
+  const check = report.layers.rule.checks.find((item) => item.key === "number_match:0");
+  assert.equal(check?.passed, true);
+  assert.match(check?.detail ?? "", /全部匹配对照数据/);
+  assert.equal(report.layers.rule.score, 1);
+});
+
+test("number_match fails and reports the first mismatched number", () => {
+  const report = new LayeredVerifier(() => 0.9).evaluate({
+    node: NUMBER_NODE,
+    artifact: { summary: "本期毛利率 32.1%。" },
+    reference: "本期毛利率 30.0%。",
+    attempt: 1,
+    agents: VERIFIERS
+  });
+
+  const check = report.layers.rule.checks.find((item) => item.key === "number_match:0");
+  assert.equal(check?.passed, false);
+  assert.match(check?.detail ?? "", /32\.1/);
+  assert.ok(report.layers.rule.score < 1);
+});
+
+test("number_match fails when no reference data is supplied", () => {
+  const report = new LayeredVerifier(() => 0.9).evaluate({
+    node: NUMBER_NODE,
+    artifact: { summary: "本期毛利率 32.1%。" },
+    attempt: 1,
+    agents: VERIFIERS
+  });
+
+  const check = report.layers.rule.checks.find((item) => item.key === "number_match:0");
+  assert.equal(check?.passed, false);
+  assert.match(check?.detail ?? "", /对照数据为空/);
+});
+
+test("number_match normalizes percent signs, thousands separators and negatives", () => {
+  const report = new LayeredVerifier(() => 0.9).evaluate({
+    node: NUMBER_NODE,
+    artifact: { summary: "净亏损 -3,200 万元，环比 -12.5%，统计日期 2026-01-15。" },
+    reference: "净亏损 -3200 万元，环比 -0.125",
+    attempt: 1,
+    agents: VERIFIERS
+  });
+
+  const check = report.layers.rule.checks.find((item) => item.key === "number_match:0");
+  assert.equal(check?.passed, true, check?.detail);
+});

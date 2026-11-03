@@ -176,7 +176,7 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
         kind,
         title: "新模型思考节点",
         prompt: `分析 \${input.${firstInputName}}，输出三条可执行建议。`,
-        system: "你是一名资深教研专家，回答要具体、可执行。",
+        system: "你是一名专业顾问，回答要具体、可执行。",
         thinking: true,
         inputs: {}
       };
@@ -214,7 +214,7 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
         kind,
         title: "新人工审批节点",
         instructions: "确认产物满足要求后通过。",
-        assignee: "教研组长",
+        assignee: "负责人",
         timeoutMs: 600000,
         inputs: {}
       };

@@ -14,6 +14,7 @@ import {
 } from "./mcpManager.js";
 
 const demoEntry = path.resolve("scripts", "mcp-demo-server.mjs");
+const dataAnalysisEntry = path.resolve("scripts", "data-analysis-mcp.mjs");
 
 function withStore(run: (store: PlatformStateStore) => Promise<void>) {
   const directory = mkdtempSync(path.join(tmpdir(), "yiban-mcp-"));
@@ -47,6 +48,41 @@ test("MCP client completes handshake, discovers tools and calls them over stdio"
     assert.match(textOf(result.content), /分数的意义/);
     const structured = result.structuredContent as { results?: Array<{ title?: string }> };
     assert.ok((structured.results?.length ?? 0) > 0);
+  } finally {
+    await client.close();
+  }
+});
+
+test("data-analysis MCP computes deterministic gross and net metrics from the demo CSV", async () => {
+  const { client, info } = await McpClient.open({
+    transport: "stdio",
+    command: process.execPath,
+    args: [dataAnalysisEntry]
+  });
+  try {
+    assert.equal(info.serverName, "data-analysis-mcp");
+    const tools = await client.listTools();
+    assert.deepEqual(
+      tools.map((tool) => tool.name).sort(),
+      ["chart", "groupby", "metric_calc", "profile", "trend"].sort()
+    );
+
+    const profile = await client.callTool("profile", {});
+    assert.equal(profile.isError, false);
+    assert.match(textOf(profile.content), /净销售额：113,400\.00 元/);
+    assert.match(textOf(profile.content), /毛利额：42,290\.00 元/);
+
+    const gross = await client.callTool("metric_calc", { revenueBasis: "gross" });
+    const net = await client.callTool("metric_calc", { revenueBasis: "net" });
+    assert.match(textOf(gross.content), /毛利额：45,990\.00 元/);
+    assert.match(textOf(gross.content), /毛利率：39\.27%/);
+    assert.match(textOf(net.content), /毛利额：42,290\.00 元/);
+    assert.match(textOf(net.content), /毛利率：37\.29%/);
+
+    const region = await client.callTool("groupby", { dimension: "region" });
+    assert.match(textOf(region.content), /华东：净销售额 48,900\.00 元/);
+    const product = await client.callTool("groupby", { dimension: "product" });
+    assert.match(textOf(product.content), /无线耳机：净销售额 53,400\.00 元/);
   } finally {
     await client.close();
   }

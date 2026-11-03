@@ -188,6 +188,7 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
       "minChars",
       "verifiers",
       "requireEvidence",
+      "checks",
       "inputs"
     ]
   };
@@ -212,6 +213,32 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
     COMMON_NODE_FIELDS.map((field) => field.key),
     ["id", "title", "description"]
   );
+});
+
+test("validates verify number_match checks and tolerance at compile time", () => {
+  const unknown = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    checks: [{ type: "bogus" as never }]
+  });
+  assert.ok(compileError(unknown).issues.some((issue) => issue.code === "unknown-verify-check"));
+
+  const badTolerance = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    checks: [{ type: "number_match", tolerance: 1.5 }]
+  });
+  assert.ok(compileError(badTolerance).issues.some((issue) => issue.code === "invalid-verify-tolerance"));
+
+  const ok = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    checks: [{ type: "number_match", tolerance: 0.01 }]
+  });
+  assert.doesNotThrow(() => compileWorkflow(ok));
 });
 
 test("accepts start/end anchors with knowledge and http leaves", () => {

@@ -12,10 +12,10 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     name: "知识库检索",
     type: "builtin",
     endpoint: "builtin://knowledge/search",
-    description: "按课题在指定知识库中召回片段，返回引用来源与相似度，供教案生成与教研评审使用。",
+    description: "按任务在指定知识库中召回片段，返回引用来源与相似度，供检索增强与证据引用使用。",
     schema: jsonSchema(
       {
-        query: { type: "string", description: "检索问题或课题" },
+        query: { type: "string", description: "检索问题或任务" },
         knowledgeBaseIds: { type: "array", items: { type: "string" }, description: "参与检索的知识库 id" },
         topK: { type: "number", minimum: 1, maximum: 20, default: 5 }
       },
@@ -76,7 +76,7 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     name: "Word 导出",
     type: "builtin",
     endpoint: "builtin://export/docx",
-    description: "把教案或训练报告导出为 docx 文件，返回下载地址与文件大小。",
+    description: "把产物导出为 docx 文件，返回下载地址与文件大小。",
     schema: jsonSchema(
       {
         title: { type: "string" },
@@ -146,6 +146,79 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
         issues: { type: "array", items: { type: "string" } }
       },
       ["score"]
+    ),
+    enabled: true
+  },
+  {
+    id: "mcp.data-analysis.profile",
+    name: "经营数据 MCP · 销售概况",
+    type: "mcp",
+    endpoint: "mcp://data-analysis/profile",
+    description: "读取固定销售明细，返回订单数、销量、毛销售额、退款、净销售额、销货成本、毛利额与毛利率等确定性指标。",
+    schema: jsonSchema({
+      source: { type: "string", description: "data/demo 下的 CSV 相对路径，默认 data/demo/sales.csv" }
+    }),
+    enabled: true
+  },
+  {
+    id: "mcp.data-analysis.metric_calc",
+    name: "经营数据 MCP · 毛利核算",
+    type: "mcp",
+    endpoint: "mcp://data-analysis/metric_calc",
+    description: "按指定销售额口径计算毛利额与毛利率；gross 不扣退款，net 扣除退款，用于演示口径错误被验证拦截。",
+    schema: jsonSchema(
+      {
+        source: { type: "string", description: "data/demo 下的 CSV 相对路径" },
+        revenueBasis: {
+          type: "string",
+          enum: ["gross", "net"],
+          description: "销售额口径：gross 为毛销售额，net 为扣除退款后的净销售额"
+        }
+      },
+      ["revenueBasis"]
+    ),
+    enabled: true
+  },
+  {
+    id: "mcp.data-analysis.groupby",
+    name: "经营数据 MCP · 分组汇总",
+    type: "mcp",
+    endpoint: "mcp://data-analysis/groupby",
+    description: "按区域、品类、渠道或月份汇总净销售额、毛利额、退款与销量。",
+    schema: jsonSchema(
+      {
+        source: { type: "string", description: "data/demo 下的 CSV 相对路径" },
+        dimension: { type: "string", enum: ["region", "product", "channel", "month"] }
+      },
+      ["dimension"]
+    ),
+    enabled: true
+  },
+  {
+    id: "mcp.data-analysis.trend",
+    name: "经营数据 MCP · 销售趋势",
+    type: "mcp",
+    endpoint: "mcp://data-analysis/trend",
+    description: "按月份或日期输出净销售额与毛利额趋势。",
+    schema: jsonSchema({
+      source: { type: "string", description: "data/demo 下的 CSV 相对路径" },
+      granularity: { type: "string", enum: ["month", "day"], default: "month" }
+    }),
+    enabled: true
+  },
+  {
+    id: "mcp.data-analysis.chart",
+    name: "经营数据 MCP · 文本图表",
+    type: "mcp",
+    endpoint: "mcp://data-analysis/chart",
+    description: "把分组结果渲染为终端文本柱状图或折线示意，便于在纯文本 trace 中比较。",
+    schema: jsonSchema(
+      {
+        source: { type: "string", description: "data/demo 下的 CSV 相对路径" },
+        dimension: { type: "string", enum: ["region", "product", "channel", "month"] },
+        chartType: { type: "string", enum: ["bar", "line"], default: "bar" }
+      },
+      ["dimension"]
     ),
     enabled: true
   },

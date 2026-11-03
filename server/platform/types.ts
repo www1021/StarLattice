@@ -131,6 +131,13 @@ export type LoopNode = NodeBase & {
   body: WorkflowNode[];
 };
 
+export type VerifyCheck = {
+  /** 目前只支持数值比对；未知类型在编译期报错。 */
+  type: "number_match";
+  /** 相对容差，范围 0–1；留空表示精确匹配。 */
+  tolerance?: number;
+};
+
 export type VerifyNode = NodeBase & {
   kind: "verify";
   verifier: string;
@@ -141,6 +148,7 @@ export type VerifyNode = NodeBase & {
   minChars?: number;
   verifiers?: string[];
   requireEvidence?: boolean;
+  checks?: VerifyCheck[];
 };
 
 export type ApproveNode = NodeBase & {

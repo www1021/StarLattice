@@ -56,7 +56,7 @@ export function createLlmDimensionScorer(): DimensionScorer {
 
 async function requestDimensionScores(context: ScorerContext) {
   const system = [
-    "你是教学训练平台的独立验证器。按给定 rubric 给候选产物逐维度打分。",
+    "你是独立验证器。按给定 rubric 给候选产物逐维度打分。",
     context.agent.prompt,
     "评分要求：只依据产物正文与证据列表；分数范围 0-1，可保留两位小数；不要参考产物自评。",
     '只输出合法 JSON，格式为 {"scores":{"维度名":0.00},"reason":"一句话依据"}，不要输出 Markdown 代码块或额外解释。'

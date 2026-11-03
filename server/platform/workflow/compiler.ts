@@ -326,6 +326,23 @@ class Compiler {
           if (node.rubric !== undefined && node.rubric.length > 8) {
             this.error("invalid-verify-rubric", location, "verify.rubric 最多 8 个维度");
           }
+          node.checks?.forEach((check, index) => {
+            const checkType: string = check.type;
+            if (checkType !== "number_match") {
+              this.error(
+                "unknown-verify-check",
+                `${location}.checks[${index}].type`,
+                `未知的验证检查类型 "${checkType}"，仅支持 number_match`
+              );
+            }
+            if (check.tolerance !== undefined && (check.tolerance < 0 || check.tolerance > 1)) {
+              this.error(
+                "invalid-verify-tolerance",
+                `${location}.checks[${index}].tolerance`,
+                "verify.checks.tolerance 必须在 0 到 1 之间"
+              );
+            }
+          });
           break;
       }
     }

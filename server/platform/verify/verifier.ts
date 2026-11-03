@@ -55,6 +55,8 @@ export type VerifyRequest = {
   artifactNodeId?: string;
   /** 支持字符串与知识库 citation 对象；执行器与验证器共用同一套归一化。 */
   evidence?: unknown;
+  /** 数值比对规则（checks）的对照数据；缺失时 number_match 直接判失败。 */
+  reference?: unknown;
   attempt?: number;
   mode?: "stub" | "live";
   agents?: AgentRecord[];
@@ -205,7 +207,7 @@ export class LayeredVerifier {
       attempt: Math.max(1, request.attempt ?? 1),
       artifactText,
       evidence,
-      rule: evaluateRules(node, request.artifact, artifactText, evidence, rubric),
+      rule: evaluateRules(node, request.artifact, artifactText, evidence, rubric, collectText(request.reference)),
       baseline: evaluateBaseline(node, artifactText),
       verifiers: resolveVerifierAgents(node, request.agents ?? [])
     };
@@ -333,7 +335,8 @@ function evaluateRules(
   artifact: unknown,
   artifactText: string,
   evidence: string[],
-  rubric: string[]
+  rubric: string[],
+  referenceText: string
 ): VerifyLayers["rule"] {
   const checks: RuleCheck[] = [];
   const present = artifact !== undefined && artifact !== null && artifactText.trim() !== "";
@@ -383,11 +386,97 @@ function evaluateRules(
     });
   }
 
+  node.checks?.forEach((check, index) => {
+    if (check.type !== "number_match") {
+      return;
+    }
+    const result = evaluateNumberMatch(artifactText, referenceText, check.tolerance);
+    checks.push({
+      key: `number_match:${index}`,
+      label: "数值一致",
+      passed: result.passed,
+      detail: result.detail
+    });
+  });
+
   const passedCount = checks.filter((check) => check.passed).length;
   return {
     score: checks.length === 0 ? 1 : round4(passedCount / checks.length),
     checks
   };
+}
+
+type ParsedNumber = {
+  raw: number;
+  /** 百分数折算为小数后的小数值，用于兼容 “12.5%” 与 “0.125” 两种写法。 */
+  normalized: number;
+  text: string;
+};
+
+const DATE_PATTERN = /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/g;
+const NUMBER_PATTERN = /(?<![A-Za-z0-9_.])([-−–—])?\s*((?:\d{1,3}(?:[,，]\d{3})+|\d+)(?:\.\d+)?)\s*(%|％)?/g;
+
+function evaluateNumberMatch(
+  artifactText: string,
+  referenceText: string,
+  tolerance = 0
+): { passed: boolean; detail: string } {
+  const reference = extractNumbers(referenceText);
+  if (reference.length === 0) {
+    return { passed: false, detail: "对照数据为空或没有可解析的数字" };
+  }
+  const artifact = extractNumbers(artifactText);
+  if (artifact.length === 0) {
+    return { passed: false, detail: "产物中没有可解析的数字" };
+  }
+  const unmatched = artifact.filter(
+    (value) => !reference.some((expected) => numbersMatch(value, expected, tolerance))
+  );
+  if (unmatched.length > 0) {
+    return {
+      passed: false,
+      detail: `产物 ${artifact.length} 个数字中有 ${unmatched.length} 个与对照数据不一致（例如 ${unmatched[0].text}）`
+    };
+  }
+  return {
+    passed: true,
+    detail: `产物 ${artifact.length} 个数字全部匹配对照数据（容差 ${tolerance}）`
+  };
+}
+
+function extractNumbers(text: string): ParsedNumber[] {
+  const cleaned = text.replace(DATE_PATTERN, " ");
+  const numbers: ParsedNumber[] = [];
+  for (const match of cleaned.matchAll(NUMBER_PATTERN)) {
+    const sign = match[1] ? -1 : 1;
+    const digits = match[2].replace(/[,，]/g, "");
+    const value = Number(digits);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    const raw = sign * value;
+    const percent = Boolean(match[3]);
+    numbers.push({
+      raw,
+      normalized: percent ? raw / 100 : raw,
+      text: match[0].trim()
+    });
+  }
+  return numbers;
+}
+
+function numbersMatch(actual: ParsedNumber, expected: ParsedNumber, tolerance: number) {
+  return withinTolerance(actual.raw, expected.raw, tolerance) ||
+    withinTolerance(actual.normalized, expected.normalized, tolerance);
+}
+
+function withinTolerance(left: number, right: number, tolerance: number) {
+  const delta = Math.abs(left - right);
+  if (delta <= 1e-9) {
+    return true;
+  }
+  const scale = Math.max(Math.abs(left), Math.abs(right), 1);
+  return delta <= scale * tolerance;
 }
 
 function evaluateBaseline(node: VerifyNode, artifactText: string): VerifyLayers["baseline"] {

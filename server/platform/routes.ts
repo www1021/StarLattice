@@ -20,7 +20,7 @@ import { WorkflowExecutor } from "./runtime/executor.js";
 import { BUILTIN_AGENTS, parseAgentWrite } from "./registry/agents.js";
 import { BUILTIN_TOOLS, parseToolWrite } from "./registry/tools.js";
 import { parseTeamWrite } from "./registry/teams.js";
-import { DEMO_MCP_SERVER, McpManager } from "./mcp/mcpManager.js";
+import { DATA_ANALYSIS_MCP_SERVER, DEMO_MCP_SERVER, McpManager } from "./mcp/mcpManager.js";
 import {
   bindTeamKnowledge,
   bindWorkflowKnowledge,
@@ -707,7 +707,7 @@ function seedRegistry(store: PlatformStateStore) {
   return {
     agents: store.seedAgents(BUILTIN_AGENTS),
     tools: store.seedTools(BUILTIN_TOOLS),
-    mcpServers: store.seedMcpServers([DEMO_MCP_SERVER])
+    mcpServers: store.seedMcpServers([DEMO_MCP_SERVER, DATA_ANALYSIS_MCP_SERVER])
   };
 }
 

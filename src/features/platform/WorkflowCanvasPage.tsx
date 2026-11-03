@@ -58,6 +58,12 @@ import { NodePalette } from "./NodePalette";
 import { CanvasEdgeContext } from "./canvasEdgeContext";
 import { WorkflowEdge } from "./WorkflowEdge";
 import { applyTemplate, WORKFLOW_TEMPLATES, type WorkflowTemplate } from "./templates";
+import {
+  SCENARIO_PACK_FILTERS,
+  SCENARIO_PACK_ITEMS,
+  filterByPack,
+  type ScenarioPackFilter
+} from "../../../shared/scenarioPacks";
 import { NODE_VISUALS } from "./nodeVisuals";
 import { definitionTemporal, useDefinitionHistory } from "./useDefinitionHistory";
 import type {
@@ -80,6 +86,16 @@ const edgeTypes = { workflow: WorkflowEdge };
 const EMPTY_SPECS: NodeTypeSpec[] = [];
 const EDGE_COLOR = "#94a3b8";
 const PENDING_NODE_KEY = "platform:pending-node";
+const CORE_WORKFLOW_IDS = new Set<string>(SCENARIO_PACK_ITEMS.core.workflows);
+
+/** 通用流程排在最前，保证平台默认打开的不是某个行业场景。 */
+function orderWorkflowsByPack(workflows: WorkflowSummary[]): WorkflowSummary[] {
+  return [...workflows].sort(
+    (left, right) =>
+      Number(CORE_WORKFLOW_IDS.has(left.id) ? 0 : 1) -
+      Number(CORE_WORKFLOW_IDS.has(right.id) ? 0 : 1)
+  );
+}
 
 type Banner = {
   tone: "error" | "success" | "info";
@@ -87,15 +103,19 @@ type Banner = {
   issues?: PlatformIssue[];
 };
 
-export function WorkflowCanvasPage() {
+type WorkflowCanvasPageProps = {
+  newTaskToken?: number;
+};
+
+export function WorkflowCanvasPage({ newTaskToken }: WorkflowCanvasPageProps) {
   return (
     <ReactFlowProvider>
-      <PlatformWorkspace />
+      <PlatformWorkspace newTaskToken={newTaskToken} />
     </ReactFlowProvider>
   );
 }
 
-function PlatformWorkspace() {
+function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
   const { fitView, getZoom, setCenter, screenToFlowPosition } = useReactFlow();
   const [contract, setContract] = useState<NodeTypesResponse>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
@@ -134,6 +154,18 @@ function PlatformWorkspace() {
   const pendingAppliedRef = useRef(false);
   const definitionRef = useRef<WorkflowDefinition | undefined>(undefined);
   definitionRef.current = definition;
+  const newTaskTokenRef = useRef(0);
+
+  useEffect(() => {
+    if (!newTaskToken || newTaskToken === newTaskTokenRef.current || !definition) {
+      return;
+    }
+    newTaskTokenRef.current = newTaskToken;
+    setTrialTarget(undefined);
+    setTrace(undefined);
+    setRunValues(initialRunValues(definition));
+    setRunOpen(true);
+  }, [newTaskToken, definition]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<PlatformFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -178,8 +210,9 @@ function PlatformWorkspace() {
           return;
         }
         setContract(contractResponse);
-        setWorkflows(listResponse.workflows);
-        const first = listResponse.workflows[0];
+        const ordered = orderWorkflowsByPack(listResponse.workflows);
+        setWorkflows(ordered);
+        const first = ordered[0];
         if (first) {
           const detail = await platformApi.getWorkflow(first.id);
           if (cancelled) {
@@ -440,7 +473,7 @@ function PlatformWorkspace() {
       try {
         const next = await platformApi.nodeTypes();
         setContract(next);
-        setWorkflows((await platformApi.listWorkflows()).workflows);
+        setWorkflows(orderWorkflowsByPack((await platformApi.listWorkflows()).workflows));
         const count = (kind: NodeTypeSpec["kind"], key: string = kind) =>
           next.nodeTypes.find((spec) => spec.kind === kind)?.fields.find((field) => field.key === key)
             ?.options?.length ?? 0;
@@ -1509,7 +1542,7 @@ function NewWorkflowDialog({ existingIds, onCreate, onClose }: NewWorkflowDialog
           <input
             autoFocus
             value={name}
-            placeholder="我的教研流程"
+            placeholder="我的任务流程"
             onChange={(event) => setName(event.target.value)}
           />
         </label>
@@ -2136,9 +2169,38 @@ type TemplateCardsProps = {
 };
 
 function TemplateCards({ onApply, compact }: TemplateCardsProps) {
+  const [pack, setPack] = useState<ScenarioPackFilter | "all">("all");
+  const templates = filterByPack("templates", WORKFLOW_TEMPLATES, (template) => template.id, pack);
+
   return (
-    <div className={`platform-template-grid ${compact ? "is-compact" : ""}`}>
-      {WORKFLOW_TEMPLATES.map((template) => {
+    <>
+      {!compact && (
+        <div className="registry-pack-filter" role="group" aria-label="按场景包筛选模板">
+          <button
+            type="button"
+            className={`registry-pack-chip ${pack === "all" ? "is-active" : ""}`}
+            aria-pressed={pack === "all"}
+            onClick={() => setPack("all")}
+          >
+            全部
+            <span>{WORKFLOW_TEMPLATES.length}</span>
+          </button>
+          {SCENARIO_PACK_FILTERS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`registry-pack-chip ${pack === item.id ? "is-active" : ""}`}
+              aria-pressed={pack === item.id}
+              onClick={() => setPack(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {templates.length === 0 && <p className="registry-pack-empty">该场景包还没有模板。</p>}
+      <div className={`platform-template-grid ${compact ? "is-compact" : ""}`}>
+        {templates.map((template) => {
         const kinds = [...new Set(template.nodes.map((node) => node.kind))];
         return (
           <button
@@ -2175,8 +2237,9 @@ function TemplateCards({ onApply, compact }: TemplateCardsProps) {
             </span>
           </button>
         );
-      })}
-    </div>
+        })}
+      </div>
+    </>
   );
 }
 
@@ -2193,7 +2256,7 @@ function CanvasEmptyState({
         <Sparkles size={19} />
       </span>
       <h3>从第一个节点开始</h3>
-      <p>从左侧节点库拖入，或选择一套模板快速搭出可运行的教学流程。</p>
+      <p>从左侧节点库拖入，或选择一套模板快速搭出可运行的业务流程。</p>
       <div className="platform-canvas-empty-actions">
         <button type="button" className="platform-button is-ghost" onClick={onOpenPalette}>
           <Plus size={14} /> 打开节点库

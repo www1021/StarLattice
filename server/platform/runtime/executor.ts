@@ -1175,6 +1175,7 @@ export class WorkflowExecutor {
       artifact: input.artifact,
       artifactNodeId: typeof input.targetNodeId === "string" ? input.targetNodeId : undefined,
       evidence: normalizeEvidence(input.evidence),
+      reference: input.reference,
       attempt: state.scope.verifyRounds + 1,
       mode: this.mode,
       agents: this.store.listAgents()
@@ -1302,7 +1303,7 @@ function stubLlm(node: LlmNode, input: Record<string, unknown>) {
   return {
     mode: "stub",
     kind: "llm",
-    model: node.model ?? "classroom-llm",
+    model: node.model ?? "platform-default",
     summary: `[stub] ${node.title ?? node.id} 已完成模型思考`,
     thinking: node.thinking === false ? undefined : thinking,
     output: `[stub:llm] ${node.title ?? node.id} 的输出`,

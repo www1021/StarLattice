@@ -38,10 +38,15 @@ export type WorkflowNode = {
   else?: WorkflowNode[];
   maxIterations?: number;
   while?: string;
+  patience?: number;
+  budget?: { maxDurationMs?: number; maxTokens?: number };
   body?: WorkflowNode[];
   verifier?: string;
+  verifiers?: string[];
   rubric?: string[];
   threshold?: number;
+  minChars?: number;
+  checks?: Array<{ type: "number_match"; tolerance?: number }>;
   instructions?: string;
   assignee?: string;
   timeoutMs?: number;
@@ -403,6 +408,14 @@ export type KnowledgeBaseOverview = {
   bases: KnowledgeBaseRef[];
   teams: TeamRecord[];
   workflows: KnowledgeWorkflowRef[];
+};
+
+export type StarterKnowledgePack = {
+  id: string;
+  name: string;
+  description: string;
+  recommendedFor: string[];
+  documentCount: number;
 };
 
 export type KnowledgeDocument = {

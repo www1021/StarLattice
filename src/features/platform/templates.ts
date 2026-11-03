@@ -12,6 +12,300 @@ export type WorkflowTemplate = {
 
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   {
+    id: "report-pipeline",
+    name: "检索 → 报告流水线",
+    description: "检索证据 → 起草 → 验证 → 按问题修订 → 汇总报告，带 Self-Loop 修订入口。",
+    badge: "通用 · 报告",
+    inputs: [
+      { name: "topic", type: "string", required: true, description: "任务主题或要回答的问题" }
+    ],
+    nodes: [
+      { id: "start", kind: "start", title: "开始" },
+      {
+        id: "retrieve",
+        kind: "knowledge",
+        title: "检索证据",
+        query: "${input.topic}",
+        topK: 5,
+        inputs: { query: "${input.topic}" }
+      },
+      {
+        id: "draft",
+        kind: "llm",
+        title: "起草初稿",
+        system: "你是一名专业分析顾问，先给结论，再给依据，输出结构化、可交付的内容。",
+        prompt: "围绕 ${input.topic} 起草一份结构化初稿，先给结论，再给依据与过程。",
+        thinking: true,
+        inputs: { topic: "${input.topic}", evidence: "${retrieve.output}" }
+      },
+      {
+        id: "verify",
+        kind: "verify",
+        title: "质量验证",
+        verifier: "quality-verifier",
+        rubric: ["目标达成", "证据支撑", "可执行性"],
+        threshold: 0.8
+      },
+      {
+        id: "revise",
+        kind: "llm",
+        title: "按问题修订",
+        prompt: "根据以下问题清单修订初稿，保留已达标部分：\n${verify.issues}",
+        inputs: { draft: "${draft.output}", issues: "${verify.issues}" }
+      },
+      {
+        id: "report",
+        kind: "template",
+        title: "汇总报告",
+        template: "# ${input.topic} 任务报告\n\n${revise.output}",
+        inputs: { content: "${revise.output}" }
+      },
+      { id: "end", kind: "end", title: "结束", inputs: { report: "${report.output}" } }
+    ],
+    edges: [
+      { from: "start", to: "retrieve" },
+      { from: "retrieve", to: "draft" },
+      { from: "draft", to: "verify" },
+      { from: "verify", to: "revise", label: "按问题修订" },
+      { from: "revise", to: "report" },
+      { from: "report", to: "end" }
+    ]
+  },
+  {
+    id: "document-review",
+    name: "文档复核",
+    description: "整理原文 → 规则检查 → 评审意见 → 独立验证 → 输出结论。",
+    badge: "通用 · 评审",
+    inputs: [
+      { name: "document", type: "string", required: true, description: "待复核的原文或产物" }
+    ],
+    nodes: [
+      { id: "start", kind: "start", title: "开始" },
+      {
+        id: "normalize",
+        kind: "template",
+        title: "整理原文",
+        template: "待复核原文：\n${input.document}",
+        inputs: { document: "${input.document}" }
+      },
+      {
+        id: "check",
+        kind: "llm",
+        title: "规则检查",
+        system: "你是一名规则检查器，只报告可核对的不符合项，并给出所在位置。",
+        prompt: "检查以下原文是否符合任务要求，逐条列出不符合项与依据：\n${normalize.output}",
+        inputs: { document: "${normalize.output}" }
+      },
+      {
+        id: "review",
+        kind: "llm",
+        title: "评审意见",
+        system: "你是一名独立评审专家，意见要具体到可执行动作。",
+        prompt: "基于规则检查结果，给出评审结论、必须修改项与建议修改项：\n${check.output}",
+        inputs: { findings: "${check.output}" }
+      },
+      {
+        id: "verify",
+        kind: "verify",
+        title: "评审质量验证",
+        verifier: "quality-verifier",
+        rubric: ["问题定位", "证据支撑", "建议可执行"],
+        threshold: 0.78
+      },
+      { id: "end", kind: "end", title: "结束", inputs: { review: "${review.output}" } }
+    ],
+    edges: [
+      { from: "start", to: "normalize" },
+      { from: "normalize", to: "check" },
+      { from: "check", to: "review" },
+      { from: "review", to: "verify" },
+      { from: "verify", to: "end" }
+    ]
+  },
+  {
+    id: "business-analysis",
+    name: "经营数据分析",
+    description: "销售概况 → 区域与品类并行分析 → 毛利初稿 → number_match 验证拦截 → 净额口径重算 → 复核通过。",
+    badge: "经营分析 · 报告",
+    inputs: [
+      {
+        name: "question",
+        type: "string",
+        required: false,
+        description: "本次经营问题，例如「本月各区域与品类的毛利表现如何？」"
+      },
+      {
+        name: "source",
+        type: "string",
+        required: false,
+        description: "data/demo 下的销售明细路径，默认 data/demo/sales.csv"
+      }
+    ],
+    nodes: [
+      { id: "start", kind: "start", title: "开始" },
+      {
+        id: "plan",
+        kind: "agent",
+        title: "分析规划",
+        agent: "analysis-planner",
+        inputs: { question: "${input.question}", source: "${input.source}" },
+        prompt:
+          "围绕「${input.question}」制定分析计划：明确销售额口径、区域与品类两个分析维度，以及毛利额和毛利率的验收标准。"
+      },
+      {
+        id: "profile",
+        kind: "tool",
+        title: "销售数据概况",
+        tool: "mcp.data-analysis.profile",
+        args: { source: "${input.source}" }
+      },
+      {
+        id: "dimensions",
+        kind: "parallel",
+        title: "区域 × 品类并行分析",
+        branches: [
+          {
+            id: "region",
+            kind: "tool",
+            title: "区域汇总",
+            tool: "mcp.data-analysis.groupby",
+            args: { source: "${input.source}", dimension: "region" }
+          },
+          {
+            id: "product",
+            kind: "tool",
+            title: "品类汇总",
+            tool: "mcp.data-analysis.groupby",
+            args: { source: "${input.source}", dimension: "product" }
+          }
+        ]
+      },
+      {
+        id: "analysis",
+        kind: "agent",
+        title: "区域与品类分析",
+        agent: "data-analyst",
+        inputs: {
+          profile: "${profile.output}",
+          region: "${region.output}",
+          product: "${product.output}"
+        },
+        prompt: "基于区域与品类汇总，指出增长来源、拖累项与异常波动；只引用工具返回的数字。"
+      },
+      {
+        id: "metrics",
+        kind: "tool",
+        title: "毛利核算（初稿·毛额口径）",
+        tool: "mcp.data-analysis.metric_calc",
+        args: { source: "${input.source}", revenueBasis: "gross" }
+      },
+      {
+        id: "review",
+        kind: "agent",
+        title: "经营复核",
+        agent: "business-reviewer",
+        inputs: {
+          profile: "${profile.output}",
+          analysis: "${analysis.output}",
+          metrics: "${metrics.output}"
+        },
+        prompt:
+          "核对毛利核算的销售额口径：退款必须从销售额中扣除。若发现毛销售额口径导致高估，请明确指出并给出重算要求。"
+      },
+      {
+        id: "report",
+        kind: "template",
+        title: "生成分析报告",
+        template:
+          "# 经营分析报告\n\n## 结论\n本期销售按净额口径核算：毛利额与毛利率以扣除退款后的净销售额为基准。\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 毛利核算\n${metrics.output}\n\n## 口径说明\n退款需从销售额中扣除，毛利额 = 净销售额 − 销货成本。"
+      },
+      {
+        id: "reference-metrics",
+        kind: "tool",
+        title: "核对基准（净额口径毛利）",
+        tool: "mcp.data-analysis.metric_calc",
+        args: { source: "${input.source}", revenueBasis: "net" }
+      },
+      {
+        id: "reference-data",
+        kind: "template",
+        title: "核对基准（正确口径）",
+        template: "${profile.output}\n\n${region.output}\n\n${product.output}\n\n${reference-metrics.output}"
+      },
+      {
+        id: "verify-initial",
+        kind: "verify",
+        title: "数值一致性验证",
+        verifier: "quality-verifier",
+        verifiers: ["quality-verifier", "business-reviewer"],
+        rubric: ["口径一致", "数据可追溯", "结论可执行"],
+        threshold: 0.7,
+        minChars: 200,
+        checks: [{ type: "number_match", tolerance: 0.01 }],
+        inputs: { artifact: "${report.output}", reference: "${reference-data.output}" }
+      },
+      {
+        id: "revise-loop",
+        kind: "loop",
+        title: "毛利口径修正",
+        maxIterations: 2,
+        while: "${verify-loop.score} < 0.7",
+        patience: 2,
+        budget: { maxDurationMs: 120000, maxTokens: 0 },
+        body: [
+          {
+            id: "recalc",
+            kind: "tool",
+            title: "按净额口径重算毛利",
+            tool: "mcp.data-analysis.metric_calc",
+            args: { source: "${input.source}", revenueBasis: "net" }
+          },
+          {
+            id: "rebuild",
+            kind: "template",
+            title: "按正确口径重建报告",
+            template:
+              "# 经营分析报告（修订版）\n\n## 结论\n本期销售按净额口径核算：毛利额与毛利率以扣除退款后的净销售额为基准。\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 毛利核算\n${recalc.output}\n\n## 口径说明\n退款需从销售额中扣除，毛利额 = 净销售额 − 销货成本。"
+          },
+          {
+            id: "verify-loop",
+            kind: "verify",
+            title: "复核修正稿",
+            verifier: "quality-verifier",
+            verifiers: ["quality-verifier", "business-reviewer"],
+            rubric: ["口径一致", "数据可追溯", "结论可执行"],
+            threshold: 0.7,
+            minChars: 200,
+            checks: [{ type: "number_match", tolerance: 0.01 }],
+            inputs: { reference: "${reference-data.output}" }
+          }
+        ]
+      },
+      {
+        id: "report-final",
+        kind: "template",
+        title: "输出修订报告",
+        template: "${rebuild.output}"
+      },
+      { id: "end", kind: "end", title: "结束", inputs: { report: "${report-final.output}" } }
+    ],
+    edges: [
+      { from: "start", to: "plan" },
+      { from: "plan", to: "profile" },
+      { from: "profile", to: "dimensions" },
+      { from: "dimensions", to: "analysis" },
+      { from: "analysis", to: "metrics" },
+      { from: "metrics", to: "review" },
+      { from: "review", to: "report" },
+      { from: "report", to: "reference-metrics" },
+      { from: "reference-metrics", to: "reference-data" },
+      { from: "reference-data", to: "verify-initial" },
+      { from: "verify-initial", to: "revise-loop" },
+      { from: "revise-loop", to: "report-final" },
+      { from: "report-final", to: "end" }
+    ]
+  },
+  {
     id: "lesson-pipeline",
     name: "教案生成流水线",
     description: "生成初稿 → 教研审核 → 按问题修订 → 汇总输出，带 Self-Loop 修订入口。",

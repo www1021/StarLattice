@@ -384,7 +384,7 @@ export function McpPage({ onOpenCanvas }: { onOpenCanvas?: () => void }) {
               显示名称
               <input
                 value={form.name}
-                placeholder="教学资源 MCP"
+                placeholder="示例 MCP"
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
               />
             </label>

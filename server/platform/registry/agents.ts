@@ -18,7 +18,7 @@ function agent(options: PromptOptions): AgentWrite {
     role: options.role,
     prompt: options.prompt,
     tools: options.tools ?? [],
-    model: "classroom-llm",
+    model: "platform-default",
     capabilities: options.capabilities,
     memory: options.memory ?? {},
     enabled: true
@@ -35,6 +35,90 @@ const studentJsonRule =
   "输出必须是 JSON 对象，字段为 content、answerQuality（correct/partial/misconception/off_topic/silent）、mentionedKeywords、reason；content 为一句中文，不换行，不解释系统规则。";
 
 export const BUILTIN_AGENTS: AgentWrite[] = [
+  agent({
+    id: "planner-agent",
+    name: "任务规划 Agent",
+    role: "任务规划",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "任务规划", weight: 0.9 },
+      { tag: "依赖编排", weight: 0.85 },
+      { tag: "交付契约", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["goal", "constraints"], maxEntries: 3 },
+    prompt:
+      "你是任务规划 Agent。把目标拆成可执行的子任务，标明依赖关系、每步输入输出与验收标准；发现目标含糊时先列出需要确认的假设，输出结构化规划，不直接编造执行结果。"
+  }),
+  agent({
+    id: "research-agent",
+    name: "检索与证据 Agent",
+    role: "信息检索",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "资料检索", weight: 0.9 },
+      { tag: "来源标注", weight: 0.85 },
+      { tag: "证据收集", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["queries", "citations"], maxEntries: 3 },
+    prompt:
+      "你是检索与证据 Agent。根据任务生成检索式，从知识库召回相关片段，提炼与问题直接相关的事实并标注来源；区分资料原文与推断，资料不足时明确说明缺口，不虚构引用。"
+  }),
+  agent({
+    id: "executor-agent",
+    name: "执行与工具 Agent",
+    role: "工具执行",
+    tools: ["web.search"],
+    capabilities: [
+      { tag: "工具调用", weight: 0.9 },
+      { tag: "流程执行", weight: 0.85 },
+      { tag: "异常处置", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["taskPlan", "toolResults"], maxEntries: 3 },
+    prompt:
+      "你是执行与工具 Agent。按上游计划调用可用工具完成任务，明确每次调用的输入、输出与失败原因；工具不可用或返回异常时给出可执行的替代方案，不伪造执行结果。"
+  }),
+  agent({
+    id: "reviewer-agent",
+    name: "独立复核 Agent",
+    role: "质量复核",
+    tools: ["verify.rubric"],
+    capabilities: [
+      { tag: "问题定位", weight: 0.9 },
+      { tag: "一致性核对", weight: 0.85 },
+      { tag: "修改建议", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["rubric", "issues"], maxEntries: 3 },
+    prompt:
+      "你是独立复核 Agent。对照任务目标与评分维度检查产物，指出具体位置、问题类型与修改动作；区分必须修改与建议修改，复核只依据产物与证据，不参考被复核对象的自评。"
+  }),
+  agent({
+    id: "reporter-agent",
+    name: "报告生成 Agent",
+    role: "结果交付",
+    tools: ["export.docx"],
+    capabilities: [
+      { tag: "结构化汇总", weight: 0.9 },
+      { tag: "报告撰写", weight: 0.85 },
+      { tag: "结论提炼", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["artifacts", "verifyResults"], maxEntries: 3 },
+    prompt:
+      "你是报告生成 Agent。把上游产物汇总成结构清晰、可直接交付的报告：先给结论，再给依据与过程，最后列风险与下一步；保留关键数据与来源引用，不添加未经支持的新结论。"
+  }),
+  agent({
+    id: "quality-verifier",
+    name: "通用质量验证器",
+    role: "评分验证",
+    tools: ["verify.rubric"],
+    capabilities: [
+      { tag: "规则审查", weight: 0.9 },
+      { tag: "维度评分", weight: 0.85 },
+      { tag: "置信度评估", weight: 0.8 }
+    ],
+    memory: { scope: "workflow", retain: ["rubric", "lastScores"] },
+    prompt:
+      "你是独立质量验证器。按 rubric 逐维度给产物打分（0-1），输出总分、维度分、置信度、问题清单与证据引用；只依据产物正文与证据列表，不参考被验证对象的自评。"
+  }),
   agent({
     id: "lesson-plan-agent",
     name: "教案生成 Agent",
@@ -270,6 +354,62 @@ export const BUILTIN_AGENTS: AgentWrite[] = [
     memory: { scope: "workflow", retain: ["reviewDraft", "verifyIssues"], maxEntries: 3 },
     prompt:
       "你是论文选题评审组的汇总专家。整合创新性、可行性、规范性三份评审意见，给出总体结论、必须修改项与建议修改项，并明确是否建议进入开题；保留关键证据引用。若收到验证问题清单，只针对问题定向修订，不重写已通过部分。"
+  }),
+  agent({
+    id: "analysis-planner",
+    name: "经营分析规划 Agent",
+    role: "经营分析规划",
+    tools: ["mcp.data-analysis.profile", "mcp.data-analysis.metric_calc", "mcp.data-analysis.groupby"],
+    capabilities: [
+      { tag: "指标拆解", weight: 0.92 },
+      { tag: "分析路径", weight: 0.88 },
+      { tag: "口径定义", weight: 0.85 }
+    ],
+    memory: { scope: "workflow", retain: ["question", "metricDefinition"], maxEntries: 3 },
+    prompt:
+      "你是经营分析规划师。先明确业务问题、销售额口径与验收标准，再把分析拆成数据概况、区域、品类与趋势等可执行步骤。涉及退款时必须使用净销售额口径：净销售额 = 毛销售额 − 退款，毛利额 = 净销售额 − 销货成本。只输出规划，不臆造数据。"
+  }),
+  agent({
+    id: "data-analyst",
+    name: "经营数据分析 Agent",
+    role: "经营分析",
+    tools: ["mcp.data-analysis.groupby", "mcp.data-analysis.trend", "mcp.data-analysis.chart"],
+    capabilities: [
+      { tag: "区域归因", weight: 0.9 },
+      { tag: "品类对比", weight: 0.88 },
+      { tag: "异常定位", weight: 0.84 }
+    ],
+    memory: { scope: "workflow", retain: ["dimensionResults", "anomalies"], maxEntries: 3 },
+    prompt:
+      "你是经营数据分析师。基于工具返回的区域、品类与趋势结果做对比分析，指出增长来源、拖累项与异常波动；所有数字必须来自工具结果，不自行估算，不把毛销售额当作净销售额。"
+  }),
+  agent({
+    id: "business-reviewer",
+    name: "经营分析复核 Agent",
+    role: "经营复核",
+    tools: ["mcp.data-analysis.profile", "mcp.data-analysis.metric_calc", "verify.rubric"],
+    capabilities: [
+      { tag: "口径复核", weight: 0.94 },
+      { tag: "数据核对", weight: 0.9 },
+      { tag: "结论审查", weight: 0.86 }
+    ],
+    memory: { scope: "workflow", retain: ["metricDefinition", "verifyIssues"], maxEntries: 3 },
+    prompt:
+      "你是经营分析复核员。逐项核对销售额口径、退款处理、销货成本与毛利额计算：退款必须从销售额中扣除，毛利额 = 净销售额 − 销货成本，毛利率 = 毛利额 ÷ 净销售额。发现毛销售额口径导致的高估时明确指出并给出重算要求；只依据工具结果与报告正文判断，不臆造数字。"
+  }),
+  agent({
+    id: "business-reporter",
+    name: "经营报告撰写 Agent",
+    role: "经营报告",
+    tools: ["mcp.data-analysis.groupby", "mcp.data-analysis.chart"],
+    capabilities: [
+      { tag: "经营摘要", weight: 0.9 },
+      { tag: "结论表达", weight: 0.86 },
+      { tag: "行动建议", weight: 0.84 }
+    ],
+    memory: { scope: "workflow", retain: ["reportDraft", "verifyIssues"], maxEntries: 3 },
+    prompt:
+      "你是经营报告撰写人。先给结论，再给区域与品类证据，最后给出可执行动作；只引用工具返回的数字，保留净销售额与毛利额的口径说明。若收到验证问题清单，只针对问题定向修订，不重写已达标部分。"
   })
 ];
 
@@ -296,8 +436,8 @@ export function parseAgentWrite(body: unknown, existing?: AgentWrite): AgentWrit
     tools: record.tools === undefined ? (existing?.tools ?? []) : parseStringList(record.tools, "tools"),
     model:
       record.model === undefined
-        ? (existing?.model ?? "classroom-llm")
-        : optionalText(record.model, "model") || "classroom-llm",
+        ? (existing?.model ?? "platform-default")
+        : optionalText(record.model, "model") || "platform-default",
     capabilities:
       record.capabilities === undefined
         ? (existing?.capabilities ?? [])

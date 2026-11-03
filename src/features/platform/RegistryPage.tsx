@@ -8,14 +8,23 @@ import {
   RefreshCw,
   RotateCcw,
   Users,
+  Wrench,
   X,
   XCircle
 } from "lucide-react";
 import { platformApi } from "./api";
+import {
+  SCENARIO_PACK_FILTERS,
+  filterByPack,
+  packLabel,
+  packOf,
+  type ScenarioPackFilter
+} from "../../../shared/scenarioPacks";
 import type {
   AgentVersionsResponse,
   RegistryAgentView,
   RegistryOverview,
+  ToolRecord,
   WorkflowSummary
 } from "./types";
 import "./platform.css";
@@ -35,8 +44,8 @@ type TeamForm = {
 };
 
 const EMPTY_FORM: TeamForm = {
-  id: "lesson-team",
-  name: "教案实训团队",
+  id: "task-team",
+  name: "通用任务团队",
   description: "",
   workflowId: "",
   knowledgeBaseIds: "",
@@ -46,6 +55,9 @@ const EMPTY_FORM: TeamForm = {
 export function RegistryPage() {
   const [overview, setOverview] = useState<RegistryOverview>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [tools, setTools] = useState<ToolRecord[]>([]);
+  const [agentPack, setAgentPack] = useState<ScenarioPackFilter | "all">("all");
+  const [toolPack, setToolPack] = useState<ScenarioPackFilter | "all">("all");
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<Banner>();
   const [showForm, setShowForm] = useState(false);
@@ -58,12 +70,14 @@ export function RegistryPage() {
 
   async function load() {
     try {
-      const [registry, workflowResponse] = await Promise.all([
+      const [registry, workflowResponse, toolResponse] = await Promise.all([
         platformApi.registry(),
-        platformApi.listWorkflows()
+        platformApi.listWorkflows(),
+        platformApi.listTools()
       ]);
       setOverview(registry);
       setWorkflows(workflowResponse.workflows);
+      setTools(toolResponse.tools);
     } catch (error) {
       setBanner({ tone: "error", text: describe(error) });
     } finally {
@@ -80,21 +94,36 @@ export function RegistryPage() {
     [workflows]
   );
 
+  const filteredAgents = useMemo(
+    () =>
+      overview
+        ? filterByPack("agents", overview.agents, (agent) => agent.id, agentPack)
+        : [],
+    [overview, agentPack]
+  );
+
+  const filteredTools = useMemo(
+    () => filterByPack("tools", tools, (tool) => tool.id, toolPack),
+    [tools, toolPack]
+  );
+
   const groups = useMemo(() => {
     if (!overview) {
       return { teams: [] as Array<{ id: string; name: string; agents: RegistryAgentView[] }>, ungrouped: [] as RegistryAgentView[] };
     }
-    const teams = overview.teams.map((team) => ({
-      id: team.id,
-      name: team.name,
-      agents: overview.agents.filter((agent) => team.agentIds.includes(agent.id))
-    }));
+    const teams = overview.teams
+      .map((team) => ({
+        id: team.id,
+        name: team.name,
+        agents: filteredAgents.filter((agent) => team.agentIds.includes(agent.id))
+      }))
+      .filter((team) => agentPack === "all" || team.agents.length > 0);
     const grouped = new Set(overview.teams.flatMap((team) => team.agentIds));
     return {
       teams,
-      ungrouped: overview.agents.filter((agent) => !grouped.has(agent.id))
+      ungrouped: filteredAgents.filter((agent) => !grouped.has(agent.id))
     };
-  }, [overview]);
+  }, [overview, filteredAgents, agentPack]);
 
   async function submitTeam() {
     if (saving) {
@@ -238,7 +267,7 @@ export function RegistryPage() {
                 团队 ID
                 <input
                   value={form.id}
-                  placeholder="lesson-team"
+                  placeholder="task-team"
                   onChange={(event) => setForm({ ...form, id: event.target.value })}
                 />
               </label>
@@ -246,7 +275,7 @@ export function RegistryPage() {
                 团队名称
                 <input
                   value={form.name}
-                  placeholder="教案实训团队"
+                  placeholder="通用任务团队"
                   onChange={(event) => setForm({ ...form, name: event.target.value })}
                 />
               </label>
@@ -254,7 +283,7 @@ export function RegistryPage() {
                 团队描述
                 <input
                   value={form.description}
-                  placeholder="负责教案生成、评审与验证"
+                  placeholder="负责任务规划、执行与复核"
                   onChange={(event) => setForm({ ...form, description: event.target.value })}
                 />
               </label>
@@ -276,7 +305,7 @@ export function RegistryPage() {
                 绑定知识库 ID
                 <input
                   value={form.knowledgeBaseIds}
-                  placeholder="逗号分隔，例：kb-lesson, kb-topic"
+                  placeholder="逗号分隔，例：kb-core, kb-demo"
                   onChange={(event) => setForm({ ...form, knowledgeBaseIds: event.target.value })}
                 />
               </label>
@@ -287,7 +316,7 @@ export function RegistryPage() {
                 成员 Agent <span>{form.agentIds.length}</span>
               </legend>
               <div className="registry-member-list">
-                {overview?.agents.map((agent) => {
+                {filteredAgents.map((agent) => {
                   const checked = form.agentIds.includes(agent.id);
                   return (
                     <label key={agent.id} className={`registry-member ${checked ? "is-on" : ""}`}>
@@ -376,8 +405,12 @@ export function RegistryPage() {
           <div className="registry-section-head">
             <Boxes size={16} />
             <h2>Agent 成员</h2>
-            <span>{overview?.agents.length ?? 0}</span>
+            <span>{filteredAgents.length}</span>
           </div>
+          <PackFilterRow value={agentPack} onChange={setAgentPack} total={overview?.agents.length ?? 0} />
+          {filteredAgents.length === 0 && (
+            <p className="registry-pack-empty">当前场景包没有 Agent。</p>
+          )}
           {groups.teams.map((team) => (
             <div className="registry-group" key={team.id}>
               <h3>
@@ -402,6 +435,37 @@ export function RegistryPage() {
                   <AgentCard key={agent.id} agent={agent} onVersions={() => void openVersions(agent)} />
                 ))}
               </div>
+            </div>
+          )}
+        </section>
+
+        <section className="registry-section">
+          <div className="registry-section-head">
+            <Wrench size={16} />
+            <h2>工具注册</h2>
+            <span>{filteredTools.length}</span>
+          </div>
+          <PackFilterRow value={toolPack} onChange={setToolPack} total={tools.length} />
+          {filteredTools.length === 0 ? (
+            <p className="registry-pack-empty">当前场景包没有注册工具。</p>
+          ) : (
+            <div className="registry-tool-grid">
+              {filteredTools.map((tool) => (
+                <article className="registry-tool-card" key={tool.id}>
+                  <header>
+                    <strong>{tool.name}</strong>
+                    <span className="registry-tool-type">{tool.type}</span>
+                  </header>
+                  <p>{tool.description || "未填写描述"}</p>
+                  <footer>
+                    <code>{tool.id}</code>
+                    <span>{packLabel(packOf("tools", tool.id))}</span>
+                    <span className={tool.enabled ? "is-on" : "is-off"}>
+                      {tool.enabled ? "启用" : "停用"}
+                    </span>
+                  </footer>
+                </article>
+              ))}
             </div>
           )}
         </section>
@@ -545,6 +609,41 @@ function AgentCard({ agent, onVersions }: AgentCardProps) {
         </button>
       </footer>
     </article>
+  );
+}
+
+function PackFilterRow({
+  value,
+  onChange,
+  total
+}: {
+  value: ScenarioPackFilter | "all";
+  onChange: (value: ScenarioPackFilter | "all") => void;
+  total: number;
+}) {
+  return (
+    <div className="registry-pack-filter" role="group" aria-label="按场景包筛选">
+      <button
+        type="button"
+        className={`registry-pack-chip ${value === "all" ? "is-active" : ""}`}
+        aria-pressed={value === "all"}
+        onClick={() => onChange("all")}
+      >
+        全部
+        <span>{total}</span>
+      </button>
+      {SCENARIO_PACK_FILTERS.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className={`registry-pack-chip ${value === item.id ? "is-active" : ""}`}
+          aria-pressed={value === item.id}
+          onClick={() => onChange(item.id)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

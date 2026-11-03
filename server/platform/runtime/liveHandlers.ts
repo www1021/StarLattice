@@ -390,8 +390,8 @@ function buildReportTool(
   // 报告正文由上游产物原样组装，避免再调一次模型把证据与结构改写掉。
   // 循环未执行时 ${revise.output} 不存在，回退到最近一次产出的最优产物。
   const observer = renderText(input.observer) || artifactText(context.scope.lastArtifact);
-  const title = stringValue(input.title) || "课堂训练报告";
-  const bodyLabel = stringValue(input.bodyLabel) || "观察员结论";
+  const title = stringValue(input.title) || "任务报告";
+  const bodyLabel = stringValue(input.bodyLabel) || "评审结论";
   const lines = [
     `# ${title}`,
     "",

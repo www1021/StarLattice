@@ -19,7 +19,8 @@ import { platformApi, uploadKnowledgeDocument } from "./api";
 import type {
   KnowledgeBaseOverview,
   KnowledgeCitation,
-  KnowledgeDocument
+  KnowledgeDocument,
+  StarterKnowledgePack
 } from "./types";
 import "./platform.css";
 
@@ -38,7 +39,7 @@ export function KnowledgePage() {
   const [uploading, setUploading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [query, setQuery] = useState("分数的意义 教学设计");
+  const [query, setQuery] = useState("");
   const [banner, setBanner] = useState<Banner>();
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -46,6 +47,8 @@ export function KnowledgePage() {
   const [binding, setBinding] = useState<string>();
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [starterPacks, setStarterPacks] = useState<StarterKnowledgePack[]>([]);
+  const [importingPack, setImportingPack] = useState<string>();
 
   async function refresh(selectId?: string) {
     try {
@@ -63,7 +66,24 @@ export function KnowledgePage() {
 
   useEffect(() => {
     void refresh();
+    void platformApi
+      .knowledgeStarterPacks()
+      .then((response) => setStarterPacks(response.packs))
+      .catch(() => setStarterPacks([]));
   }, []);
+
+  async function importStarterPack(packId: string) {
+    setImportingPack(packId);
+    try {
+      const { base } = await platformApi.importKnowledgeStarterPack(packId);
+      setBanner({ tone: "success", text: `已复制到「${base.name}」，可直接上传补充资料或绑定到工作流。` });
+      await refresh(base.id);
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setImportingPack(undefined);
+    }
+  }
 
   useEffect(() => {
     if (!selectedId) {
@@ -315,6 +335,39 @@ export function KnowledgePage() {
         </section>
       )}
 
+      {starterPacks.length > 0 && (
+        <section className="knowledge-starter-packs">
+          <header>
+            <span>示例资料包</span>
+            <small>复制到本地后可直接绑定团队或工作流</small>
+          </header>
+          <div className="knowledge-starter-grid">
+            {starterPacks.map((pack) => (
+              <article key={pack.id}>
+                <div>
+                  <strong>{pack.name}</strong>
+                  <small>{pack.documentCount} 份资料 · 适合 {pack.recommendedFor.join("、")}</small>
+                </div>
+                <p>{pack.description}</p>
+                <button
+                  type="button"
+                  className="platform-button is-ghost"
+                  disabled={importingPack === pack.id}
+                  onClick={() => void importStarterPack(pack.id)}
+                >
+                  {importingPack === pack.id ? (
+                    <Loader2 size={14} className="is-spinning" />
+                  ) : (
+                    <FolderPlus size={14} />
+                  )}
+                  {importingPack === pack.id ? "复制中…" : "复制到我的资料"}
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="knowledge-layout">
         <aside className="knowledge-list">
           <header className="knowledge-list-head">
@@ -456,7 +509,7 @@ export function KnowledgePage() {
                   <div className="knowledge-search">
                     <input
                       value={query}
-                      placeholder="输入要检索的教学问题"
+                      placeholder="输入要检索的问题"
                       onChange={(event) => setQuery(event.target.value)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {

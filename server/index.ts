@@ -55,6 +55,7 @@ import {
 import {
   type ChatMessage,
   type ImageContentBlock,
+  buildOfficeAssistantSystemPrompt,
   isQwenConfigured,
   streamQwenChat,
   type TextContentBlock,
@@ -132,6 +133,7 @@ type ChatStreamRequest = {
   knowledgeBaseIds?: unknown;
   messages?: unknown;
   trainingType?: unknown;
+  assistantMode?: unknown;
 };
 
 type StreamPhaseStep = {
@@ -1352,6 +1354,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   const enableThinking = parseBoolean(body.enableThinking);
   const knowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
   const requestedTrainingType = normalizeTrainingType(body.trainingType);
+  const assistantMode = body.assistantMode === "office" ? "office" : "education";
   const isKnowledgeBaseOverview = isKnowledgeBaseOverviewRequest(
     getLastUserText(messages)
   );
@@ -1368,6 +1371,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         messageCount: messages.length,
         lastUserText: summarizeText(getLastUserText(messages)),
         trainingType: requestedTrainingType,
+        assistantMode,
         knowledgeBaseCount: knowledgeBaseIds.length,
         attachmentCount: getUploadedFiles(request).length
       },
@@ -1435,6 +1439,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       writeSse(response, "delta", { content: assistantContent });
     } else {
       const streamResult = await streamQwenChat({
+        system: assistantMode === "office" ? buildOfficeAssistantSystemPrompt() : undefined,
         messages: modelMessages,
         enableThinking,
         signal: abortController.signal,
@@ -1468,6 +1473,24 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
 
     for (const artifact of artifacts) {
       writeSse(response, "artifact", artifact);
+    }
+
+    if (assistantMode === "office") {
+      observation.update({
+        output: {
+          conversationId,
+          assistantMode,
+          citationCount: citations.length,
+          artifactCount: artifacts.length,
+          assistantCharacterCount: assistantContent.length,
+          thinkingCharacterCount: thinkingContent.length
+        }
+      });
+      writeSse(response, "done", {
+        conversationId,
+        thinkingText: enableThinking ? thinkingContent || undefined : undefined
+      });
+      return;
     }
 
     const storedMessages: StoredChatMessage[] = [
@@ -3383,9 +3406,9 @@ function buildGrowthReportArtifact(
     `下一步：${summary.reflectionSummary.nextAction}`
   ].join("\n");
   return {
-    name: `易师训成长档案.${type}`,
+    name: `StarLattice成长档案.${type}`,
     type,
-    title: "易师训师范生教学能力成长档案",
+    title: "StarLattice 师范生教学能力成长档案",
     content: [
       `累计训练：${summary.totalTrainings} 次`,
       `平均得分：${summary.averageScore || 0} 分`,

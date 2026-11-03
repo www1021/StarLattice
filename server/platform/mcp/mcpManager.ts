@@ -31,6 +31,15 @@ export const DEMO_MCP_SERVER: McpServerWrite = {
   enabled: true
 };
 
+export const DATA_ANALYSIS_MCP_SERVER: McpServerWrite = {
+  id: "data-analysis",
+  name: "经营数据分析 MCP（本地示例）",
+  transport: "stdio",
+  command: "node",
+  args: ["scripts/data-analysis-mcp.mjs"],
+  enabled: true
+};
+
 const SERVER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const MAX_ARGS = 50;
 const MAX_ENV_KEYS = 50;

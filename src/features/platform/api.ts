@@ -20,6 +20,7 @@ import type {
   SaveTeamResponse,
   SaveToolResponse,
   SaveWorkflowResponse,
+  StarterKnowledgePack,
   StepRecord,
   TeamRecord,
   ToolRecord,
@@ -60,7 +61,11 @@ export async function uploadKnowledgeDocument(
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/platform${path}`, {
+  return requestFrom<T>(`/api/platform${path}`, init);
+}
+
+async function requestFrom<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }
   });
@@ -74,6 +79,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return payload as T;
+}
+
+function knowledgeRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestFrom<T>(`/api/knowledge${path}`, init);
 }
 
 export const platformApi = {
@@ -155,6 +164,14 @@ export const platformApi = {
     request<SaveTeamResponse>("/teams", { method: "POST", body: JSON.stringify(team) }),
 
   knowledgeBases: () => request<KnowledgeBaseOverview>("/knowledge-bases"),
+
+  knowledgeStarterPacks: () => knowledgeRequest<{ packs: StarterKnowledgePack[] }>("/starter-packs"),
+
+  importKnowledgeStarterPack: (id: string) =>
+    knowledgeRequest<{ base: { id: string; name: string } }>(
+      `/starter-packs/${encodeURIComponent(id)}/import`,
+      { method: "POST" }
+    ),
 
   createKnowledgeBase: (name: string) =>
     request<{ base: { id: string; name: string } }>("/knowledge-bases", {

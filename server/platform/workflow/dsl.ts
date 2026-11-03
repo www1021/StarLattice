@@ -4,6 +4,7 @@ import {
   NODE_KINDS,
   type HttpMethod,
   type NodeKind,
+  type VerifyCheck,
   type WorkflowDefinition,
   type WorkflowEdge,
   type WorkflowNode,
@@ -13,6 +14,7 @@ import {
 
 const VARIABLE_TYPES = new Set<WorkflowVariableType>(["string", "number", "boolean", "object"]);
 const HTTP_METHODS = new Set<string>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const VERIFY_CHECK_TYPES = new Set<VerifyCheck["type"]>(["number_match"]);
 
 export class WorkflowSyntaxError extends Error {
   constructor(readonly path: string, message: string) {
@@ -228,7 +230,13 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         requireEvidence:
           record.requireEvidence === undefined
             ? undefined
-            : requireBoolean(record.requireEvidence, `${location}.requireEvidence`)
+            : requireBoolean(record.requireEvidence, `${location}.requireEvidence`),
+        checks:
+          record.checks === undefined
+            ? undefined
+            : asArray(record.checks, `${location}.checks`).map((item, index) =>
+                parseVerifyCheck(item, `${location}.checks[${index}]`)
+              )
       };
     case "approve":
       return {
@@ -246,6 +254,22 @@ function parseNode(value: unknown, location: string): WorkflowNode {
 
 function parseStringArray(value: unknown, location: string): string[] {
   return asArray(value, location).map((item, index) => requireString(item, `${location}[${index}]`));
+}
+
+function parseVerifyCheck(value: unknown, location: string): VerifyCheck {
+  const record = asRecord(value, location);
+  const type = requireString(record.type, `${location}.type`);
+  if (!VERIFY_CHECK_TYPES.has(type as VerifyCheck["type"])) {
+    throw new WorkflowSyntaxError(
+      `${location}.type`,
+      `未知的验证检查类型 "${type}"，仅支持 ${[...VERIFY_CHECK_TYPES].join(" / ")}`
+    );
+  }
+  return {
+    type: type as VerifyCheck["type"],
+    tolerance:
+      record.tolerance === undefined ? undefined : requireNumber(record.tolerance, `${location}.tolerance`)
+  };
 }
 
 function parseStringRecord(value: unknown, location: string): Record<string, string> {

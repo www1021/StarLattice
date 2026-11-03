@@ -21,6 +21,7 @@ import {
   Gauge,
   GitCompareArrows,
   Layers3,
+  Languages,
   MessageCircleQuestion,
   Mic,
   NotebookPen,
@@ -35,6 +36,7 @@ import {
   Sparkles,
   Split,
   Square,
+  Table2,
   Target,
   Trash2,
   TrendingUp,
@@ -184,11 +186,13 @@ type StarterKnowledgePack = {
   id: string;
   name: string;
   description: string;
-  recommendedFor: TrainingType[];
+  recommendedFor: string[];
   documentCount: number;
 };
 
 type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
+
+type ChatMode = "office" | "education";
 
 type EvaluationDimension = {
   name: string;
@@ -1001,6 +1005,29 @@ const quickTasks: QuickTask[] = [
     prompt: "帮我整理实习日志与反思，突出课堂观察、问题分析和改进计划。",
     trainingType: "实习反思",
     icon: NotebookPen
+  }
+];
+
+const officeQuickTasks = [
+  {
+    label: "写一份工作总结",
+    prompt: "帮我写一份本周工作总结，按完成事项、关键进展、问题与下周计划组织。",
+    icon: NotebookPen
+  },
+  {
+    label: "整理会议纪要",
+    prompt: "帮我把会议内容整理成结构化纪要，包含结论、待办、负责人和截止时间。",
+    icon: FileText
+  },
+  {
+    label: "翻译并润色",
+    prompt: "帮我把下面这段内容翻译成英文，并润色成适合对外沟通的表达。",
+    icon: Languages
+  },
+  {
+    label: "分析表格数据",
+    prompt: "我会上传一份表格，请帮我分析趋势、异常和可执行的业务建议。",
+    icon: Table2
   }
 ];
 
@@ -6379,6 +6406,8 @@ type ComposerProps = {
   knowledgePanelRequestKey: number;
   knowledgeSelectionMode?: "lesson-guided";
   knowledgeUploadStatus?: string;
+  placeholder?: string;
+  ariaLabel?: string;
   selectedKnowledgeBaseIds: string[];
   onAttachFiles: (files: FileList | null) => void;
   onChangeInput: (value: string) => void;
@@ -6403,6 +6432,8 @@ function Composer({
   knowledgePanelRequestKey,
   knowledgeSelectionMode,
   knowledgeUploadStatus,
+  placeholder = "输入教学任务",
+  ariaLabel = "教学任务输入",
   selectedKnowledgeBaseIds,
   onAttachFiles,
   onChangeInput,
@@ -6513,7 +6544,7 @@ function Composer({
   }
 
   return (
-    <section className="composer-stack" aria-label="教学任务输入">
+    <section className="composer-stack" aria-label={ariaLabel}>
       {selectedKnowledgeBases.length ? (
         <div className="knowledge-chip-list" aria-label="已选择知识库">
           {selectedKnowledgeBases.map((base) => (
@@ -6560,7 +6591,7 @@ function Composer({
           value={inputValue}
           onChange={(event) => onChangeInput(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="输入教学任务"
+          placeholder={placeholder}
           disabled={isGenerating}
           rows={4}
         />
@@ -7226,7 +7257,7 @@ function KnowledgeCenter({
               <h2>{activeBase?.name || "选择知识库"}</h2>
               <p>
                 {isActiveBaseRemote
-                  ? "IMA 知识库保留在远程平台，易师训会在聊天和教案生成时按需检索引用。"
+                  ? "IMA 知识库保留在远程平台，StarLattice 会在聊天和教案生成时按需检索引用。"
                   : "上传 PDF、TXT、MD、CSV、JSON，系统会自动分块并建立检索索引。"}
               </p>
             </div>
@@ -8283,13 +8314,15 @@ function App() {
     | "mcp"
     | "monitor"
     | "report"
-  >("chat");
+  >("platform");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [newTaskToken, setNewTaskToken] = useState(0);
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatMode, setChatMode] = useState<ChatMode>("education");
   const [currentTrainingType, setCurrentTrainingType] =
     useState<TrainingType>("教案诊断");
   const [activeInsightMessageId, setActiveInsightMessageId] = useState<
@@ -8764,6 +8797,7 @@ function App() {
       }));
       setConversationId(conversation.id);
       setMessages(restoredMessages);
+      setChatMode("education");
       setCurrentTrainingType(conversation.trainingType);
       setSelectedKnowledgeBaseIds(conversation.knowledgeBaseIds);
       setActiveInsightMessageId(undefined);
@@ -8981,6 +9015,7 @@ function App() {
       }
     };
 
+    setChatMode("education");
     setCurrentTrainingType("教案诊断");
     setActiveSection("chat");
     setInputValue("");
@@ -9454,6 +9489,7 @@ function App() {
       }
     };
 
+    setChatMode("education");
     setCurrentTrainingType("实习反思");
     setActiveSection("chat");
     setInputValue("");
@@ -10400,22 +10436,24 @@ function App() {
       return;
     }
 
-    if (handleGuidedMessage(trimmedText, attachments)) {
-      return;
-    }
+    if (chatMode === "education") {
+      if (handleGuidedMessage(trimmedText, attachments)) {
+        return;
+      }
 
-    if (trimmedText && attachments.length === 0 && isLessonPlanWizardRequest(trimmedText)) {
-      startLessonPlanWizard(trimmedText);
-      return;
-    }
+      if (trimmedText && attachments.length === 0 && isLessonPlanWizardRequest(trimmedText)) {
+        startLessonPlanWizard(trimmedText);
+        return;
+      }
 
-    if (
-      trimmedText &&
-      attachments.length === 0 &&
-      isInternshipReflectionWizardRequest(trimmedText)
-    ) {
-      startInternshipReflectionWizard(trimmedText);
-      return;
+      if (
+        trimmedText &&
+        attachments.length === 0 &&
+        isInternshipReflectionWizardRequest(trimmedText)
+      ) {
+        startInternshipReflectionWizard(trimmedText);
+        return;
+      }
     }
 
     const sentAttachments = attachments;
@@ -10423,7 +10461,9 @@ function App() {
       trimmedText ||
       (sentAttachments.length
         ? `分析上传文件：${sentAttachments.map((attachment) => attachment.name).join("、")}`
-        : "本次教学任务");
+        : chatMode === "office"
+          ? "本次办公任务"
+          : "本次教学任务");
     const knowledgeBaseIdsForRequest = [...selectedKnowledgeBaseIds];
     const knowledgeQueryMode = isKnowledgeBaseOverviewQuery(trimmedText)
       ? "overview"
@@ -10431,7 +10471,7 @@ function App() {
     const userMessage: ChatMessage = {
       id: createId("user"),
       role: "user",
-      content: trimmedText || "上传了教学资料",
+      content: trimmedText || (chatMode === "office" ? "上传了文件" : "上传了教学资料"),
       attachments: sentAttachments
     };
     const assistantMessage: ChatMessage = {
@@ -10485,6 +10525,7 @@ function App() {
       formData.append("enableThinking", String(enableThinking));
       formData.append("knowledgeBaseIds", JSON.stringify(knowledgeBaseIdsForRequest));
       formData.append("trainingType", currentTrainingType);
+      formData.append("assistantMode", chatMode);
 
       if (conversationId) {
         formData.append("conversationId", conversationId);
@@ -10575,8 +10616,10 @@ function App() {
           message.id === assistantId ? { ...message, status: "done" } : message
         )
       );
-      void loadConversationHistory();
-      void loadGrowthSummary();
+      if (chatMode === "education") {
+        void loadConversationHistory();
+        void loadGrowthSummary();
+      }
     } catch (error) {
       visibleTextStreamer.stop();
 
@@ -10635,6 +10678,7 @@ function App() {
     }
 
     setInputValue(task.prompt);
+    setChatMode("education");
     setCurrentTrainingType(task.trainingType);
   }
 
@@ -10669,7 +10713,7 @@ function App() {
     setActiveSection("chat");
   }
 
-  function handleNewConversation() {
+  function handleNewConversation(mode: ChatMode = "education") {
     activeRequestRef.current?.abort();
     activeRequestRef.current = null;
     setMessages([]);
@@ -10678,11 +10722,21 @@ function App() {
     setAttachmentError(undefined);
     setConversationId(undefined);
     setRestoredCounselingSessionId(undefined);
+    setChatMode(mode);
     setCurrentTrainingType("教案诊断");
     setIsGenerating(false);
     setActiveInsightMessageId(undefined);
     setSelectedKnowledgeBaseIds([]);
     setActiveSection("chat");
+  }
+
+  function handleOpenSceneChat() {
+    if (chatMode !== "education") {
+      handleNewConversation("education");
+      return;
+    }
+    setActiveSection("chat");
+    setActiveInsightMessageId(undefined);
   }
 
   const hasMessages = messages.length > 0;
@@ -10699,6 +10753,7 @@ function App() {
     >
       <Sidebar
         activeSection={activeSection}
+        chatMode={chatMode}
         collapsed={sidebarCollapsed}
         onOpenGrowth={() => {
           setActiveSection("growth");
@@ -10751,7 +10806,13 @@ function App() {
           setActiveSection("report");
           setActiveInsightMessageId(undefined);
         }}
-        onNewConversation={handleNewConversation}
+        onNewTask={() => {
+          setNewTaskToken((value) => value + 1);
+          setActiveSection("platform");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenChat={handleOpenSceneChat}
+        onNewConversation={() => handleNewConversation("office")}
         onToggle={() => setSidebarCollapsed((value) => !value)}
       />
       <section className="workspace">
@@ -10851,7 +10912,7 @@ function App() {
           </div>
         ) : activeSection === "platform" ? (
           <div className="workspace-inner platform-workspace">
-            <WorkflowCanvasPage />
+            <WorkflowCanvasPage newTaskToken={newTaskToken} />
           </div>
         ) : activeSection === "registry" ? (
           <div className="workspace-inner platform-workspace">
@@ -10878,11 +10939,15 @@ function App() {
           {!hasMessages ? (
             <>
               <header className="hero">
-                <h1>今天想完成什么教学任务？</h1>
-                <p>教案生成、说课陪练、模拟课堂、实习日志与反思，都可以直接对话完成</p>
+                <h1>{chatMode === "office" ? "今天想完成什么办公任务？" : "今天想完成什么教学任务？"}</h1>
+                <p>
+                  {chatMode === "office"
+                    ? "写作、总结、翻译、会议纪要、表格整理，都可以直接对话完成"
+                    : "教案生成、说课陪练、模拟课堂、实习日志与反思，都可以直接对话完成"}
+                </p>
               </header>
-              <div className="quick-row" aria-label="快捷任务">
-                {quickTasks.map((task) => {
+              <div className="quick-row" aria-label={chatMode === "office" ? "快捷办公任务" : "快捷任务"}>
+                {(chatMode === "office" ? officeQuickTasks : quickTasks).map((task) => {
                   const Icon = task.icon;
 
                   return (
@@ -10890,7 +10955,11 @@ function App() {
                       className="quick-pill"
                       type="button"
                       key={task.label}
-                      onClick={() => handleQuickTask(task)}
+                      onClick={() =>
+                        chatMode === "office"
+                          ? setInputValue(task.prompt)
+                          : handleQuickTask(task as QuickTask)
+                      }
                     >
                       <Icon size={18} strokeWidth={2.1} />
                       <span>{task.label}</span>
@@ -10927,6 +10996,8 @@ function App() {
             onUpdateReflectionInput={updateReflectionMessageInput}
           />
           <Composer
+            ariaLabel={chatMode === "office" ? "办公任务输入" : "教学任务输入"}
+            placeholder={chatMode === "office" ? "输入办公任务" : "输入教学任务"}
             attachments={attachments}
             attachmentError={attachmentError}
             enableThinking={enableThinking}

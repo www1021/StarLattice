@@ -76,7 +76,7 @@ test("agent and tool writes are validated before persistence", () => {
   });
   assert.equal(agent.version, 1);
   assert.equal(agent.enabled, true);
-  assert.equal(agent.model, "classroom-llm");
+  assert.equal(agent.model, "platform-default");
   assert.deepEqual(agent.tools, ["knowledge.search"]);
 
   const bumped = parseAgentWrite({ id: "custom-agent", name: "自定义 Agent v2" }, agent);
