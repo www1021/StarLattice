@@ -12,7 +12,8 @@ export type NodeKind =
   | "condition"
   | "loop"
   | "verify"
-  | "approve";
+  | "approve"
+  | "human";
 
 export type WorkflowNode = {
   id: string;
@@ -50,6 +51,8 @@ export type WorkflowNode = {
   instructions?: string;
   assignee?: string;
   timeoutMs?: number;
+  submitLabel?: string;
+  fields?: HumanField[];
   system?: string;
   model?: string;
   thinking?: boolean;
@@ -65,6 +68,8 @@ export type WorkflowEdge = {
   from: string;
   to: string;
   label?: string;
+  /** 可选边条件；为假时该边不激活，下游可能被跳过。 */
+  when?: string;
 };
 
 export type WorkflowVariable = {
@@ -179,7 +184,8 @@ export type RunStatus =
   | "cancelled"
   | "verifying"
   | "revising"
-  | "waiting_approval";
+  | "waiting_approval"
+  | "waiting_input";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 export type ApprovalDecision = "approved" | "rejected";
@@ -209,8 +215,48 @@ export type ApprovalRecord = {
   expiresAt?: string;
 };
 
-export type ScheduleDecisionView = {
-  taskId: string;
+export type HumanFieldType = "text" | "textarea" | "number" | "boolean" | "select";
+
+export type HumanField = {
+  key: string;
+  label: string;
+  type?: HumanFieldType;
+  required?: boolean;
+  options?: string[];
+  defaultValue?: string | number | boolean;
+  placeholder?: string;
+  description?: string;
+};
+
+export type InteractionStatus = "pending" | "answered" | "expired" | "cancelled";
+
+export type InteractionRecord = {
+  id: string;
+  runId: string;
+  stepId: string;
+  nodeId: string;
+  path: string;
+  title: string;
+  prompt: string;
+  fields: HumanField[];
+  context?: Record<string, unknown>;
+  status: InteractionStatus;
+  response?: Record<string, unknown>;
+  actor?: string;
+  expiresAt?: string;
+  createdAt: string;
+  decidedAt?: string;
+};
+
+export type InteractionResponse = {
+  run: RunRecord;
+  steps: StepRecord[];
+  interactions: InteractionRecord[];
+  interaction: InteractionRecord;
+  pending?: InteractionRecord;
+};
+
+export type ScheduleDecisionView = {  taskId: string;
   taskTitle: string;
   agentId: string;
   agentName: string;
@@ -542,6 +588,7 @@ export type TraceResponse = {
   verifyResults: VerifyResult[];
   loopIterations: LoopIteration[];
   approvals: ApprovalRecord[];
+  interactions: InteractionRecord[];
 };
 
 export type RunMetrics = {

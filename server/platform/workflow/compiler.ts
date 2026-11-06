@@ -1,6 +1,8 @@
 import {
   type CompiledBlock,
+  type CompiledEdge,
   type CompiledExpression,
+  type CompiledGraph,
   type CompiledPlan,
   type CompiledStatement,
   type CompiledStep,
@@ -8,6 +10,7 @@ import {
   type ComparisonOperator,
   type LeafNode,
   type WorkflowDefinition,
+  type WorkflowEdge,
   type WorkflowNode
 } from "../types.js";
 
@@ -84,6 +87,7 @@ class Compiler {
     this.collect(this.workflow.nodes, this.pathPrefix, this.baseDepth);
     this.validateAnchors();
     const order = this.topologicalOrder();
+    const graph = this.issues.length ? emptyGraph() : this.buildGraph(order);
     const program = this.issues.length ? [] : this.expandRoot(order);
     if (this.issues.length === 0) {
       this.validateReferences(program);
@@ -91,6 +95,7 @@ class Compiler {
     return {
       workflow: this.workflow,
       program,
+      graph,
       steps: this.steps,
       order,
       stats: {
@@ -310,6 +315,30 @@ class Compiler {
             this.error("invalid-approve-timeout", location, "approve.timeoutMs 必须在 1000 到 86400000 之间");
           }
           break;
+        case "human": {
+          if (node.timeoutMs !== undefined && (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 86_400_000)) {
+            this.error("invalid-human-timeout", location, "human.timeoutMs 必须在 1000 到 86400000 之间");
+          }
+          const keys = new Set<string>();
+          for (const [index, field] of (node.fields ?? []).entries()) {
+            if (keys.has(field.key)) {
+              this.error(
+                "duplicate-human-field",
+                `${location}.fields[${index}].key`,
+                `输入字段 key "${field.key}" 重复`
+              );
+            }
+            keys.add(field.key);
+            if (!ID_PATTERN.test(field.key)) {
+              this.error(
+                "invalid-human-field",
+                `${location}.fields[${index}].key`,
+                `输入字段 key "${field.key}" 只能包含字母、数字、下划线和短横线`
+              );
+            }
+          }
+          break;
+        }
         case "verify":
           if (node.threshold !== undefined && (node.threshold < 0 || node.threshold > 1)) {
             this.error("invalid-threshold", location, "verify.threshold 必须在 0 到 1 之间");
@@ -430,6 +459,100 @@ class Compiler {
     return order;
   }
 
+  /** 顶层依赖图供执行器做就绪队列调度；嵌套容器仍走原有编译块。 */
+  private buildGraph(order: string[]): CompiledGraph {
+    const nodeIds = new Set(this.workflow.nodes.map((node) => node.id));
+    const indegree = new Map<string, number>(order.map((id) => [id, 0]));
+    const edges: CompiledEdge[] = [];
+
+    this.workflow.edges.forEach((edge, index) => {
+      if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
+        return;
+      }
+      const location = `edges[${index}].when`;
+      const when = edge.when ? this.parseExpression(edge.when, location) : undefined;
+      if (when) {
+        this.validateEdgeCondition(when, edge, location);
+      }
+      edges.push({
+        from: edge.from,
+        to: edge.to,
+        label: edge.label,
+        when
+      });
+      indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+    });
+
+    return {
+      nodes: order,
+      edges,
+      entry: order.filter((id) => (indegree.get(id) ?? 0) === 0)
+    };
+  }
+
+  private validateEdgeCondition(
+    expression: CompiledExpression,
+    edge: WorkflowEdge,
+    location: string
+  ) {
+    const [head, ...rest] = expression.ref.split(".");
+    if (head === "input") {
+      const name = rest.join(".");
+      if (!name) {
+        this.error("invalid-input-ref", location, "工作流输入引用应写成 ${input.字段名}");
+        return;
+      }
+      if (!this.declaredInputs.has(name)) {
+        this.error("unknown-input", location, `未声明的工作流输入 "${name}"`);
+      }
+      return;
+    }
+    if (head === "loop") {
+      this.error("loop-ref-outside-loop", location, "边条件不能使用循环作用域 ${loop.*}");
+      return;
+    }
+
+    const allNodeIds = collectDefinitionIds(this.workflow.nodes);
+    if (!allNodeIds.has(head)) {
+      this.error("unknown-node-ref", location, `边条件引用了不存在的节点 "${head}"`);
+      return;
+    }
+
+    // 边条件在 from 完成后求值，因此只能引用上游；引用目标或其下游会在运行期恒为空。
+    if (this.downstreamNodeIds(edge.to).has(head)) {
+      this.error(
+        "reference-order",
+        location,
+        `边条件不能引用目标节点 "${head}" 或其下游节点的输出`
+      );
+    }
+  }
+
+  private downstreamNodeIds(start: string): Set<string> {
+    const adjacency = new Map<string, string[]>();
+    for (const edge of this.workflow.edges) {
+      adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to]);
+    }
+
+    const result = new Set<string>();
+    const queue = [start];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (result.has(id)) {
+        continue;
+      }
+      result.add(id);
+      const node = this.nodesById.get(id);
+      if (node) {
+        collectDefinitionIds([node], result);
+      }
+      for (const next of adjacency.get(id) ?? []) {
+        queue.push(next);
+      }
+    }
+    return result;
+  }
+
   private findCycle(adjacency: Map<string, string[]>, rootIds: string[], sorted: string[]): string[] {
     const finished = new Set(sorted);
     const state = new Map<string, "visiting" | "done">();
@@ -492,7 +615,8 @@ class Compiler {
       node.kind === "http" ||
       node.kind === "template" ||
       node.kind === "verify" ||
-      node.kind === "approve"
+      node.kind === "approve" ||
+      node.kind === "human"
     ) {
       const step: CompiledStep = { path: location, nodeId: node.id, depth, node };
       this.steps.push(step);
@@ -772,6 +896,10 @@ function collectDefinitionIds(nodes: WorkflowNode[], ids = new Set<string>()): S
     }
   }
   return ids;
+}
+
+function emptyGraph(): CompiledGraph {
+  return { nodes: [], edges: [], entry: [] };
 }
 
 function workflowKey(workflow: WorkflowDefinition): string {

@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import type { ComponentType } from "react";
 import {
   Activity,
-  BookOpen,
   Cable,
   ChevronDown,
   ChevronRight,
@@ -12,6 +11,7 @@ import {
   Database,
   Ellipsis,
   GraduationCap,
+  Gauge,
   HeartHandshake,
   Layers,
   Mic,
@@ -22,6 +22,7 @@ import {
   Users,
   Workflow
 } from "lucide-react";
+import { SCENE_STORAGE_KEY } from "../../shared/scenarioPacks";
 
 type SidebarIcon = ComponentType<{
   size?: number;
@@ -38,6 +39,7 @@ type SidebarSection =
   | "counseling"
   | "classroom"
   | "platform"
+  | "scenarios"
   | "registry"
   | "library"
   | "mcp"
@@ -68,6 +70,7 @@ type SidebarProps = {
   onOpenCounselingTraining: () => void;
   onOpenSpeakTraining: () => void;
   onOpenPlatform: () => void;
+  onOpenScenarios: () => void;
   onOpenRegistry: () => void;
   onOpenLibrary: () => void;
   onOpenMcp: () => void;
@@ -75,7 +78,7 @@ type SidebarProps = {
   onOpenReport: () => void;
   onNewTask: () => void;
   onOpenChat: () => void;
-  onNewConversation: () => void;
+  onNewConversation: (mode: "education" | "office") => void;
   onToggle: () => void;
   user?: SidebarUser;
 };
@@ -85,12 +88,12 @@ export type SidebarUser = {
   description?: string;
 };
 
-const SCENE_STORAGE_KEY = "starlattice-scene-pack";
-
 const platformItems: MenuItem[] = [
   { label: "工作流编排", icon: Workflow, section: "platform" },
+  { label: "场景验证", icon: Gauge, section: "scenarios" },
   { label: "Agent 注册中心", icon: Users, section: "registry" },
   { label: "知识库", icon: Database, section: "library" },
+  { label: "对话历史", icon: Clock3, section: "history" },
   { label: "MCP 连接", icon: Cable, section: "mcp" },
   { label: "运行监控", icon: Activity, section: "monitor" },
   { label: "验证报告", icon: ClipboardCheck, section: "report" }
@@ -102,13 +105,10 @@ const scenePacks: ScenePack[] = [
     label: "教育场景",
     available: true,
     items: [
-      { label: "场景对话", icon: SquarePen, section: "chat" },
       { label: "说课训练", icon: Mic, section: "speak" },
       { label: "虚拟课堂", icon: GraduationCap, section: "classroom" },
       { label: "谈心谈话", icon: HeartHandshake, section: "counseling" },
-      { label: "教学资料", icon: BookOpen, section: "knowledge" },
-      { label: "成长报告", icon: SquareChartGantt, section: "growth" },
-      { label: "对话历史", icon: Clock3, section: "history" }
+      { label: "成长报告", icon: SquareChartGantt, section: "growth" }
     ]
   },
   {
@@ -116,12 +116,10 @@ const scenePacks: ScenePack[] = [
     label: "经营分析",
     available: true,
     items: [
-      { label: "经营分析工作流", icon: Workflow, section: "platform" },
-      { label: "分析 Agent", icon: Users, section: "registry" },
+      { label: "经营分析地图", icon: Workflow, section: "platform" },
       { label: "指标知识库", icon: Database, section: "library" },
       { label: "数据分析 MCP", icon: Cable, section: "mcp" },
-      { label: "运行监控", icon: Activity, section: "monitor" },
-      { label: "验证报告", icon: ClipboardCheck, section: "report" }
+      { label: "场景验证", icon: Gauge, section: "scenarios" }
     ]
   }
 ];
@@ -154,6 +152,7 @@ export function Sidebar({
   onOpenCounselingTraining,
   onOpenSpeakTraining,
   onOpenPlatform,
+  onOpenScenarios,
   onOpenRegistry,
   onOpenLibrary,
   onOpenMcp,
@@ -224,6 +223,7 @@ export function Sidebar({
     history: onOpenHistory,
     growth: onOpenGrowth,
     platform: onOpenPlatform,
+    scenarios: onOpenScenarios,
     registry: onOpenRegistry,
     library: onOpenLibrary,
     mcp: onOpenMcp,
@@ -267,7 +267,7 @@ export function Sidebar({
       onNewTask();
       return;
     }
-    onNewConversation();
+    onNewConversation("office");
   }
 
   function renderNavItem(item: MenuItem) {
@@ -333,12 +333,12 @@ export function Sidebar({
               className="nav-scene-toggle"
               type="button"
               aria-expanded={sceneOpen}
-              aria-label="场景包"
+              aria-label="场景实践"
               onClick={() => setSceneOpen((value) => !value)}
-              title={collapsed ? "场景包" : undefined}
+              title={collapsed ? "场景实践" : undefined}
             >
               <Layers size={15} strokeWidth={2.1} />
-              <span>场景包</span>
+              <span>场景实践</span>
               <ChevronRight
                 size={13}
                 className={`nav-scene-chevron ${sceneOpen ? "is-open" : ""}`}

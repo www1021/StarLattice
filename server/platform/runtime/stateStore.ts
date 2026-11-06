@@ -9,6 +9,9 @@ import type {
   ApprovalDecision,
   ApprovalRecord,
   ApprovalStatus,
+  HumanField,
+  InteractionRecord,
+  InteractionStatus,
   LoopIterationRecord,
   RegistrySummary,
   RunMode,
@@ -38,6 +41,7 @@ export const PLATFORM_TABLES = [
   "platform_runs",
   "platform_run_steps",
   "platform_approvals",
+  "platform_interactions",
   "platform_verify_results",
   "platform_loop_iterations",
   "platform_eval_tasks"
@@ -173,8 +177,25 @@ CREATE TABLE IF NOT EXISTS platform_approvals (
   decided_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS platform_verify_results (
+CREATE TABLE IF NOT EXISTS platform_interactions (
   id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES platform_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  fields TEXT NOT NULL DEFAULT '[]',
+  context TEXT,
+  status TEXT NOT NULL,
+  response TEXT,
+  actor TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS platform_verify_results (  id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES platform_runs(id) ON DELETE CASCADE,
   step_id TEXT NOT NULL,
   verifier TEXT NOT NULL DEFAULT '',
@@ -346,8 +367,25 @@ type ApprovalRow = {
   decided_at: string | null;
 };
 
-type VerifyRow = {
+type InteractionRow = {
   id: string;
+  run_id: string;
+  step_id: string;
+  node_id: string;
+  path: string;
+  title: string;
+  prompt: string;
+  fields: string;
+  context: string | null;
+  status: InteractionStatus;
+  response: string | null;
+  actor: string | null;
+  expires_at: string | null;
+  created_at: string;
+  decided_at: string | null;
+};
+
+type VerifyRow = {  id: string;
   run_id: string;
   step_id: string;
   verifier: string;
@@ -459,7 +497,7 @@ export class PlatformStateStore {
     const now = new Date().toISOString();
     const runs = this.db
       .prepare(
-        "SELECT id, status FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval')"
+        "SELECT id, status FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval', 'waiting_input')"
       )
       .all() as Array<{ id: string; status: RunStatus }>;
     if (runs.length === 0) {
@@ -470,7 +508,14 @@ export class PlatformStateStore {
         const reason =
           run.status === "waiting_approval"
             ? "服务重启，审批等待点已失效，请重新运行工作流。"
-            : "服务重启，运行已中断，请重新运行工作流。";
+            : run.status === "waiting_input"
+              ? "服务重启，人工输入等待点已失效，请重新运行工作流。"
+              : "服务重启，运行已中断，请重新运行工作流。";
+        this.db
+          .prepare(
+            "UPDATE platform_interactions SET status = 'expired', decided_at = ? WHERE run_id = ? AND status = 'pending'"
+          )
+          .run(now, run.id);
         this.db
           .prepare(
             `
@@ -1189,7 +1234,7 @@ export class PlatformStateStore {
   activeAgentLoads(): Record<string, { inFlight: number }> {
     const rows = this.db
       .prepare(
-        "SELECT plan FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval')"
+        "SELECT plan FROM platform_runs WHERE status IN ('queued', 'running', 'verifying', 'revising', 'waiting_approval', 'waiting_input')"
       )
       .all() as Array<{ plan: string | null }>;
     const loads: Record<string, { inFlight: number }> = {};
@@ -1476,6 +1521,93 @@ export class PlatformStateStore {
     return this.getApproval(id);
   }
 
+  createInteraction(input: {
+    runId: string;
+    stepId: string;
+    nodeId: string;
+    path: string;
+    title: string;
+    prompt: string;
+    fields: HumanField[];
+    context?: Record<string, unknown>;
+    expiresAt?: string;
+  }): InteractionRecord {
+    const id = `itx_${randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+        INSERT INTO platform_interactions
+          (id, run_id, step_id, node_id, path, title, prompt, fields, context, status, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        `
+      )
+      .run(
+        id,
+        input.runId,
+        input.stepId,
+        input.nodeId,
+        input.path,
+        input.title,
+        input.prompt,
+        JSON.stringify(input.fields),
+        input.context === undefined ? null : JSON.stringify(input.context),
+        input.expiresAt ?? null,
+        createdAt
+      );
+    return this.getInteraction(id)!;
+  }
+
+  getInteraction(id: string): InteractionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM platform_interactions WHERE id = ?").get(id) as
+      | InteractionRow
+      | undefined;
+    return row ? toInteractionRecord(row) : undefined;
+  }
+
+  listInteractions(
+    options: { runId?: string; status?: InteractionStatus; limit?: number } = {}
+  ): InteractionRecord[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (options.runId) {
+      clauses.push("run_id = ?");
+      params.push(options.runId);
+    }
+    if (options.status) {
+      clauses.push("status = ?");
+      params.push(options.status);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM platform_interactions ${where} ORDER BY created_at ASC, rowid ASC LIMIT ?`
+      )
+      .all(...params, limit) as InteractionRow[];
+    return rows.map(toInteractionRecord);
+  }
+
+  decideInteraction(
+    id: string,
+    status: Exclude<InteractionStatus, "pending">,
+    response?: Record<string, unknown>,
+    actor?: string
+  ): InteractionRecord | undefined {
+    this.db
+      .prepare(
+        "UPDATE platform_interactions SET status = ?, response = ?, actor = ?, decided_at = ? WHERE id = ? AND status = 'pending'"
+      )
+      .run(
+        status,
+        response === undefined ? null : JSON.stringify(response),
+        actor ?? null,
+        new Date().toISOString(),
+        id
+      );
+    return this.getInteraction(id);
+  }
+
   recordLoopIteration(input: RecordLoopInput): string {
     const id = randomUUID();
     this.db
@@ -1537,8 +1669,27 @@ function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
   };
 }
 
-function toStepRecord(row: StepRow): StepRecord {
+function toInteractionRecord(row: InteractionRow): InteractionRecord {
   return {
+    id: row.id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    nodeId: row.node_id,
+    path: row.path,
+    title: row.title,
+    prompt: row.prompt,
+    fields: JSON.parse(row.fields) as HumanField[],
+    context: row.context === null ? undefined : (JSON.parse(row.context) as Record<string, unknown>),
+    status: row.status,
+    response: row.response === null ? undefined : (JSON.parse(row.response) as Record<string, unknown>),
+    actor: row.actor ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at ?? undefined
+  };
+}
+
+function toStepRecord(row: StepRow): StepRecord {  return {
     id: row.id,
     runId: row.run_id,
     sequence: row.sequence,

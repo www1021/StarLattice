@@ -4,6 +4,12 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { OfficeParser, type SupportedFileType } from "officeparser";
 import { PDFParse } from "pdf-parse";
+import {
+  assertCleanText,
+  decodeTextBuffer,
+  normalizeUploadName,
+  TextEncodingError
+} from "./textEncoding.js";
 
 export type KnowledgeBaseSummary = {
   id: string;
@@ -1211,6 +1217,7 @@ async function extractKnowledgeText(file: Express.Multer.File) {
         );
       }
 
+      assertTextIntegrity(text);
       return text;
     } finally {
       await parser.destroy();
@@ -1229,6 +1236,7 @@ async function extractKnowledgeText(file: Express.Multer.File) {
         throw new KnowledgeError("文件没有提取到可用于知识库的文字。", 422);
       }
 
+      assertTextIntegrity(text);
       return text;
     } catch (error) {
       if (error instanceof KnowledgeError) {
@@ -1240,10 +1248,36 @@ async function extractKnowledgeText(file: Express.Multer.File) {
   }
 
   if (["txt", "md", "csv", "json"].includes(extension)) {
-    return file.buffer.toString("utf8").replace(/\u0000/g, "").trim();
+    try {
+      const text = decodeTextBuffer(file.buffer).text.trim();
+      if (!text) {
+        throw new KnowledgeError("文件没有提取到可用于知识库的文字。", 422);
+      }
+
+      return text;
+    } catch (error) {
+      if (error instanceof KnowledgeError) {
+        throw error;
+      }
+      if (error instanceof TextEncodingError) {
+        throw new KnowledgeError(error.message, 422);
+      }
+      throw error;
+    }
   }
 
   throw new KnowledgeError("不支持的资料格式。", 415);
+}
+
+function assertTextIntegrity(text: string) {
+  try {
+    assertCleanText(text);
+  } catch (error) {
+    if (error instanceof TextEncodingError) {
+      throw new KnowledgeError(error.message, 422);
+    }
+    throw error;
+  }
 }
 
 function normalizeDocumentMetadata(
@@ -1448,11 +1482,3 @@ function getFileExtension(fileName: string) {
   return path.extname(fileName).replace(".", "").toLowerCase();
 }
 
-/** busboy 默认按 latin1 解码 multipart 文件名，中文名会变乱码；能无损还原时转回 UTF-8。 */
-function normalizeUploadName(name: string) {
-  if (!/[\u0080-\u00ff]/.test(name)) {
-    return name;
-  }
-  const decoded = Buffer.from(name, "latin1").toString("utf8");
-  return decoded.includes("\uFFFD") ? name : decoded;
-}

@@ -21,6 +21,7 @@ import {
 } from "./classroom/classroomService.js";
 import type {
   ClassroomActionType,
+  ClassroomConfig,
   ClassroomReport,
   ClassroomState
 } from "./classroom/classroomTypes.js";
@@ -285,7 +286,8 @@ const supportedImageTypes = new Map([
 const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
 
 app.use(express.json({ limit: "1mb" }));
-const counselingRealtimeServer = registerCounseling(app, httpServer, chatRepository);
+const counseling = registerCounseling(app, httpServer, chatRepository);
+const counselingService = counseling.service;
 const platformStore = new PlatformStateStore();
 const platformLiveEnabled = isPlatformLiveEnabled();
 if (process.env.PLATFORM_LIVE_AGENTS === "1" && !platformLiveEnabled) {
@@ -326,7 +328,9 @@ const platformExecutor = new WorkflowExecutor(
       return executeMcpToolNode(node, input, tool, (target, args) =>
         platformMcp.callToolRecord(target, args)
       );
-    }
+    },
+    // 课堂 / 谈心谈话会话由平台工作流驱动；这些工具不依赖模型开关，stub 模式同样可用。
+    trainingTool: async (node, input) => executeTrainingTool(node.tool, input)
   },
   {
     ...(platformLiveEnabled
@@ -466,39 +470,164 @@ app.post("/api/classroom/report", async (request, response) => {
   try {
     const sessionId =
       typeof request.body?.sessionId === "string" ? request.body.sessionId : "";
-    const report = await classroomService.generateReport(sessionId);
-    const classroomState = classroomService.getClassroom(sessionId);
-    const citations = classroomState
-      ? await searchKnowledge({
-          query: `${classroomState.subject} ${classroomState.grade} ${classroomState.topic} ${classroomState.trainingGoal}`,
-          knowledgeBaseIds: classroomState.knowledgeBaseIds || [],
-          topK: 3
-        })
-      : [];
-    let saveError: string | undefined;
-    let artifact: StoredArtifact | undefined;
-
-    if (classroomState) {
-      try {
-        const result = await saveClassroomTrainingResult(
-          classroomState,
-          report,
-          citations.map(toStoredCitation)
-        );
-        const conversationId = result.conversationId;
-        artifact = result.artifact;
-        classroomService.markSaved(sessionId, conversationId);
-        report.savedConversationId = conversationId;
-      } catch (error) {
-        saveError = error instanceof Error ? error.message : "课堂报告已生成，但保存历史记录失败。";
-      }
-    }
-
-    response.json({ report, citations, saveError, artifact });
+    response.json(await generateClassroomReportPayload(sessionId));
   } catch (error) {
     handleClassroomError(error, response);
   }
 });
+
+async function generateClassroomReportPayload(sessionId: string) {
+  const report = await classroomService.generateReport(sessionId);
+  const classroomState = classroomService.getClassroom(sessionId);
+  const citations = classroomState
+    ? await searchKnowledge({
+        query: `${classroomState.subject} ${classroomState.grade} ${classroomState.topic} ${classroomState.trainingGoal}`,
+        knowledgeBaseIds: classroomState.knowledgeBaseIds || [],
+        topK: 3
+      })
+    : [];
+  let saveError: string | undefined;
+  let artifact: StoredArtifact | undefined;
+
+  if (classroomState) {
+    try {
+      const result = await saveClassroomTrainingResult(
+        classroomState,
+        report,
+        citations.map(toStoredCitation)
+      );
+      const conversationId = result.conversationId;
+      artifact = result.artifact;
+      classroomService.markSaved(sessionId, conversationId);
+      report.savedConversationId = conversationId;
+    } catch (error) {
+      saveError = error instanceof Error ? error.message : "课堂报告已生成，但保存历史记录失败。";
+    }
+  }
+
+  return { report, citations, saveError, artifact };
+}
+
+/**
+ * 训练工具的确定性入口：课堂与谈心谈话的会话状态仍由原服务维护，
+ * 但每次调用都发生在平台工作流节点中，因此运行监控能看到完整会话轨迹。
+ */
+async function executeTrainingTool(tool: string, input: Record<string, unknown>) {
+  if (tool === "classroom.create") {
+    return classroomService.createClassroom(
+      input as Partial<ClassroomConfig> & { knowledgeBaseIds?: string[] }
+    );
+  }
+  if (tool === "classroom.turn") {
+    return classroomService.teacherSpeak(
+      readToolString(input.sessionId, "sessionId"),
+      readToolString(input.teacherText, "teacherText")
+    );
+  }
+  if (tool === "classroom.feedback") {
+    return buildClassroomFeedback(readToolString(input.sessionId, "sessionId"));
+  }
+  if (tool === "classroom.report") {
+    return generateClassroomReportPayload(readToolString(input.sessionId, "sessionId"));
+  }
+  if (tool === "counseling.create") {
+    return { session: counselingService.create(input.config) };
+  }
+  if (tool === "counseling.turn") {
+    const sessionId = readToolString(input.sessionId, "sessionId");
+    const text = readToolString(input.text, "text");
+    const turnId =
+      typeof input.turnId === "string" && input.turnId.trim()
+        ? input.turnId
+        : `turn_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`;
+    return { session: await counselingService.turn(sessionId, text, turnId, "text") };
+  }
+  if (tool === "counseling.feedback") {
+    return buildCounselingFeedback(readToolString(input.sessionId, "sessionId"));
+  }
+  if (tool === "counseling.finish") {
+    return { session: await counselingService.finish(readToolString(input.sessionId, "sessionId")) };
+  }
+  return undefined;
+}
+
+function buildClassroomFeedback(sessionId: string) {
+  const state = classroomService.getClassroom(sessionId);
+  if (!state) {
+    throw new ClassroomServiceError(404, "课堂不存在，无法生成观察员点评。");
+  }
+  const teacherIndex = state.timeline.map((item) => item.role).lastIndexOf("teacher");
+  const currentTurn = teacherIndex >= 0 ? state.timeline.slice(teacherIndex) : state.timeline.slice(-8);
+  const studentEvidence = currentTurn
+    .filter((item) => item.role === "student")
+    .slice(0, 4)
+    .map((item) => ({
+      student: item.speaker,
+      content: item.content,
+      answerQuality: item.answerQuality,
+      validated: item.validationPassed
+    }));
+  const turnStartedAt = currentTurn[0]?.timestamp ?? 0;
+  const risks = state.events
+    .filter(
+      (event) =>
+        event.timestamp >= turnStartedAt &&
+        (event.severity === "medium" || event.severity === "high")
+    )
+    .map((event) => event.description);
+  const observerTips = currentTurn
+    .filter((item) => item.role === "observer")
+    .map((item) => item.content);
+  const metrics = state.metrics;
+  const nextMoves = [
+    metrics.participation < 55 ? "点名尚未发言的学生，扩大参与面。" : "",
+    metrics.understanding < 60 ? "回到关键概念，用一个具体例子复述并请学生判断。" : "",
+    metrics.discipline < 60 ? "先处理课堂事件，再推进教学内容。" : "",
+    metrics.interactionQuality < 60 ? "把封闭提问改成追问理由的开放问题。" : "",
+    ...risks.slice(0, 1).map((risk) => `先回应：${risk}`)
+  ].filter(Boolean);
+  return {
+    turn: state.turnCount,
+    summary: `第 ${state.turnCount} 轮：${studentEvidence.length} 名学生响应，参与度 ${metrics.participation}，理解度 ${metrics.understanding}。`,
+    observerTips,
+    studentEvidence,
+    risks,
+    nextMoves: nextMoves.length ? nextMoves.slice(0, 3) : ["用一两句话收束本轮，再推进下一个教学环节。"],
+    metrics
+  };
+}
+
+function buildCounselingFeedback(sessionId: string) {
+  const session = counselingService.get(sessionId);
+  const latestEvidence = session.evidence[session.evidence.length - 1];
+  const latestEvent = latestEvidence
+    ? [...session.events].reverse().find((event) => event.turnId === latestEvidence.turnId)
+    : session.events[session.events.length - 1];
+  const state = session.state;
+  const suggestions = [
+    latestEvent?.severity === "critical" ? `优先处理安全风险：${latestEvent.suggestion}` : "",
+    state.tension >= 60 ? "先降低威胁感：承认学生的感受，暂缓追问事实。" : "",
+    state.openness < 40 ? "用开放式问题替代连续追问，给学生留出组织语言的时间。" : "",
+    state.trust < 40 ? "说明谈话边界与保密例外，先建立安全感。" : "",
+    latestEvent?.suggestion ?? ""
+  ].filter(Boolean);
+  return {
+    turn: session.evidence.length,
+    state,
+    moves: latestEvidence?.moves ?? [],
+    event: latestEvent
+      ? { title: latestEvent.title, severity: latestEvent.severity, suggestion: latestEvent.suggestion }
+      : undefined,
+    suggestions: suggestions.length ? suggestions.slice(0, 3) : ["小结已了解的信息，并确认下一步支持。"]
+  };
+}
+
+function readToolString(value: unknown, key: string) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new ClassroomServiceError(400, `训练工具缺少参数 ${key}。`);
+  }
+  return value;
+}
 
 app.get("/api/files/:id", (request, response) => {
   const id = path.basename(request.params.id);
@@ -545,7 +674,10 @@ app.post("/api/evaluations", express.json({ limit: "1mb" }), async (request, res
     async (observation) => {
       const evaluation = createTrainingEvaluation({
         conversationId: conversation.id,
-        trainingType: conversation.trainingType,
+        trainingType:
+          conversation.trainingType === "通用对话"
+            ? "教案诊断"
+            : conversation.trainingType,
         messages: conversation.messages,
         citations: conversation.citations
       });
@@ -1475,7 +1607,26 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       writeSse(response, "artifact", artifact);
     }
 
+    const storedMessages: StoredChatMessage[] = [
+      ...messages.map((message) => ({
+        role: message.role,
+        content: contentToStoredString(message.content)
+      })),
+      { role: "assistant", content: assistantContent }
+    ];
+
     if (assistantMode === "office") {
+      await chatRepository.saveConversation({
+        conversationId,
+        title: buildConversationTitle(storedMessages),
+        trainingType: "通用对话",
+        assistantMode: "office",
+        messages: storedMessages,
+        knowledgeBaseIds,
+        attachmentNames: getUploadedFiles(request).map((file) => file.originalname),
+        artifacts: artifacts.map(toStoredArtifact),
+        citations: citations.map(toStoredCitation)
+      });
       observation.update({
         output: {
           conversationId,
@@ -1493,13 +1644,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       return;
     }
 
-    const storedMessages: StoredChatMessage[] = [
-      ...messages.map((message) => ({
-        role: message.role,
-        content: contentToStoredString(message.content)
-      })),
-      { role: "assistant", content: assistantContent }
-    ];
     const trainingType =
       requestedTrainingType ||
       inferTrainingType(storedMessages.map((message) => message.content).join("\n"));
@@ -1573,7 +1717,7 @@ httpServer.on("upgrade", (request, socket, head) => {
   const target = pathname === "/api/speak-training/realtime"
     ? speakRealtimeServer
     : pathname === "/api/counseling/realtime"
-      ? counselingRealtimeServer
+      ? counseling.realtime
       : undefined;
 
   if (!target) {

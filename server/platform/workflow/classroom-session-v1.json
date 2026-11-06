@@ -1,0 +1,125 @@
+{
+  "id": "classroom-session-v1",
+  "name": "虚拟课堂交互会话",
+  "version": 1,
+  "description": "把一堂虚拟课堂训练变成可追踪的平台运行：创建工作台 → 每轮教师发言暂停等待人工输入 → 学生 Agent 反应 → 观察员点评 → 循环 → 诊断报告。",
+  "inputs": [
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "grade", "type": "string", "required": true, "description": "学段" },
+    { "name": "topic", "type": "string", "required": true, "description": "课题" },
+    { "name": "classType", "type": "string", "description": "班级类型" },
+    { "name": "trainingGoal", "type": "string", "description": "训练目标" },
+    { "name": "difficulty", "type": "string", "description": "难度" },
+    { "name": "specialTrainingMode", "type": "string", "description": "专项训练模式" },
+    { "name": "knowledgeBaseIds", "type": "object", "description": "绑定的知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始训练"
+    },
+    {
+      "id": "create-classroom",
+      "kind": "tool",
+      "title": "生成虚拟班级",
+      "tool": "classroom.create",
+      "args": {
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "topic": "${input.topic}",
+        "classType": "${input.classType}",
+        "trainingGoal": "${input.trainingGoal}",
+        "difficulty": "${input.difficulty}",
+        "specialTrainingMode": "${input.specialTrainingMode}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}"
+      }
+    },
+    {
+      "id": "turns",
+      "kind": "loop",
+      "title": "逐轮试讲（人工 + 多 Agent）",
+      "maxIterations": 20,
+      "budget": { "maxDurationMs": 0, "maxTokens": 0 },
+      "while": "${teacher-turn.action} != finish",
+      "body": [
+        {
+          "id": "teacher-turn",
+          "kind": "human",
+          "title": "教师发言（人工交互）",
+          "prompt": "输入本轮教师发言；提交后会依次触发学生 Agent 反应与观察员点评。",
+          "submitLabel": "发送讲课",
+          "assignee": "参训教师",
+          "timeoutMs": 1800000,
+          "fields": [
+            {
+              "key": "text",
+              "label": "教师发言",
+              "type": "textarea",
+              "placeholder": "例如：请第三排的同学说说，你为什么认为分数单位要一致？"
+            },
+            {
+              "key": "action",
+              "label": "动作",
+              "type": "select",
+              "options": ["speak", "finish"],
+              "defaultValue": "speak",
+              "required": true,
+              "description": "结束时选择 finish，运行会退出循环并生成诊断报告。"
+            }
+          ],
+          "inputs": {
+            "sessionId": "${create-classroom.sessionId}"
+          }
+        },
+        {
+          "id": "after-turn",
+          "kind": "condition",
+          "title": "是否继续讲课",
+          "when": "${teacher-turn.action} != finish",
+          "then": [
+            {
+              "id": "student-reactions",
+              "kind": "tool",
+              "title": "学生 Agent 反应",
+              "tool": "classroom.turn",
+              "args": {
+                "sessionId": "${create-classroom.sessionId}",
+                "teacherText": "${teacher-turn.text}"
+              }
+            },
+            {
+              "id": "teacher-feedback",
+              "kind": "tool",
+              "title": "观察员点评与下一步建议",
+              "tool": "classroom.feedback",
+              "args": {
+                "sessionId": "${create-classroom.sessionId}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "诊断报告与成果",
+      "tool": "classroom.report",
+      "args": {
+        "sessionId": "${create-classroom.sessionId}"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "训练结束"
+    }
+  ],
+  "edges": [
+    { "from": "start", "to": "create-classroom" },
+    { "from": "create-classroom", "to": "turns" },
+    { "from": "turns", "to": "report" },
+    { "from": "report", "to": "end" }
+  ]
+}

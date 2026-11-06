@@ -11,6 +11,14 @@ const ELK_NODE_HEIGHT = 150;
 const ELK_LAYER_GAP = 72;
 const ELK_NODE_GAP = 50;
 
+export const NODE_CARD_WIDTH = 252;
+export const NODE_CARD_HEIGHT = 158;
+export const CONTAINER_HEADER_HEIGHT = 48;
+export const CONTAINER_PADDING = 14;
+const CONTAINER_COLUMN_GAP = 26;
+const CONTAINER_ROW_GAP = 30;
+const CONTAINER_LABEL_HEIGHT = 20;
+
 type ElkInstance = InstanceType<typeof ELK>;
 
 let elkInstance: ElkInstance | undefined;
@@ -60,11 +68,12 @@ export function computeLayout(definition: WorkflowDefinition): Map<string, { x: 
 }
 
 /**
- * 用 ELK 计算顶层 DAG 的坐标。容器内部不展开，只按顶层节点与边布局。
+ * 用 ELK 计算顶层 DAG 的坐标。展开的容器会按其内部尺寸参与布局，但内部节点不进入 ELK。
  * 结果只用于画布展示，不写回 DSL。
  */
 export async function computeElkLayout(
-  definition: WorkflowDefinition
+  definition: WorkflowDefinition,
+  sizes?: Map<string, { width: number; height: number }>
 ): Promise<Map<string, { x: number; y: number }>> {
   const nodeIds = new Set(definition.nodes.map((node) => node.id));
   const edges = definition.edges
@@ -85,11 +94,14 @@ export async function computeElkLayout(
       "elk.spacing.nodeNode": String(ELK_NODE_GAP),
       "elk.padding": "[top=0,left=0,bottom=0,right=0]"
     },
-    children: definition.nodes.map((node) => ({
-      id: node.id,
-      width: ELK_NODE_WIDTH,
-      height: ELK_NODE_HEIGHT
-    })),
+    children: definition.nodes.map((node) => {
+      const size = sizes?.get(node.id);
+      return {
+        id: node.id,
+        width: size?.width ?? ELK_NODE_WIDTH,
+        height: size?.height ?? ELK_NODE_HEIGHT
+      };
+    }),
     edges
   };
 
@@ -99,6 +111,109 @@ export async function computeElkLayout(
     positions.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
   }
   return positions;
+}
+
+export type ContainerChildLayout = {
+  node: WorkflowNode;
+  x: number;
+  y: number;
+  label?: string;
+};
+
+export type ContainerLayout = {
+  width: number;
+  height: number;
+  columns: number;
+  children: ContainerChildLayout[];
+  edges: Array<{ from: string; to: string }>;
+};
+
+type ContainerColumn = { label?: string; nodes: WorkflowNode[] };
+
+/** 容器内部仍按 DSL 的数组顺序解释：parallel 每个分支一格，condition 分 then/else，loop 是循环体。 */
+function containerColumns(node: WorkflowNode): ContainerColumn[] {
+  switch (node.kind) {
+    case "parallel":
+      return (node.branches ?? []).map((branch, index) => ({
+        label: `分支 ${index + 1}`,
+        nodes: [branch]
+      }));
+    case "condition": {
+      const columns: ContainerColumn[] = [{ label: "满足条件", nodes: node.then ?? [] }];
+      if ((node.else ?? []).length > 0) {
+        columns.push({ label: "否则", nodes: node.else ?? [] });
+      }
+      return columns;
+    }
+    case "loop":
+      return [{ label: "循环体", nodes: node.body ?? [] }];
+    default:
+      return [];
+  }
+}
+
+export function containerChildCount(node: WorkflowNode): number {
+  return containerColumns(node).reduce((total, column) => total + column.nodes.length, 0);
+}
+
+/** 展开后的容器外壳尺寸与子节点相对坐标；折叠容器返回 undefined。 */
+export function layoutContainer(node: WorkflowNode): ContainerLayout | undefined {
+  const columns = containerColumns(node);
+  if (columns.length === 0) {
+    return undefined;
+  }
+  const rows = Math.max(...columns.map((column) => column.nodes.length));
+  const labelHeight = columns.some((column) => column.label) ? CONTAINER_LABEL_HEIGHT : 0;
+  const width =
+    CONTAINER_PADDING * 2 +
+    columns.length * NODE_CARD_WIDTH +
+    Math.max(0, columns.length - 1) * CONTAINER_COLUMN_GAP;
+  const height =
+    CONTAINER_HEADER_HEIGHT +
+    CONTAINER_PADDING * 2 +
+    labelHeight +
+    rows * NODE_CARD_HEIGHT +
+    Math.max(0, rows - 1) * CONTAINER_ROW_GAP;
+
+  const children: ContainerChildLayout[] = [];
+  const edges: Array<{ from: string; to: string }> = [];
+  columns.forEach((column, columnIndex) => {
+    column.nodes.forEach((child, rowIndex) => {
+      children.push({
+        node: child,
+        x: CONTAINER_PADDING + columnIndex * (NODE_CARD_WIDTH + CONTAINER_COLUMN_GAP),
+        y:
+          CONTAINER_HEADER_HEIGHT +
+          CONTAINER_PADDING +
+          labelHeight +
+          rowIndex * (NODE_CARD_HEIGHT + CONTAINER_ROW_GAP),
+        label: column.label
+      });
+      if (rowIndex > 0) {
+        edges.push({ from: column.nodes[rowIndex - 1].id, to: child.id });
+      }
+    });
+  });
+
+  return { width, height, columns: columns.length, children, edges };
+}
+
+/** 自动布局时把展开容器的实际尺寸交给 ELK，避免相邻节点压到内部卡片。 */
+export function expandedContainerSizes(
+  definition: WorkflowDefinition,
+  expanded: Set<string>
+): Map<string, { width: number; height: number }> {
+  const sizes = new Map<string, { width: number; height: number }>();
+  for (const node of definition.nodes) {
+    if (!expanded.has(node.id)) {
+      continue;
+    }
+    const box = layoutContainer(node);
+    if (box) {
+      sizes.set(node.id, { width: box.width, height: box.height });
+    }
+  }
+  return sizes;
 }
 
 export function collectNodeIds(nodes: WorkflowNode[], ids = new Set<string>()): Set<string> {
@@ -218,6 +333,20 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
         timeoutMs: 600000,
         inputs: {}
       };
+    case "human":
+      return {
+        id,
+        kind,
+        title: "新人工交互节点",
+        prompt: "请输入本轮内容或选择下一步动作。",
+        assignee: "操作人",
+        timeoutMs: 1800000,
+        fields: [
+          { key: "text", label: "输入内容", type: "textarea" },
+          { key: "action", label: "动作", type: "select", options: ["continue", "finish"], defaultValue: "continue", required: true }
+        ],
+        inputs: {}
+      };
     case "parallel":
       return { id, kind, title: "并行容器", branches: [child] };
     case "condition":
@@ -325,7 +454,8 @@ export function isActiveRun(status: RunRecord["status"]): boolean {
     status === "running" ||
     status === "verifying" ||
     status === "revising" ||
-    status === "waiting_approval"
+    status === "waiting_approval" ||
+    status === "waiting_input"
   );
 }
 
@@ -342,7 +472,7 @@ export function stepStatusLabel(status: StepRecord["status"]): string {
   const labels: Record<StepRecord["status"], string> = {
     pending: "等待",
     running: "执行中",
-    waiting: "待审批",
+    waiting: "待处理",
     succeeded: "成功",
     failed: "失败",
     skipped: "跳过"
@@ -369,7 +499,8 @@ export function runStatusLabel(status: RunRecord["status"]): string {
     cancelled: "已取消",
     verifying: "验证中",
     revising: "修正中",
-    waiting_approval: "等待审批"
+    waiting_approval: "等待审批",
+    waiting_input: "等待人工输入"
   };
   return labels[status] ?? status;
 }

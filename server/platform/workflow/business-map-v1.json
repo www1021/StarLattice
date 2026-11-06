@@ -1,0 +1,333 @@
+{
+  "id": "business-map-v1",
+  "name": "经营分析决策全链路（地图版）",
+  "version": 1,
+  "description": "分析规划 → 销售概况 / 区域 / 品类 / 渠道 / 趋势 / 图表六路并行取数 → 分析师汇合 → 毛额口径核算与复核 → 经营摘要 → 报告初稿与净额基准并行 → 数值一致性验证 → 未达标自动重算（循环），已达标保留初稿 → 终稿验证 → 可选审批 → 交付。",
+  "inputs": [
+    { "name": "question", "type": "string", "required": false, "description": "本次经营问题，例如“本月各区域与品类的毛利表现如何？”" },
+    { "name": "source", "type": "string", "required": false, "description": "data/demo 下的销售明细路径，默认 data/demo/sales.csv" },
+    { "name": "focus", "type": "string", "required": false, "description": "本次分析重点，例如“退款对区域毛利的影响”" },
+    { "name": "requireApproval", "type": "boolean", "required": false, "description": "为 true 时在交付前插入经营负责人审批" }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "description": "接收经营问题、数据源与分析重点。"
+    },
+    {
+      "id": "plan",
+      "kind": "agent",
+      "title": "分析规划",
+      "agent": "analysis-planner",
+      "inputs": {
+        "question": "${input.question}",
+        "source": "${input.source}",
+        "focus": "${input.focus}"
+      },
+      "prompt": "围绕「${input.question}」制定分析计划：明确销售额口径（毛额/净额）、区域/品类/渠道三个维度、趋势观察窗口，以及毛利额与毛利率的验收标准。分析重点：${input.focus}。"
+    },
+    {
+      "id": "profile",
+      "kind": "tool",
+      "title": "销售数据概况",
+      "tool": "mcp.data-analysis.profile",
+      "args": { "source": "${input.source}" }
+    },
+    {
+      "id": "dimensions",
+      "kind": "parallel",
+      "title": "区域 × 品类 × 渠道并行汇总",
+      "branches": [
+        {
+          "id": "region",
+          "kind": "tool",
+          "title": "区域汇总",
+          "tool": "mcp.data-analysis.groupby",
+          "args": { "source": "${input.source}", "dimension": "region" }
+        },
+        {
+          "id": "product",
+          "kind": "tool",
+          "title": "品类汇总",
+          "tool": "mcp.data-analysis.groupby",
+          "args": { "source": "${input.source}", "dimension": "product" }
+        },
+        {
+          "id": "channel",
+          "kind": "tool",
+          "title": "渠道汇总",
+          "tool": "mcp.data-analysis.groupby",
+          "args": { "source": "${input.source}", "dimension": "channel" }
+        }
+      ]
+    },
+    {
+      "id": "trend",
+      "kind": "tool",
+      "title": "销售趋势",
+      "tool": "mcp.data-analysis.trend",
+      "args": { "source": "${input.source}", "granularity": "month" }
+    },
+    {
+      "id": "chart",
+      "kind": "tool",
+      "title": "区域毛利图表",
+      "tool": "mcp.data-analysis.chart",
+      "args": { "source": "${input.source}", "dimension": "region", "chartType": "bar" }
+    },
+    {
+      "id": "analysis",
+      "kind": "agent",
+      "title": "多维经营分析",
+      "agent": "data-analyst",
+      "inputs": {
+        "profile": "${profile.output}",
+        "region": "${region.output}",
+        "product": "${product.output}",
+        "channel": "${channel.output}",
+        "trend": "${trend.output}",
+        "chart": "${chart.output}"
+      },
+      "prompt": "基于区域、品类、渠道与趋势汇总，指出增长来源、拖累项与异常波动；只引用工具返回的数字，并说明退款对结论的影响。"
+    },
+    {
+      "id": "metrics-gross",
+      "kind": "tool",
+      "title": "毛利核算（初稿·毛额口径）",
+      "tool": "mcp.data-analysis.metric_calc",
+      "args": {
+        "source": "${input.source}",
+        "revenueBasis": "gross"
+      }
+    },
+    {
+      "id": "review-gross",
+      "kind": "agent",
+      "title": "口径复核",
+      "agent": "business-reviewer",
+      "inputs": {
+        "analysis": "${analysis.output}",
+        "metrics": "${metrics-gross.output}",
+        "profile": "${profile.output}"
+      },
+      "prompt": "核对毛利核算的销售额口径：退款必须从销售额中扣除。若发现毛销售额口径导致高估，请明确指出并给出重算要求。"
+    },
+    {
+      "id": "exec-summary",
+      "kind": "agent",
+      "title": "经营摘要",
+      "agent": "business-reporter",
+      "inputs": {
+        "analysis": "${analysis.output}",
+        "metrics": "${metrics-gross.output}",
+        "profile": "${profile.output}"
+      },
+      "prompt": "写一段面向经营负责人的摘要：三句结论 + 两条行动建议，数字必须与工具结果一致，并标注口径。"
+    },
+    {
+      "id": "report-draft",
+      "kind": "template",
+      "title": "报告初稿",
+      "template": "# 经营分析报告（初稿）\n\n## 摘要\n${exec-summary.output}\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 渠道表现\n${channel.output}\n\n## 趋势\n${trend.output}\n\n## 图表\n${chart.output}\n\n## 分析与复核\n${analysis.output}\n\n${review-gross.output}\n\n## 毛利核算\n${metrics-gross.output}\n\n## 口径说明\n退款需从销售额中扣除，毛利额 = 净销售额 − 销货成本。"
+    },
+    {
+      "id": "reference-metrics",
+      "kind": "tool",
+      "title": "核对基准（净额口径毛利）",
+      "tool": "mcp.data-analysis.metric_calc",
+      "args": {
+        "source": "${input.source}",
+        "revenueBasis": "net"
+      }
+    },
+    {
+      "id": "reference-data",
+      "kind": "template",
+      "title": "核对基准（正确口径）",
+      "template": "${profile.output}\n\n${region.output}\n\n${product.output}\n\n${channel.output}\n\n${trend.output}\n\n${chart.output}\n\n${analysis.output}\n\n${reference-metrics.output}"
+    },
+    {
+      "id": "verify-initial",
+      "kind": "verify",
+      "title": "初稿数值一致性验证",
+      "verifier": "quality-verifier",
+      "verifiers": ["quality-verifier", "business-reviewer"],
+      "rubric": ["口径一致", "数据可追溯", "结论可执行"],
+      "threshold": 0.85,
+      "expectedKeywords": ["毛利额", "退款", "区域", "品类"],
+      "checks": [{ "type": "number_match", "tolerance": 0.01 }],
+      "inputs": {
+        "artifact": "${report-draft.output}",
+        "reference": "${reference-data.output}"
+      }
+    },
+    {
+      "id": "calibration",
+      "kind": "condition",
+      "title": "口径校准分流",
+      "when": "${verify-initial.score} < 0.85",
+      "then": [
+        {
+          "id": "calibration-loop",
+          "kind": "loop",
+          "title": "净额口径重算循环",
+          "maxIterations": 2,
+          "while": "${verify-loop.score} < 0.85",
+          "patience": 2,
+          "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+          "body": [
+            {
+              "id": "recalc",
+              "kind": "tool",
+              "title": "按净额口径重算毛利",
+              "tool": "mcp.data-analysis.metric_calc",
+              "args": {
+                "source": "${input.source}",
+                "revenueBasis": "net"
+              }
+            },
+            {
+              "id": "rebuild",
+              "kind": "template",
+              "title": "按正确口径重建报告",
+              "template": "# 经营分析报告（终稿·净额修订）\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 渠道表现\n${channel.output}\n\n## 趋势\n${trend.output}\n\n## 图表\n${chart.output}\n\n## 分析\n${analysis.output}\n\n## 毛利核算（净额口径）\n${recalc.output}\n\n## 口径说明\n退款已从销售额中扣除，毛利额 = 净销售额 − 销货成本。经复核达到验证阈值。"
+            },
+            {
+              "id": "verify-loop",
+              "kind": "verify",
+              "title": "修订稿复核",
+              "verifier": "quality-verifier",
+              "verifiers": ["quality-verifier", "business-reviewer"],
+              "rubric": ["口径一致", "数据可追溯", "结论可执行"],
+              "threshold": 0.85,
+              "expectedKeywords": ["毛利额", "退款", "区域", "品类"],
+              "checks": [{ "type": "number_match", "tolerance": 0.01 }],
+              "inputs": {
+                "artifact": "${rebuild.output}",
+                "reference": "${reference-data.output}"
+              }
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "id": "keep-report",
+          "kind": "template",
+          "title": "保留初稿",
+          "template": "# 经营分析报告（终稿·初稿通过）\n\n${report-draft.output}\n\n## 口径结论\n初稿即通过数值一致性验证，保留原稿，不触发重算循环。"
+        }
+      ]
+    },
+    {
+      "id": "report-final",
+      "kind": "template",
+      "title": "合并报告终稿",
+      "template": "${rebuild.output}\n\n${keep-report.output}"
+    },
+    {
+      "id": "verify-final",
+      "kind": "verify",
+      "title": "终稿验证",
+      "verifier": "quality-verifier",
+      "verifiers": ["quality-verifier", "business-reviewer"],
+      "rubric": ["口径一致", "数据可追溯", "结论可执行"],
+      "threshold": 0.7,
+      "expectedKeywords": ["毛利额", "退款", "区域", "品类"],
+      "checks": [{ "type": "number_match", "tolerance": 0.01 }],
+      "inputs": {
+        "artifact": "${report-final.output}",
+        "reference": "${reference-data.output}"
+      }
+    },
+    {
+      "id": "publish-gate",
+      "kind": "condition",
+      "title": "交付审批分流",
+      "when": "${input.requireApproval} == true",
+      "then": [
+        {
+          "id": "publish-approval",
+          "kind": "approve",
+          "title": "经营负责人审批",
+          "instructions": "请核对报告口径、关键数字与行动建议，确认可对外汇报后通过；如有问题请填写意见并驳回。",
+          "assignee": "经营负责人",
+          "timeoutMs": 600000,
+          "inputs": {
+            "report": "${report-final.output}",
+            "score": "${verify-final.score}",
+            "issues": "${verify-final.issues}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "deliver",
+      "kind": "tool",
+      "title": "生成交付包",
+      "tool": "report.build",
+      "args": {
+        "observer": "${report-final.output}",
+        "score": "${verify-final.score}",
+        "title": "经营分析交付包",
+        "bodyLabel": "报告正文",
+        "approval": "${publish-approval.decision}"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束",
+      "inputs": {
+        "report": "${report-final.output}",
+        "package": "${deliver.output}",
+        "score": "${verify-final.score}",
+        "review": "${review-gross.output}"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "start", "to": "plan" },
+    { "from": "start", "to": "profile" },
+    { "from": "start", "to": "dimensions" },
+    { "from": "start", "to": "trend" },
+    { "from": "start", "to": "chart" },
+    { "from": "start", "to": "reference-metrics" },
+    { "from": "plan", "to": "profile" },
+    { "from": "plan", "to": "dimensions" },
+    { "from": "plan", "to": "trend" },
+    { "from": "plan", "to": "chart" },
+    { "from": "profile", "to": "analysis" },
+    { "from": "dimensions", "to": "analysis" },
+    { "from": "trend", "to": "analysis" },
+    { "from": "chart", "to": "analysis" },
+    { "from": "analysis", "to": "metrics-gross" },
+    { "from": "analysis", "to": "review-gross" },
+    { "from": "metrics-gross", "to": "review-gross" },
+    { "from": "analysis", "to": "exec-summary" },
+    { "from": "metrics-gross", "to": "exec-summary" },
+    { "from": "profile", "to": "report-draft" },
+    { "from": "dimensions", "to": "report-draft" },
+    { "from": "trend", "to": "report-draft" },
+    { "from": "chart", "to": "report-draft" },
+    { "from": "review-gross", "to": "report-draft" },
+    { "from": "exec-summary", "to": "report-draft" },
+    { "from": "metrics-gross", "to": "report-draft" },
+    { "from": "reference-metrics", "to": "reference-data" },
+    { "from": "profile", "to": "reference-data" },
+    { "from": "dimensions", "to": "reference-data" },
+    { "from": "trend", "to": "reference-data" },
+    { "from": "chart", "to": "reference-data" },
+    { "from": "analysis", "to": "reference-data" },
+    { "from": "report-draft", "to": "verify-initial" },
+    { "from": "reference-data", "to": "verify-initial" },
+    { "from": "verify-initial", "to": "calibration" },
+    { "from": "calibration", "to": "report-final" },
+    { "from": "report-final", "to": "verify-final" },
+    { "from": "verify-final", "to": "publish-gate" },
+    { "from": "publish-gate", "to": "deliver" },
+    { "from": "deliver", "to": "end" }
+  ]
+}

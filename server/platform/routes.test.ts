@@ -119,3 +119,139 @@ test("saving an existing workflow appends a version and keeps old versions intac
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("exposes pending human interactions and resumes the run with submitted values", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  const app = express();
+  app.use(express.json());
+  registerPlatform(app, { store });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, () => resolve(listening));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
+  const post = async <T>(url: string, body: unknown, expectOk = true): Promise<T> => {
+    const response = await fetch(`${base}${url}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const payload = (await response.json()) as T & { message?: string };
+    if (expectOk) {
+      assert.ok(response.ok, JSON.stringify(payload));
+    } else {
+      assert.equal(response.ok, false);
+    }
+    return payload;
+  };
+  const workflow: WorkflowDefinition = {
+    id: "human-route-probe",
+    name: "人工交互接口探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "ask",
+        kind: "human",
+        title: "填写发言",
+        prompt: "请输入本轮发言",
+        assignee: "参训教师",
+        fields: [
+          { key: "text", label: "发言", type: "text", required: true },
+          {
+            key: "action",
+            label: "动作",
+            type: "select",
+            options: ["continue", "finish"],
+            defaultValue: "continue"
+          }
+        ],
+        inputs: { topic: "分数的意义" }
+      },
+      { id: "echo", kind: "template", template: "${ask.text} / ${ask.action}" }
+    ],
+    edges: [{ from: "ask", to: "echo" }]
+  };
+
+  try {
+    await post("/workflows", { dsl: workflow });
+    const started = await post<{ run: { id: string } }>("/runs", {
+      workflowId: "human-route-probe",
+      input: {},
+      async: true
+    });
+
+    const pending = await waitForPendingInteraction(base, started.run.id);
+    assert.equal(pending.nodeId, "ask");
+    assert.deepEqual(pending.context, { topic: "分数的意义" });
+    assert.equal(pending.fields.length, 2);
+
+    const missing = await post<{ message?: string }>(
+      `/interactions/${pending.id}/respond`,
+      { values: { action: "continue" } },
+      false
+    );
+    assert.match(missing.message ?? "", /不能为空/);
+
+    const resumed = await post<{
+      run: { status: string };
+      steps: Array<{ nodeId: string; status: string; output?: unknown }>;
+      interactions: Array<{ id: string; status: string; response?: Record<string, unknown> }>;
+      interaction: { status: string; actor?: string };
+      pending?: unknown;
+    }>(`/interactions/${pending.id}/respond`, {
+      values: { text: "请同学们看这个例子。" },
+      actor: "tester"
+    });
+
+    assert.equal(resumed.run.status, "succeeded");
+    assert.equal(resumed.interaction.status, "answered");
+    assert.equal(resumed.interaction.actor, "tester");
+    assert.equal(resumed.pending, undefined);
+    assert.equal(resumed.interactions[0]?.status, "answered");
+    assert.equal(resumed.interactions[0]?.response?.action, "continue");
+    const echo = resumed.steps.find((step) => step.nodeId === "echo");
+    assert.equal(echo?.status, "succeeded");
+    assert.equal((echo?.output as { value?: string }).value, "请同学们看这个例子。 / continue");
+
+    const duplicate = await post<{ message?: string }>(
+      `/interactions/${pending.id}/respond`,
+      { values: { text: "重复提交" } },
+      false
+    );
+    assert.match(duplicate.message ?? "", /已处理/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+async function waitForPendingInteraction(
+  base: string,
+  runId: string,
+  timeoutMs = 4000
+): Promise<{
+  id: string;
+  nodeId: string;
+  context?: Record<string, unknown>;
+  fields: Array<{ key: string }>;
+}> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${base}/interactions?runId=${encodeURIComponent(runId)}&status=pending`);
+    const payload = (await response.json()) as {
+      interactions: Array<{
+        id: string;
+        nodeId: string;
+        context?: Record<string, unknown>;
+        fields: Array<{ key: string }>;
+      }>;
+    };
+    if (payload.interactions[0]) {
+      return payload.interactions[0];
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("等待待输入交互超时");
+}

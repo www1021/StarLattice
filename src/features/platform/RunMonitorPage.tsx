@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -9,6 +9,7 @@ import {
   XCircle
 } from "lucide-react";
 import { platformApi } from "./api";
+import { latestStepOutputOf } from "./trainingRuns";
 import {
   isActiveRun,
   runStatusLabel,
@@ -19,6 +20,8 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRecord,
+  HumanField,
+  InteractionRecord,
   NodeKind,
   RunRecord,
   TraceResponse,
@@ -45,10 +48,29 @@ const NODE_KIND_LABELS: Record<NodeKind, string> = {
   condition: "条件",
   loop: "循环",
   verify: "验证",
-  approve: "人工审批"
+  approve: "人工审批",
+  human: "人工交互"
 };
 
-export function RunMonitorPage() {
+export type MonitorSessionTarget = {
+  workflowId: string;
+  runId: string;
+  sessionId?: string;
+};
+
+type RunMonitorPageProps = {
+  initialRunId?: string;
+  initialRunToken?: number;
+  onOpenSession?: (target: MonitorSessionTarget) => void;
+};
+
+const SESSION_WORKFLOW_IDS = new Set(["classroom-session-v1", "counseling-session-v1"]);
+
+export function RunMonitorPage({
+  initialRunId,
+  initialRunToken,
+  onOpenSession
+}: RunMonitorPageProps) {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -60,6 +82,12 @@ export function RunMonitorPage() {
   const [busy, setBusy] = useState<string>();
   const [reviewer, setReviewer] = useState("实训用户");
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [interactionValues, setInteractionValues] = useState<
+    Record<string, Record<string, string | boolean>>
+  >({});
+  const requestedRunRef = useRef(initialRunId);
+  requestedRunRef.current = initialRunId;
+  const handledRunTokenRef = useRef<number | undefined>(initialRunToken);
 
   const workflowNames = useMemo(
     () => new Map(workflows.map((workflow) => [workflow.id, workflow.name])),
@@ -69,6 +97,23 @@ export function RunMonitorPage() {
     Boolean(trace && isActiveRun(trace.run.status)) ||
     runs.some((run) => isActiveRun(run.status));
   const pendingApprovals = trace?.approvals.filter((approval) => approval.status === "pending") ?? [];
+  const pendingInteractions =
+    trace?.interactions.filter((interaction) => interaction.status === "pending") ?? [];
+  const sessionTarget = useMemo(() => {
+    if (!trace || !SESSION_WORKFLOW_IDS.has(trace.run.workflowId)) {
+      return undefined;
+    }
+    if (trace.run.workflowId === "classroom-session-v1") {
+      const created = latestStepOutputOf<{ sessionId?: string }>(trace, ["create-classroom"]);
+      return { workflowId: trace.run.workflowId, runId: trace.run.id, sessionId: created?.sessionId };
+    }
+    const created = latestStepOutputOf<{ session?: { id?: string } }>(trace, ["create-session"]);
+    return {
+      workflowId: trace.run.workflowId,
+      runId: trace.run.id,
+      sessionId: created?.session?.id
+    };
+  }, [trace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +128,7 @@ export function RunMonitorPage() {
         }
         setRuns(runResponse.runs);
         setWorkflows(workflowResponse.workflows);
-        setSelectedId(runResponse.runs[0]?.id);
+        setSelectedId(requestedRunRef.current ?? runResponse.runs[0]?.id);
       } catch (error) {
         if (!cancelled) {
           setBanner({ tone: "error", text: describe(error) });
@@ -98,6 +143,14 @@ export function RunMonitorPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!initialRunId || !initialRunToken || initialRunToken === handledRunTokenRef.current) {
+      return;
+    }
+    handledRunTokenRef.current = initialRunToken;
+    setSelectedId(initialRunId);
+  }, [initialRunId, initialRunToken]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -253,6 +306,64 @@ export function RunMonitorPage() {
     }
   }
 
+  async function handleInteraction(interaction: InteractionRecord) {
+    setBusy(`interaction:${interaction.id}`);
+    setBanner(undefined);
+    try {
+      const values: Record<string, unknown> = {};
+      for (const field of interaction.fields) {
+        const raw = interactionValues[interaction.id]?.[field.key];
+        const value = raw ?? field.defaultValue;
+        if (field.type === "boolean") {
+          values[field.key] = value === true;
+        } else if (value !== undefined && value !== "") {
+          values[field.key] = field.type === "number" ? Number(value) : String(value);
+        }
+      }
+      await platformApi.respondInteraction(
+        interaction.id,
+        values,
+        reviewer.trim() || "实训用户"
+      );
+      setInteractionValues((current) => {
+        const next = { ...current };
+        delete next[interaction.id];
+        return next;
+      });
+      setBanner({
+        tone: "success",
+        text: `已提交「${interaction.title}」，运行将从该节点继续执行。`
+      });
+      await refreshAll();
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  function interactionValue(interaction: InteractionRecord, field: HumanField): string | boolean {
+    const stored = interactionValues[interaction.id]?.[field.key];
+    if (stored !== undefined) {
+      return stored;
+    }
+    if (typeof field.defaultValue === "boolean") {
+      return field.defaultValue;
+    }
+    return field.defaultValue === undefined ? "" : String(field.defaultValue);
+  }
+
+  function updateInteractionValue(
+    interactionId: string,
+    key: string,
+    value: string | boolean
+  ) {
+    setInteractionValues((current) => ({
+      ...current,
+      [interactionId]: { ...current[interactionId], [key]: value }
+    }));
+  }
+
   async function handleRetryStep(stepId: string) {
     if (!trace) {
       return;
@@ -346,6 +457,9 @@ export function RunMonitorPage() {
                   <strong>{shortId(run.id)}</strong>
                   <small>
                     {workflowNames.get(run.workflowId) ?? run.workflowId} · {run.stepCount} 步
+                    {SESSION_WORKFLOW_IDS.has(run.workflowId) && (
+                      <em className="monitor-run-tag">交互链路</em>
+                    )}
                   </small>
                 </span>
                 <span className="monitor-run-meta">
@@ -376,6 +490,9 @@ export function RunMonitorPage() {
                   <h2>
                     {workflowNames.get(trace.run.workflowId) ?? trace.run.workflowId}
                     <span className="platform-version">v{trace.run.workflowVersion}</span>
+                    {sessionTarget && (
+                      <span className="monitor-session-badge">教育交互链路</span>
+                    )}
                   </h2>
                   <p>
                     {formatDateTime(trace.run.startedAt)} 启动 · {trace.run.mode === "stub" ? "确定性 stub" : "真实 Agent"} ·
@@ -387,6 +504,16 @@ export function RunMonitorPage() {
                     {runStatusLabel(trace.run.status)}
                   </span>
                   <VerificationBadge value={trace.run.output?.verify} />
+                  {sessionTarget && onOpenSession && (
+                    <button
+                      type="button"
+                      className="platform-button is-primary"
+                      onClick={() => onOpenSession(sessionTarget)}
+                      title="回到这条运行对应的课堂或谈话会话"
+                    >
+                      打开会话
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="platform-button is-ghost"
@@ -504,6 +631,98 @@ export function RunMonitorPage() {
                     >
                       <XCircle size={14} />
                       驳回并终止
+                    </button>
+                  </div>
+                </section>
+              ))}
+
+              {pendingInteractions.map((interaction) => (
+                <section className="monitor-approval is-human" key={interaction.id}>
+                  <header className="monitor-approval-head">
+                    <span className="monitor-approval-badge is-human">待人工输入</span>
+                    <strong>{interaction.title}</strong>
+                    <span>节点 {interaction.nodeId}</span>
+                  </header>
+                  <p className="monitor-approval-note">{interaction.prompt}</p>
+                  {interaction.context && Object.keys(interaction.context).length > 0 && (
+                    <div className="monitor-approval-context">
+                      <span>交互上下文</span>
+                      <pre>{pretty(interaction.context)}</pre>
+                    </div>
+                  )}
+                  {interaction.expiresAt && (
+                    <div className="monitor-approval-meta">
+                      <span>截止 {formatDateTime(interaction.expiresAt)}</span>
+                    </div>
+                  )}
+                  <div className="monitor-approval-form">
+                    {interaction.fields.map((field) => {
+                      const value = interactionValue(interaction, field);
+                      const wide = field.type === "textarea" || field.type === "select";
+                      return (
+                        <label key={field.key} className={wide ? "is-wide" : ""}>
+                          <span>
+                            {field.label}
+                            {field.required ? " *" : ""}
+                          </span>
+                          {field.type === "textarea" ? (
+                            <textarea
+                              rows={3}
+                              value={String(value)}
+                              placeholder={field.placeholder}
+                              onChange={(event) =>
+                                updateInteractionValue(interaction.id, field.key, event.target.value)
+                              }
+                            />
+                          ) : field.type === "select" ? (
+                            <select
+                              value={String(value)}
+                              onChange={(event) =>
+                                updateInteractionValue(interaction.id, field.key, event.target.value)
+                              }
+                            >
+                              {(field.options ?? []).map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          ) : field.type === "boolean" ? (
+                            <input
+                              type="checkbox"
+                              checked={value === true}
+                              onChange={(event) =>
+                                updateInteractionValue(interaction.id, field.key, event.target.checked)
+                              }
+                            />
+                          ) : (
+                            <input
+                              type={field.type === "number" ? "number" : "text"}
+                              value={String(value)}
+                              placeholder={field.placeholder}
+                              onChange={(event) =>
+                                updateInteractionValue(interaction.id, field.key, event.target.value)
+                              }
+                            />
+                          )}
+                          {field.description && <small>{field.description}</small>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="monitor-approval-actions">
+                    <button
+                      type="button"
+                      className="platform-button is-primary"
+                      disabled={busy !== undefined}
+                      onClick={() => void handleInteraction(interaction)}
+                    >
+                      {busy === `interaction:${interaction.id}` ? (
+                        <Loader2 size={14} className="is-spinning" />
+                      ) : (
+                        <CheckCircle2 size={14} />
+                      )}
+                      提交并继续
                     </button>
                   </div>
                 </section>

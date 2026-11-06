@@ -6,13 +6,18 @@ import {
   GraduationCap,
   LoaderCircle
 } from "lucide-react";
+import { platformApi } from "../platform/api";
 import {
-  createClassroom,
-  getClassroom,
-  requestClassroomReport,
-  restoreClassroom,
-  sendTeacherSpeech
-} from "./api";
+  cancelTrainingRun,
+  isTerminalStatus,
+  latestStepOutputOf,
+  pendingInteractionOf,
+  respondTrainingInteraction,
+  startTrainingRun,
+  waitForTrainingCheckpoint
+} from "../platform/trainingRuns";
+import type { InteractionRecord, TraceResponse } from "../platform/types";
+import { SessionRunBar, SessionRunRail } from "../platform/SessionRunPanel";
 import { ClassroomConfigPanel } from "./components/ClassroomConfigPanel";
 import { ClassroomMetricsPanel } from "./components/ClassroomMetricsPanel";
 import { ClassroomOperationPanel } from "./components/ClassroomOperationPanel";
@@ -26,8 +31,21 @@ import type {
   ClassroomCitation,
   ClassroomConfig,
   ClassroomReport,
+  ClassroomSpeakResponse,
   ClassroomState
 } from "./types";
+
+const classroomSessionWorkflow = "classroom-session-v1";
+
+type ClassroomCreateOutput = { sessionId: string; classroomState: ClassroomState };
+
+type ClassroomReportOutput = {
+  report: ClassroomReport;
+  citations?: ClassroomCitation[];
+  saveError?: string;
+  artifact?: ClassroomArtifact;
+};
+
 
 const defaultConfig: ClassroomConfig = {
   subject: "数学",
@@ -38,21 +56,38 @@ const defaultConfig: ClassroomConfig = {
   difficulty: "普通",
   specialTrainingMode: "综合训练"
 };
-const classroomSnapshotKey = "yishixun.classroom.latest";
+const classroomSnapshotKey = "yishixun.classroom.run.v2";
 
 type ClassroomStatusTone = "info" | "loading" | "success" | "error";
 
 type ClassroomTrainingPageProps = {
   selectedKnowledgeBaseIds?: string[];
   onOpenMaterials?: () => void;
+  initialRunId?: string;
+  onOpenMonitorRun?: (runId: string) => void;
+  onOpenWorkflow?: (workflowId: string, nodeId?: string) => void;
 };
+
+const classroomRailSteps = [
+  { id: "start", label: "开始训练", hint: "工作流入口" },
+  { id: "create-classroom", label: "生成虚拟班级", hint: "classroom.create · 班级画像与学生 Agent" },
+  { id: "turns", label: "逐轮试讲（人工 + 多 Agent）", hint: "教师发言 → 学生 Agent 反应 → 观察员点评" },
+  { id: "report", label: "诊断报告与成果", hint: "classroom.report · 证据链与 Word 成果" },
+  { id: "end", label: "训练结束" }
+];
 
 export function ClassroomTrainingPage({
   selectedKnowledgeBaseIds = [],
-  onOpenMaterials
+  onOpenMaterials,
+  initialRunId,
+  onOpenMonitorRun,
+  onOpenWorkflow
 }: ClassroomTrainingPageProps) {
   const [config, setConfig] = useState<ClassroomConfig>(defaultConfig);
   const [classroom, setClassroom] = useState<ClassroomState>();
+  const [runId, setRunId] = useState<string>();
+  const [trace, setTrace] = useState<TraceResponse>();
+  const [interaction, setInteraction] = useState<InteractionRecord>();
   const [teacherText, setTeacherText] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string>();
   const [report, setReport] = useState<ClassroomReport>();
@@ -73,6 +108,8 @@ export function ClassroomTrainingPage({
   const autoSendTimerRef = useRef<number | undefined>(undefined);
   const shouldKeepListeningRef = useRef(false);
   const classroomRef = useRef<ClassroomState | undefined>(undefined);
+  const runIdRef = useRef<string | undefined>(undefined);
+  const interactionRef = useRef<InteractionRecord | undefined>(undefined);
   const isWorkingRef = useRef(false);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
   const reportPanelRef = useRef<HTMLDivElement | null>(null);
@@ -88,27 +125,41 @@ export function ClassroomTrainingPage({
   }, []);
 
   useEffect(() => {
-    const cachedClassroom = readCachedClassroom();
-
-    if (!cachedClassroom) {
+    if (initialRunId) {
+      setStatusMessage("正在从运行监控恢复课堂运行...", "loading");
+      void restoreRun(initialRunId);
       return;
     }
 
-    setClassroom(cachedClassroom);
-    setConfig(classroomToConfig(cachedClassroom));
-    setSelectedStudentId(cachedClassroom.students[0]?.id);
-    setStatusMessage("已恢复最近一次虚拟课堂，正在确认课堂会话状态...", "loading");
+    const snapshot = readCachedClassroom();
 
-    void syncCachedClassroom(cachedClassroom);
-  }, []);
+    if (!snapshot) {
+      return;
+    }
+
+    setClassroom(snapshot.classroom);
+    setConfig(classroomToConfig(snapshot.classroom));
+    setSelectedStudentId(snapshot.classroom.students[0]?.id);
+    setStatusMessage("已恢复最近一次虚拟课堂，正在确认平台运行状态...", "loading");
+
+    void restoreRun(snapshot.runId);
+  }, [initialRunId]);
 
   useEffect(() => {
     classroomRef.current = classroom;
 
-    if (classroom) {
-      cacheClassroom(classroom);
+    if (classroom && runId) {
+      cacheClassroom(runId, classroom);
     }
-  }, [classroom]);
+  }, [classroom, runId]);
+
+  useEffect(() => {
+    runIdRef.current = runId;
+  }, [runId]);
+
+  useEffect(() => {
+    interactionRef.current = interaction;
+  }, [interaction]);
 
   useEffect(() => {
     isWorkingRef.current = isWorking;
@@ -128,19 +179,26 @@ export function ClassroomTrainingPage({
 
   async function handleCreateClassroom() {
     setIsWorking(true);
-    setStatusMessage("正在生成虚拟班级画像...", "loading");
+    setStatusMessage("正在生成虚拟班级画像并启动训练运行...", "loading");
     setReport(undefined);
     setReportArtifact(undefined);
     setReportCitations([]);
+    setInteraction(undefined);
+    setTrace(undefined);
 
     try {
-      const payload = await createClassroom({
+      await cancelTrainingRun(runIdRef.current);
+      const run = await startTrainingRun(classroomSessionWorkflow, {
         ...config,
         knowledgeBaseIds: selectedKnowledgeBaseIds
       });
-      setClassroom(payload.classroomState);
-      setSelectedStudentId(payload.classroomState.students[0]?.id);
-      setStatusMessage("虚拟课堂已生成，可以开始试讲。", "success");
+      setRunId(run.id);
+      const trace = await waitForTrainingCheckpoint(run.id);
+      const created = applyTrace(trace);
+      if (created) {
+        setSelectedStudentId(created.students[0]?.id);
+        setStatusMessage("虚拟课堂已生成，可以开始试讲。", "success");
+      }
     } catch (error) {
       setStatusMessage(
         error instanceof Error ? error.message : "虚拟课堂生成失败。",
@@ -152,21 +210,31 @@ export function ClassroomTrainingPage({
   }
 
   async function handleSend(text = teacherText) {
-    if (!classroom || !text.trim()) {
+    const currentInteraction = interactionRef.current;
+
+    if (!classroom || !currentInteraction || !text.trim()) {
       return;
     }
 
     setIsWorking(true);
     setStatusMessage("虚拟学生正在根据教师表现作出反应...", "loading");
+    setTeacherText("");
 
     try {
-      const payload = await sendTeacherSpeech(classroom.sessionId, text);
-      setClassroom(payload.classroomState);
-      setTeacherText("");
+      const trace = await respondTrainingInteraction(
+        currentInteraction.id,
+        { text: text.trim(), action: "speak" },
+        "参训教师"
+      );
+      applyTrace(trace);
+      const spoke = latestStepOutputOf<ClassroomSpeakResponse>(trace, ["student-reactions"]);
       setInterimTranscript("");
       setVoiceTimelineText("");
-      setStatusMessage(payload.observerTips[0] || "课堂状态已更新。", "success");
+      if (pendingInteractionOf(trace)) {
+        setStatusMessage(spoke?.observerTips[0] || "课堂状态已更新。", "success");
+      }
     } catch (error) {
+      setTeacherText(text);
       setStatusMessage(
         error instanceof Error ? error.message : "教师发言处理失败。",
         "error"
@@ -177,41 +245,108 @@ export function ClassroomTrainingPage({
   }
 
   async function handleFinishTraining() {
+    const currentInteraction = interactionRef.current;
+
     if (!classroom) {
       return;
     }
 
     setIsWorking(true);
     setStatusMessage(
-      "正在汇总课堂证据链、Agent 决策依据和 Word 报告，模型增强较慢时会自动回退本地规则。",
+      "正在结束课堂运行，汇总证据链、Agent 决策依据和 Word 报告...",
       "loading"
     );
 
     try {
-      const payload = await requestClassroomReport(classroom.sessionId);
-      setReport(payload.report);
-      setReportArtifact(payload.artifact);
-      setReportCitations(payload.citations || []);
-      if (!payload.saveError) {
-        clearCachedClassroom();
+      if (currentInteraction) {
+        const trace = await respondTrainingInteraction(
+          currentInteraction.id,
+          { action: "finish" },
+          "参训教师"
+        );
+        applyTrace(trace);
+      } else {
+        setStatusMessage("当前课堂没有等待中的输入节点，可查看已生成的报告。", "info");
       }
-      setStatusMessage(
-        payload.saveError
-          ? `诊断报告已生成，但保存历史记录失败：${payload.saveError}。课堂状态已保留，可再次点击完成训练重试。`
-          : payload.artifact
-            ? `诊断报告已生成，并已保存 Word 成果：${payload.artifact.name}。`
-            : "诊断报告已生成，历史记录已保存；Word 成果未返回，可再次点击完成训练重试。",
-        payload.saveError ? "error" : "success"
-      );
     } catch (error) {
       setStatusMessage(
         error instanceof Error
-          ? `${error.message} 课堂状态已保留，可稍后再次点击完成训练重试。`
+          ? `${error.message} 课堂状态已保留，可稍后再次结束训练。`
           : "诊断报告生成失败，课堂状态已保留，可稍后重试。",
         "error"
       );
     } finally {
       setIsWorking(false);
+    }
+  }
+
+  /** 将平台 trace 的步骤输出映射回课堂页面状态，并处理暂停/终态。 */
+  function applyTrace(trace: TraceResponse): ClassroomState | undefined {
+    setTrace(trace);
+    const created = latestStepOutputOf<ClassroomCreateOutput>(trace, ["create-classroom"]);
+    const spoke = latestStepOutputOf<ClassroomSpeakResponse>(trace, ["student-reactions"]);
+    const nextClassroom = spoke?.classroomState ?? created?.classroomState;
+
+    if (nextClassroom) {
+      setClassroom(nextClassroom);
+    }
+
+    setInteraction(pendingInteractionOf(trace));
+
+    if (isTerminalStatus(trace.run.status)) {
+      const reportOutput = latestStepOutputOf<ClassroomReportOutput>(trace, ["report"]);
+      if (trace.run.status === "succeeded" && reportOutput) {
+        setReport(reportOutput.report);
+        setReportArtifact(reportOutput.artifact);
+        setReportCitations(reportOutput.citations || []);
+        if (!reportOutput.saveError) {
+          clearCachedClassroom();
+        }
+        setStatusMessage(
+          reportOutput.saveError
+            ? `诊断报告已生成，但保存历史记录失败：${reportOutput.saveError}。`
+            : reportOutput.artifact
+              ? `诊断报告已生成，并已保存 Word 成果：${reportOutput.artifact.name}。`
+              : "诊断报告已生成，历史记录已保存；Word 成果未返回。",
+          reportOutput.saveError ? "error" : "success"
+        );
+      } else if (trace.run.status !== "succeeded") {
+        const failedStep = [...trace.steps].reverse().find((step) => step.status === "failed");
+        setStatusMessage(
+          trace.run.error || failedStep?.error || "课堂运行已中断，请重新生成虚拟课堂。",
+          "error"
+        );
+      }
+    }
+
+    return nextClassroom;
+  }
+
+  async function restoreRun(cachedRunId: string) {
+    try {
+      const trace = await platformApi.trace(cachedRunId);
+      setRunId(trace.run.id);
+      const restored = applyTrace(trace);
+      if (restored) {
+        setConfig(classroomToConfig(restored));
+        setSelectedStudentId(
+          (current) => current || restored.students[0]?.id
+        );
+      }
+      if (pendingInteractionOf(trace)) {
+        setStatusMessage("已恢复最近一次虚拟课堂，可继续试讲。", "success");
+      } else if (!isTerminalStatus(trace.run.status)) {
+        setStatusMessage("已恢复最近一次虚拟课堂，运行正在继续。", "info");
+      }
+    } catch {
+      clearCachedClassroom();
+      setClassroom(undefined);
+      setInteraction(undefined);
+      setTrace(undefined);
+      setStatusMessage(
+        "上次课堂运行已过期（服务重启或记录被清理），请重新生成虚拟课堂。",
+        "error"
+      );
     }
   }
 
@@ -353,7 +488,7 @@ export function ClassroomTrainingPage({
     }
 
     autoSendTimerRef.current = window.setTimeout(() => {
-      if (!classroomRef.current || isWorkingRef.current) {
+      if (!classroomRef.current || !interactionRef.current || isWorkingRef.current) {
         setVoiceStatus("系统正在处理上一句讲课内容，本句已保留在输入框。");
         return;
       }
@@ -363,31 +498,7 @@ export function ClassroomTrainingPage({
   }
 
   function disabledByState() {
-    return !classroom || isWorking;
-  }
-
-  async function syncCachedClassroom(cachedClassroom: ClassroomState) {
-    try {
-      const payload = await getClassroom(cachedClassroom.sessionId);
-      setClassroom(payload.classroomState);
-      setSelectedStudentId(
-        (current) => current || payload.classroomState.students[0]?.id
-      );
-      setStatusMessage("已恢复最近一次虚拟课堂，可继续试讲。", "success");
-    } catch {
-      try {
-        const payload = await restoreClassroom(cachedClassroom);
-        setClassroom(payload.classroomState);
-        setSelectedStudentId(
-          (current) => current || payload.classroomState.students[0]?.id
-        );
-        setStatusMessage("已用本地快照恢复课堂会话，可继续试讲。", "success");
-      } catch {
-        clearCachedClassroom();
-        setClassroom(undefined);
-        setStatusMessage("最近课堂已过期，请重新生成虚拟课堂。", "error");
-      }
-    }
+    return !classroom || !interaction || isWorking;
   }
 
   function setStatusMessage(message: string, tone: ClassroomStatusTone = "info") {
@@ -414,6 +525,19 @@ export function ClassroomTrainingPage({
         </div>
       </header>
 
+      <SessionRunBar
+        workflowId={classroomSessionWorkflow}
+        workflowName="虚拟课堂交互会话"
+        runId={runId}
+        trace={trace}
+        steps={classroomRailSteps}
+        turnLabel="教师发言"
+        onOpenMonitor={runId && onOpenMonitorRun ? () => onOpenMonitorRun(runId) : undefined}
+        onOpenWorkflow={onOpenWorkflow ? (nodeId) => onOpenWorkflow(classroomSessionWorkflow, nodeId) : undefined}
+      />
+
+      <div className="session-run-layout">
+        <div className="session-run-main">
       <ClassroomConfigPanel
         config={config}
         classroom={classroom}
@@ -451,14 +575,14 @@ export function ClassroomTrainingPage({
         events={classroom?.events || []}
         turnCount={classroom?.turnCount || 0}
         selectedStudentId={selectedStudentId}
-        disabled={!classroom || isWorking}
+        disabled={!classroom || !interaction || isWorking}
         onSelectStudent={setSelectedStudentId}
         onAction={(actionType) => handleDraftAction(actionType)}
       />
 
       <TeacherInputBar
         value={teacherText}
-        disabled={!classroom}
+        disabled={!classroom || !interaction}
         isSubmitting={isWorking}
         onChange={setTeacherText}
         onSend={() => void handleSend()}
@@ -485,6 +609,22 @@ export function ClassroomTrainingPage({
           />
         </div>
       ) : null}
+        </div>
+
+        <SessionRunRail
+          workflowId={classroomSessionWorkflow}
+          workflowName="虚拟课堂交互会话"
+          runId={runId}
+          trace={trace}
+          steps={classroomRailSteps}
+          turnNodeId="teacher-turn"
+          turnStepId="turns"
+          turnLabel="教师发言"
+          followupLabels={["学生 Agent 反应", "观察员点评"]}
+          onOpenMonitor={runId && onOpenMonitorRun ? () => onOpenMonitorRun(runId) : undefined}
+          onOpenWorkflow={onOpenWorkflow ? (nodeId) => onOpenWorkflow(classroomSessionWorkflow, nodeId) : undefined}
+        />
+      </div>
     </section>
   );
 }
@@ -577,9 +717,14 @@ function renderStatusIcon(tone: ClassroomStatusTone) {
   return <AlertCircle size={16} strokeWidth={2.2} aria-hidden="true" />;
 }
 
-function cacheClassroom(classroom: ClassroomState) {
+type ClassroomSnapshot = { runId: string; classroom: ClassroomState };
+
+function cacheClassroom(runId: string, classroom: ClassroomState) {
   try {
-    window.localStorage.setItem(classroomSnapshotKey, JSON.stringify(classroom));
+    window.localStorage.setItem(
+      classroomSnapshotKey,
+      JSON.stringify({ runId, classroom } satisfies ClassroomSnapshot)
+    );
   } catch {
     // Local storage can be unavailable in restricted browser contexts.
   }
@@ -593,7 +738,7 @@ function clearCachedClassroom() {
   }
 }
 
-function readCachedClassroom() {
+function readCachedClassroom(): ClassroomSnapshot | undefined {
   try {
     const raw = window.localStorage.getItem(classroomSnapshotKey);
 
@@ -601,9 +746,13 @@ function readCachedClassroom() {
       return undefined;
     }
 
-    const parsed = JSON.parse(raw) as ClassroomState;
+    const parsed = JSON.parse(raw) as ClassroomSnapshot;
 
-    if (!parsed?.sessionId || !Array.isArray(parsed.students)) {
+    if (
+      !parsed?.runId ||
+      !parsed.classroom?.sessionId ||
+      !Array.isArray(parsed.classroom.students)
+    ) {
       return undefined;
     }
 

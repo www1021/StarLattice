@@ -72,6 +72,103 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     enabled: true
   },
   {
+    id: "classroom.create",
+    name: "虚拟课堂创建",
+    type: "builtin",
+    endpoint: "builtin://classroom/create",
+    description: "按学科、学段、课题与训练目标生成虚拟班级画像，返回会话 id 与课堂状态。",
+    schema: jsonSchema(
+      {
+        subject: { type: "string" },
+        grade: { type: "string" },
+        topic: { type: "string" },
+        classType: { type: "string" },
+        trainingGoal: { type: "string" },
+        difficulty: { type: "string" },
+        specialTrainingMode: { type: "string" },
+        knowledgeBaseIds: { type: "array", items: { type: "string" } }
+      },
+      ["subject", "grade", "topic"]
+    ),
+    enabled: true
+  },
+  {
+    id: "classroom.turn",
+    name: "虚拟课堂互动",
+    type: "builtin",
+    endpoint: "builtin://classroom/turn",
+    description: "提交一次教师发言，驱动全部学生 Agent 生成反应并更新课堂事件与指标。",
+    schema: jsonSchema(
+      {
+        sessionId: { type: "string" },
+        teacherText: { type: "string" }
+      },
+      ["sessionId", "teacherText"]
+    ),
+    enabled: true
+  },
+  {
+    id: "classroom.feedback",
+    name: "课堂观察员点评",
+    type: "builtin",
+    endpoint: "builtin://classroom/feedback",
+    description: "基于本轮学生反应与课堂指标，生成观察员点评、风险提示与下一步教学建议。",
+    schema: jsonSchema({ sessionId: { type: "string" } }, ["sessionId"]),
+    enabled: true
+  },
+  {
+    id: "classroom.report",
+    name: "虚拟课堂诊断报告",
+    type: "builtin",
+    endpoint: "builtin://classroom/report",
+    description: "汇总课堂证据链、观察员结论与评分，生成诊断报告、引用与可下载成果。",
+    schema: jsonSchema({ sessionId: { type: "string" } }, ["sessionId"]),
+    enabled: true
+  },
+  {
+    id: "counseling.create",
+    name: "谈心谈话个案创建",
+    type: "builtin",
+    endpoint: "builtin://counseling/create",
+    description: "按虚拟个案与情绪状态创建谈心谈话会话，返回学生、状态与事件时间线。",
+    schema: jsonSchema({ config: { type: "object" } }, ["config"]),
+    enabled: true
+  },
+  {
+    id: "counseling.turn",
+    name: "谈心谈话发言",
+    type: "builtin",
+    endpoint: "builtin://counseling/turn",
+    description: "提交一次辅导员发言，生成学生回应并更新信任、开放与紧张状态。",
+    schema: jsonSchema(
+      {
+        sessionId: { type: "string" },
+        text: { type: "string" },
+        turnId: { type: "string" }
+      },
+      ["sessionId", "text"]
+    ),
+    enabled: true
+  },
+  {
+    id: "counseling.feedback",
+    name: "督导即时提示",
+    type: "builtin",
+    endpoint: "builtin://counseling/feedback",
+    description: "基于本轮关系状态与事件，给出督导视角的下一步表达建议与风险提醒。",
+    schema: jsonSchema({ sessionId: { type: "string" } }, ["sessionId"]),
+    enabled: true
+  },
+  {
+    id: "counseling.finish",
+    name: "谈心谈话复盘",
+    type: "builtin",
+    endpoint: "builtin://counseling/finish",
+    description: "结束谈话并生成复盘报告，保存到历史记录与成长档案。",
+    schema: jsonSchema({ sessionId: { type: "string" } }, ["sessionId"]),
+    enabled: true
+  },
+  {
     id: "export.docx",
     name: "Word 导出",
     type: "builtin",

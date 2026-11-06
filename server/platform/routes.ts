@@ -4,6 +4,7 @@ import {
   PlatformError,
   type ApprovalDecision,
   type ApprovalStatus,
+  type InteractionStatus,
   type WorkflowDefinition
 } from "./types.js";
 import { loadBuiltinWorkflows, parseWorkflowDefinition, WorkflowSyntaxError } from "./workflow/dsl.js";
@@ -680,6 +681,52 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
     response.json({ run });
   });
 
+  app.get("/api/platform/interactions", (request, response) => {
+    try {
+      const status = typeof request.query.status === "string" ? request.query.status : "";
+      if (status && !["pending", "answered", "expired", "cancelled"].includes(status)) {
+        throw new PlatformError("status 只支持 pending / answered / expired / cancelled。", 400);
+      }
+      const runId = typeof request.query.runId === "string" ? request.query.runId : undefined;
+      const limit = Number(request.query.limit);
+      response.json({
+        interactions: store.listInteractions({
+          runId,
+          status: (status || undefined) as InteractionStatus | undefined,
+          limit: Number.isInteger(limit) ? limit : undefined
+        })
+      });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  app.post("/api/platform/interactions/:id/respond", async (request, response) => {
+    try {
+      const body = isRecord(request.body) ? request.body : {};
+      const values = isRecord(body.values) ? body.values : {};
+      const interaction = store.getInteraction(request.params.id);
+      if (!interaction) {
+        throw new PlatformError("人工输入任务不存在。", 404);
+      }
+      const baseline = store.listSteps(interaction.runId).length;
+      executor.respondInteraction(interaction.id, {
+        values,
+        actor: typeof body.actor === "string" ? body.actor : undefined
+      });
+      await waitForRunCheckpoint(store, interaction.runId, baseline, 120_000);
+      response.json({
+        run: store.getRun(interaction.runId),
+        steps: store.listSteps(interaction.runId),
+        interactions: store.listInteractions({ runId: interaction.runId }),
+        interaction: store.getInteraction(interaction.id),
+        pending: store.listInteractions({ runId: interaction.runId, status: "pending" })[0]
+      });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
   app.get("/api/platform/runs/:id/trace", (request, response) => {
     const run = store.getRun(request.params.id);
     if (!run) {
@@ -699,8 +746,38 @@ function traceOf(store: PlatformStateStore, runId: string) {
     steps: store.listSteps(runId),
     verifyResults: store.listVerifyResults(runId),
     loopIterations: store.listLoopIterations(runId),
-    approvals: store.listApprovals({ runId })
+    approvals: store.listApprovals({ runId }),
+    interactions: store.listInteractions({ runId })
   };
+}
+
+const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "verifying", "revising"]);
+
+/**
+ * 人工输入提交后，运行会在后台继续；接口等到下一次暂停（或终态）再返回，
+ * 避免训练页为了拿最新课堂/谈话状态反复轮询。步骤数用于区分“刚提交”与“已继续”。
+ */
+async function waitForRunCheckpoint(
+  store: PlatformStateStore,
+  runId: string,
+  baselineSteps: number,
+  timeoutMs: number
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const run = store.getRun(runId);
+    if (!run) {
+      return;
+    }
+    const advanced = store.listSteps(runId).length > baselineSteps;
+    if (advanced && !ACTIVE_RUN_STATUSES.has(run.status)) {
+      return;
+    }
+    if (!ACTIVE_RUN_STATUSES.has(run.status) && run.status !== "waiting_input") {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
 }
 
 function seedRegistry(store: PlatformStateStore) {

@@ -460,6 +460,57 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
       }
     ],
     blocks: []
+  },
+  {
+    kind: "human",
+    label: "人工交互节点",
+    description: "运行在此暂停并等待真实用户输入；提交后输入字段成为节点输出，流程继续执行。",
+    shape: "node",
+    accent: "#7c3aed",
+    fields: [
+      {
+        key: "prompt",
+        label: "交互说明",
+        type: "textarea",
+        placeholder: "请输入本轮教师发言，或选择结束训练。",
+        help: "会展示在训练页与运行监控的待输入卡片上。"
+      },
+      {
+        key: "fields",
+        label: "输入字段",
+        type: "json",
+        placeholder: "[{\"key\":\"text\",\"label\":\"发言\",\"type\":\"textarea\"}]",
+        help: "支持 text / textarea / number / boolean / select；select 需要 options。"
+      },
+      {
+        key: "submitLabel",
+        label: "提交按钮文案",
+        type: "text",
+        placeholder: "提交"
+      },
+      {
+        key: "assignee",
+        label: "操作人/角色",
+        type: "text",
+        placeholder: "参训教师",
+        help: "仅作展示与记录，当前版本不做权限校验。"
+      },
+      {
+        key: "timeoutMs",
+        label: "超时时间（毫秒）",
+        type: "number",
+        placeholder: "默认 1800000（30 分钟）",
+        help: "超时未输入则运行失败；范围 1000 到 86400000。"
+      },
+      {
+        key: "inputs",
+        label: "交互上下文",
+        type: "json",
+        supportsRefs: true,
+        help: "把会话、课堂状态或上游产物映射进待输入卡片。"
+      }
+    ],
+    blocks: []
   }
 ];
 

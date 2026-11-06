@@ -179,6 +179,7 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
     condition: ["when"],
     loop: ["maxIterations", "while", "patience", "budget"],
     approve: ["instructions", "assignee", "timeoutMs", "inputs"],
+    human: ["prompt", "fields", "submitLabel", "assignee", "timeoutMs", "inputs"],
     verify: [
       "verifier",
       "rubric",
@@ -482,4 +483,52 @@ test("rejects direct and indirect sub-workflow cycles", () => {
     cycleError.issues.find((issue) => issue.code === "subworkflow-cycle")?.message ?? "",
     /flow-left@1 -> flow-right@1 -> flow-left@1/
   );
+});
+
+test("compiles conditional edges into a top-level graph", () => {
+  const workflow: WorkflowDefinition = {
+    id: "edge-probe",
+    name: "边条件探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      { id: "draft", kind: "agent", agent: "planner-agent" },
+      { id: "good", kind: "template", template: "ok ${draft.output}" },
+      { id: "fallback", kind: "template", template: "fallback" }
+    ],
+    edges: [
+      { from: "start", to: "draft" },
+      { from: "draft", to: "good", when: "${draft.output} != \"\"" },
+      { from: "draft", to: "fallback", label: "兜底" }
+    ]
+  };
+
+  const plan = compileWorkflow(workflow);
+  assert.deepEqual(plan.graph.entry, ["start"]);
+  assert.equal(plan.graph.edges.length, 3);
+  assert.equal(plan.graph.edges.find((edge) => edge.to === "good")?.when?.ref, "draft.output");
+  assert.equal(plan.graph.edges.find((edge) => edge.to === "fallback")?.label, "兜底");
+});
+
+test("rejects edge conditions with unknown or downstream references", () => {
+  const workflow: WorkflowDefinition = {
+    id: "edge-ref-probe",
+    name: "边条件引用探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      { id: "draft", kind: "agent", agent: "planner-agent" },
+      { id: "good", kind: "template", template: "ok" }
+    ],
+    edges: [
+      { from: "start", to: "draft" },
+      { from: "draft", to: "good", when: "${good.output} != \"\"" }
+    ]
+  };
+  assert.ok(compileError(workflow).issues.some((issue) => issue.code === "reference-order"));
+
+  workflow.edges[1] = { from: "draft", to: "good", when: "${ghost.output} != \"\"" };
+  assert.ok(compileError(workflow).issues.some((issue) => issue.code === "unknown-node-ref"));
 });

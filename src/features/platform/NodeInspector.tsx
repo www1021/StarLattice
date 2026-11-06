@@ -33,7 +33,8 @@ const CHILD_KINDS: NodeKind[] = [
   "template",
   "subworkflow",
   "verify",
-  "approve"
+  "approve",
+  "human"
 ];
 
 export function NodeInspector({

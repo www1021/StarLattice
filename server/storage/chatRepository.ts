@@ -5,6 +5,10 @@ import path from "node:path";
 
 export type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
 
+export type AssistantMode = "office" | "education";
+
+export type ConversationKind = TrainingType | "通用对话";
+
 export type StoredChatMessage = {
   role: "user" | "assistant";
   content: string;
@@ -51,7 +55,8 @@ export type TrainingEvaluation = {
 export type ConversationSaveInput = {
   conversationId: string;
   title: string;
-  trainingType: TrainingType;
+  trainingType: ConversationKind;
+  assistantMode?: AssistantMode;
   messages: StoredChatMessage[];
   knowledgeBaseIds: string[];
   attachmentNames: string[];
@@ -62,7 +67,8 @@ export type ConversationSaveInput = {
 export type ConversationSummary = {
   id: string;
   title: string;
-  trainingType: TrainingType;
+  trainingType: ConversationKind;
+  assistantMode: AssistantMode;
   messageCount: number;
   artifactCount: number;
   citationCount: number;
@@ -72,6 +78,10 @@ export type ConversationSummary = {
   lastMessage?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type EducationConversationSummary = ConversationSummary & {
+  trainingType: TrainingType;
 };
 
 export type ConversationDetail = ConversationSummary & {
@@ -175,7 +185,8 @@ export type TrainingTypeGrowthSummary = {
 type ConversationRow = {
   id: string;
   title: string;
-  training_type: TrainingType;
+  training_type: ConversationKind;
+  assistant_mode?: string;
   knowledge_base_ids: string;
   attachment_names: string;
   artifact_count: number;
@@ -261,12 +272,13 @@ export class SQLiteChatRepository implements ChatRepository {
         .prepare(
           `
           INSERT INTO conversations
-            (id, title, training_type, knowledge_base_ids, attachment_names,
+            (id, title, training_type, assistant_mode, knowledge_base_ids, attachment_names,
              artifact_count, citation_count, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             training_type = excluded.training_type,
+            assistant_mode = excluded.assistant_mode,
             knowledge_base_ids = excluded.knowledge_base_ids,
             attachment_names = excluded.attachment_names,
             artifact_count = excluded.artifact_count,
@@ -278,6 +290,7 @@ export class SQLiteChatRepository implements ChatRepository {
           input.conversationId,
           input.title,
           input.trainingType,
+          input.assistantMode ?? "education",
           JSON.stringify(input.knowledgeBaseIds),
           JSON.stringify(input.attachmentNames),
           input.artifacts.length,
@@ -547,7 +560,7 @@ export class SQLiteChatRepository implements ChatRepository {
   }
 
   getGrowthSummary(): GrowthSummary {
-    const conversations = this.listConversations();
+    const conversations = this.listConversations().filter(isEducationConversation);
     const evaluations = this.listEvaluations(200);
     const dimensionTotals = new Map<string, { total: number; count: number }>();
     const trainingTypeCounts = Object.fromEntries(
@@ -638,6 +651,7 @@ export class SQLiteChatRepository implements ChatRepository {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         training_type TEXT NOT NULL,
+        assistant_mode TEXT NOT NULL DEFAULT 'education',
         knowledge_base_ids TEXT NOT NULL,
         attachment_names TEXT NOT NULL,
         artifact_count INTEGER NOT NULL DEFAULT 0,
@@ -708,6 +722,16 @@ export class SQLiteChatRepository implements ChatRepository {
         created_at TEXT NOT NULL
       );
     `);
+
+    const conversationColumns = this.db
+      .prepare("PRAGMA table_info(conversations)")
+      .all() as Array<{ name: string }>;
+
+    if (!conversationColumns.some((column) => column.name === "assistant_mode")) {
+      this.db.exec(
+        "ALTER TABLE conversations ADD COLUMN assistant_mode TEXT NOT NULL DEFAULT 'education'"
+      );
+    }
   }
 
   private buildAgentOperationStats(conversations: ConversationSummary[]) {
@@ -749,7 +773,8 @@ export class SQLiteChatRepository implements ChatRepository {
     return {
       id: row.id,
       title: row.title,
-      trainingType: normalizeTrainingType(row.training_type),
+      trainingType: normalizeConversationKind(row.training_type),
+      assistantMode: row.assistant_mode === "office" ? "office" : "education",
       messageCount: Number(row.message_count || 0),
       artifactCount: Number(row.artifact_count || 0),
       citationCount: Number(row.citation_count || 0),
@@ -805,6 +830,16 @@ export function normalizeTrainingType(value: unknown): TrainingType {
     : "教案诊断";
 }
 
+export function normalizeConversationKind(value: unknown): ConversationKind {
+  return value === "通用对话" ? "通用对话" : normalizeTrainingType(value);
+}
+
+function isEducationConversation(
+  conversation: ConversationSummary
+): conversation is EducationConversationSummary {
+  return conversation.assistantMode === "education" && conversation.trainingType !== "通用对话";
+}
+
 function parseJsonArray(value: string) {
   return parseJsonValue<string[]>(value, []).filter(
     (item): item is string => typeof item === "string"
@@ -831,7 +866,9 @@ function summarizeDimensionAverage(score: number) {
   return "需要通过专项练习形成更清晰的方法。";
 }
 
-function buildGrowthTimeline(conversations: ConversationSummary[]): GrowthTimelineItem[] {
+function buildGrowthTimeline(
+  conversations: EducationConversationSummary[]
+): GrowthTimelineItem[] {
   return conversations.slice(0, 10).map((conversation) => {
     const evaluation = conversation.latestEvaluation;
     const weakDimensions =
@@ -855,7 +892,9 @@ function buildGrowthTimeline(conversations: ConversationSummary[]): GrowthTimeli
   });
 }
 
-function buildGrowthEvidenceRecords(conversations: ConversationSummary[]): GrowthEvidenceRecord[] {
+function buildGrowthEvidenceRecords(
+  conversations: EducationConversationSummary[]
+): GrowthEvidenceRecord[] {
   return conversations.slice(0, 50).map((conversation) => {
     const evaluation = conversation.latestEvaluation;
     const weakDimensions =
@@ -945,9 +984,9 @@ function buildTrainingTypeSummaries(
 }
 
 function buildRepresentativeArtifacts(
-  conversations: ConversationSummary[]
+  conversations: EducationConversationSummary[]
 ): RepresentativeArtifact[] {
-  const byType = new Map<TrainingType, ConversationSummary>();
+  const byType = new Map<TrainingType, EducationConversationSummary>();
 
   for (const conversation of conversations) {
     const current = byType.get(conversation.trainingType);
@@ -1105,7 +1144,7 @@ function buildArtifactReason(conversation: ConversationSummary) {
 
 function buildRecommendedAction(
   weakDimensions: EvaluationDimension[],
-  latestConversation?: ConversationSummary
+  latestConversation?: EducationConversationSummary
 ): RecommendedAction {
   const weakest = weakDimensions[0]?.name;
   const actionFor = (trainingType: TrainingType, reason: string, objective: string): RecommendedAction => ({

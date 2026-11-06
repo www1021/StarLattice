@@ -12,7 +12,8 @@ export const NODE_KINDS = [
   "condition",
   "loop",
   "verify",
-  "approve"
+  "approve",
+  "human"
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -161,6 +162,52 @@ export type ApproveNode = NodeBase & {
   timeoutMs?: number;
 };
 
+export type HumanFieldType = "text" | "textarea" | "number" | "boolean" | "select";
+
+/** 人工交互节点的输入字段；响应按 key 落库，并直接成为节点输出。 */
+export type HumanField = {
+  key: string;
+  label: string;
+  type?: HumanFieldType;
+  required?: boolean;
+  options?: string[];
+  defaultValue?: string | number | boolean;
+  placeholder?: string;
+  description?: string;
+};
+
+export type HumanNode = NodeBase & {
+  kind: "human";
+  /** 展示给操作者的说明或问题。 */
+  prompt: string;
+  fields?: HumanField[];
+  submitLabel?: string;
+  assignee?: string;
+  /** 超时后运行失败；留空使用平台默认值。 */
+  timeoutMs?: number;
+};
+
+export type InteractionStatus = "pending" | "answered" | "expired" | "cancelled";
+
+export type InteractionRecord = {
+  id: string;
+  runId: string;
+  stepId: string;
+  nodeId: string;
+  path: string;
+  title: string;
+  prompt: string;
+  fields: HumanField[];
+  /** 提交交互时的上游快照，便于操作者在不读取整条 trace 时也能判断上下文。 */
+  context?: Record<string, unknown>;
+  status: InteractionStatus;
+  response?: Record<string, unknown>;
+  actor?: string;
+  expiresAt?: string;
+  createdAt: string;
+  decidedAt?: string;
+};
+
 export type WorkflowNode =
   | StartNode
   | EndNode
@@ -175,7 +222,8 @@ export type WorkflowNode =
   | ConditionNode
   | LoopNode
   | VerifyNode
-  | ApproveNode;
+  | ApproveNode
+  | HumanNode;
 
 export type LeafNode =
   | StartNode
@@ -188,12 +236,15 @@ export type LeafNode =
   | TemplateNode
   | SubWorkflowNode
   | VerifyNode
-  | ApproveNode;
+  | ApproveNode
+  | HumanNode;
 
 export type WorkflowEdge = {
   from: string;
   to: string;
   label?: string;
+  /** 可选边条件；为假时该边不激活，下游可能被跳过。 */
+  when?: string;
 };
 
 export type WorkflowDefinition = {
@@ -268,9 +319,24 @@ export type CompileIssue = {
   message: string;
 };
 
+export type CompiledEdge = {
+  from: string;
+  to: string;
+  label?: string;
+  when?: CompiledExpression;
+};
+
+/** 顶层执行图：执行器按依赖就绪度并发调度，容器内部仍按原语义执行。 */
+export type CompiledGraph = {
+  nodes: string[];
+  edges: CompiledEdge[];
+  entry: string[];
+};
+
 export type CompiledPlan = {
   workflow: WorkflowDefinition;
   program: CompiledBlock;
+  graph: CompiledGraph;
   steps: CompiledStep[];
   order: string[];
   stats: {
@@ -287,6 +353,7 @@ export type RunStatus =
   | "verifying"
   | "revising"
   | "waiting_approval"
+  | "waiting_input"
   | "succeeded"
   | "failed"
   | "rolled_back"

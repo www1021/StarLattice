@@ -6,11 +6,16 @@ import {
   type ApproveNode,
   type CompiledBlock,
   type CompiledExpression,
+  type CompiledPlan,
   type CompiledStatement,
   type CompiledStep,
   type HttpNode,
+  type HumanField,
+  type HumanNode,
+  type InteractionRecord,
   type KnowledgeNode,
   type LlmNode,
+  type NodeKind,
   type PlatformRunView,
   type RunMode,
   type RunRecord,
@@ -24,6 +29,7 @@ import {
   type WorkflowDefinition
 } from "../types.js";
 import { ApprovalGate, type ApprovalOutcome } from "./approvalGate.js";
+import { HumanGate } from "./humanGate.js";
 import { compileWorkflow } from "../workflow/compiler.js";
 import { assignmentsOf, buildWorkflowSchedule } from "../scheduler/planner.js";
 import {
@@ -93,6 +99,8 @@ export type ExecutorHandlers = {
   mcpTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 确定性内置工具（如 knowledge.search）；stub 模式也可接真实服务，且不改变 live 判定。 */
   knowledgeTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  /** 确定性训练工具（课堂 / 谈心谈话）；返回 undefined 时继续走后续工具处理，不影响 live 判定。 */
+  trainingTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 独立的 knowledge 节点；与工具节点共用同一检索服务，但语义更清晰。 */
   knowledgeNode?: (node: KnowledgeNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** HTTP 节点；实现方必须负责 SSRF 防护与响应大小限制。 */
@@ -117,11 +125,22 @@ export type ExecutorOptions = {
   timeoutMs?: number;
   retryBaseDelayMs?: number;
   retryMaxDelayMs?: number;
+  /** 顶层 DAG 同时执行的节点数；容器、人工交互与验证节点仍独占执行。 */
+  maxConcurrency?: number;
   rollbackOnFailure?: boolean;
   dimensionScorer?: DimensionScorer;
   approvalTimeoutMs?: number;
+  /** human 节点未显式声明超时时的默认等待时长。 */
+  humanTimeoutMs?: number;
   onStatusChange?: (runId: string, status: RunStatus) => void;
 };
+
+export class HumanInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HumanInputError";
+  }
+}
 
 export class ApprovalRejectedError extends Error {
   constructor(message: string) {
@@ -196,6 +215,7 @@ export class WorkflowExecutor {
   private readonly injectedFailures: Set<string>;
   private readonly verifier: LayeredVerifier;
   private readonly approvals = new ApprovalGate();
+  private readonly humans = new HumanGate();
   private readonly cancelledRuns = new Set<string>();
 
   constructor(
@@ -226,8 +246,10 @@ export class WorkflowExecutor {
       timeoutMs: this.options.timeoutMs,
       retryBaseDelayMs: this.options.retryBaseDelayMs,
       retryMaxDelayMs: this.options.retryMaxDelayMs,
+      maxConcurrency: this.options.maxConcurrency,
       rollbackOnFailure: this.options.rollbackOnFailure,
-      approvalTimeoutMs: this.options.approvalTimeoutMs
+      approvalTimeoutMs: this.options.approvalTimeoutMs,
+      humanTimeoutMs: this.options.humanTimeoutMs
     };
   }
 
@@ -258,7 +280,37 @@ export class WorkflowExecutor {
         }
       }
     }
+    if (run.status === "waiting_input") {
+      for (const interaction of this.store.listInteractions({ runId, status: "pending" })) {
+        if (this.humans.has(interaction.id)) {
+          this.humans.cancel(interaction.id);
+        }
+      }
+    }
     return this.store.getRun(runId)!;
+  }
+
+  /**
+   * 人工输入 API 入口：校验待输入状态与字段，唤醒挂起的运行。
+   * 提交后运行继续执行，调用方可轮询 trace 等待下一次暂停或终态。
+   */
+  respondInteraction(
+    interactionId: string,
+    input: { values: Record<string, unknown>; actor?: string }
+  ): InteractionRecord {
+    const interaction = this.store.getInteraction(interactionId);
+    if (!interaction) {
+      throw new PlatformError("人工输入任务不存在。", 404);
+    }
+    if (interaction.status !== "pending") {
+      throw new PlatformError(`该输入任务已处理（${interaction.status}），不能重复提交。`, 409);
+    }
+    if (!this.humans.has(interactionId)) {
+      throw new PlatformError("人工输入等待点已失效（服务可能已重启），请重新运行工作流。", 409);
+    }
+    const values = normalizeHumanResponse(interaction.fields, input.values);
+    this.humans.answer(interactionId, values, input.actor?.trim());
+    return interaction;
   }
 
   /** 审批 API 入口：校验待审状态后唤醒挂起的运行；驳回必须带意见。 */
@@ -334,6 +386,9 @@ export class WorkflowExecutor {
     }
     if (compiled.node.kind === "approve") {
       throw new PlatformError("人工审批步骤不支持单步重跑，请整单重跑后重新审批。", 400);
+    }
+    if (compiled.node.kind === "human") {
+      throw new PlatformError("人工交互步骤不支持单步重跑，请重新发起训练。", 400);
     }
 
     const input = isRecord(original.input) ? original.input : {};
@@ -435,7 +490,7 @@ export class WorkflowExecutor {
 
     this.setStatus(runId, "running");
     try {
-      await this.executeRoot(plan.program, state, stopAfter);
+      await this.executeRoot(plan, state, stopAfter);
       this.throwIfCancelled(runId);
       this.finish(runId, "succeeded", {
         mode: this.mode,
@@ -458,8 +513,8 @@ export class WorkflowExecutor {
         this.finish(runId, "cancelled", undefined, message);
         return;
       }
-      // 审批驳回/超时是明确终态，不应被失败快照回滚成 rolled_back。
-      if (error instanceof ApprovalRejectedError) {
+      // 审批驳回/超时、人工输入超时是明确终态，不应被失败快照回滚成 rolled_back。
+      if (error instanceof ApprovalRejectedError || error instanceof HumanInputError) {
         this.finish(runId, "failed", undefined, message);
         return;
       }
@@ -470,13 +525,146 @@ export class WorkflowExecutor {
     }
   }
 
-  /** 顶层程序按节点逐个执行；命中 stopAfter 后停止，用于画布上的单节点试跑。 */
-  private async executeRoot(block: CompiledBlock, state: RunState, stopAfter?: string) {
-    for (const statement of block) {
-      await this.executeStatement(statement, state);
-      if (stopAfter && statementNodeId(statement) === stopAfter) {
+  /**
+   * 顶层按依赖就绪度调度：无入边或所有上游已解析的节点进入就绪队列，最多并发 maxConcurrency 个。
+   * 边条件在汇合点求值；所有入边都未激活时节点标记 skipped 并继续向下游传播。
+   * 容器、审批与验证会改写共享运行态，通过读写锁独占执行，避免与并发分支交错。
+   */
+  private async executeRoot(plan: CompiledPlan, state: RunState, stopAfter?: string) {
+    const statements = new Map<string, CompiledStatement>();
+    for (const statement of plan.program) {
+      statements.set(statementNodeId(statement), statement);
+    }
+
+    const nodeIds = plan.graph.nodes.length > 0 ? plan.graph.nodes : plan.order;
+    const nodeSet = new Set(nodeIds);
+    const incoming = new Map<string, number[]>();
+    const outgoing = new Map<string, number[]>();
+    for (const nodeId of nodeIds) {
+      incoming.set(nodeId, []);
+      outgoing.set(nodeId, []);
+    }
+    plan.graph.edges.forEach((edge, index) => {
+      if (!nodeSet.has(edge.from) || !nodeSet.has(edge.to)) {
         return;
       }
+      incoming.get(edge.to)!.push(index);
+      outgoing.get(edge.from)!.push(index);
+    });
+
+    const pending = new Map<string, number>(
+      nodeIds.map((nodeId) => [nodeId, incoming.get(nodeId)!.length])
+    );
+    const edgeResolved = new Array<boolean>(plan.graph.edges.length).fill(false);
+    const edgeSourceSucceeded = new Array<boolean>(plan.graph.edges.length).fill(false);
+    const launched = new Set<string>();
+    const ready = nodeIds.filter((nodeId) => pending.get(nodeId) === 0);
+    const inFlight = new Map<string, Promise<void>>();
+    const lock = new AsyncReadWriteLock();
+    let failure: unknown;
+    let stopped = false;
+
+    const resolveOutgoing = (nodeId: string, succeeded: boolean) => {
+      for (const edgeIndex of outgoing.get(nodeId) ?? []) {
+        if (edgeResolved[edgeIndex]) {
+          continue;
+        }
+        edgeResolved[edgeIndex] = true;
+        edgeSourceSucceeded[edgeIndex] = succeeded;
+        const edge = plan.graph.edges[edgeIndex];
+        const remaining = (pending.get(edge.to) ?? 1) - 1;
+        pending.set(edge.to, remaining);
+        if (remaining === 0 && !launched.has(edge.to)) {
+          const candidates = (incoming.get(edge.to) ?? []).filter(
+            (index) => edgeResolved[index] && edgeSourceSucceeded[index]
+          );
+          const selected = candidates.filter((index) => {
+            const condition = plan.graph.edges[index].when;
+            return !condition || evaluateExpression(condition, state.scope);
+          });
+          if (selected.length > 0) {
+            ready.push(edge.to);
+          } else {
+            skipNode(edge.to, candidates.length > 0 ? "上游边条件未满足。" : "上游分支未执行。");
+          }
+        }
+      }
+    };
+
+    const skipNode = (nodeId: string, reason: string) => {
+      if (launched.has(nodeId)) {
+        return;
+      }
+      launched.add(nodeId);
+      const statement = statements.get(nodeId);
+      if (statement) {
+        const stepId = this.store.beginStep({
+          runId: state.runId,
+          sequence: (state.sequence += 1),
+          path: statementPath(statement),
+          nodeId,
+          nodeKind: statementKind(statement),
+          input: { skipped: true, reason }
+        });
+        this.store.completeStep(stepId, "skipped", { skipped: true, reason }, reason, {
+          attempts: 0
+        });
+      }
+      if (stopAfter === nodeId) {
+        stopped = true;
+      }
+      resolveOutgoing(nodeId, false);
+    };
+
+    const launchNode = (nodeId: string) => {
+      const statement = statements.get(nodeId);
+      if (!statement) {
+        skipNode(nodeId, "编译计划缺少该节点。");
+        return;
+      }
+      launched.add(nodeId);
+      const lockMode = lockModeForStatement(statement);
+      const task = (async () => {
+        const release = lockMode ? await lock.acquire(lockMode) : undefined;
+        try {
+          await this.executeStatement(statement, state);
+        } finally {
+          release?.();
+        }
+      })().then(
+        () => {
+          inFlight.delete(nodeId);
+          if (stopAfter === nodeId) {
+            stopped = true;
+          }
+          resolveOutgoing(nodeId, true);
+        },
+        (error) => {
+          inFlight.delete(nodeId);
+          if (failure === undefined) {
+            failure = error;
+          }
+          stopped = true;
+        }
+      );
+      inFlight.set(nodeId, task);
+    };
+
+    while (true) {
+      while (!failure && !stopped && ready.length > 0 && inFlight.size < this.options.maxConcurrency) {
+        const nodeId = ready.shift()!;
+        if (!launched.has(nodeId)) {
+          launchNode(nodeId);
+        }
+      }
+      if (inFlight.size === 0) {
+        break;
+      }
+      await Promise.race([...inFlight.values()]);
+    }
+
+    if (failure !== undefined) {
+      throw failure;
     }
   }
 
@@ -744,6 +932,10 @@ export class WorkflowExecutor {
       await this.executeApprovalStep(effectiveStep, input, state, stepId);
       return;
     }
+    if (node.kind === "human") {
+      await this.executeHumanStep(effectiveStep, input, state, stepId);
+      return;
+    }
     if (node.kind !== "verify") {
       await this.runStepBody(effectiveStep, input, state, stepId);
       return;
@@ -865,12 +1057,14 @@ export class WorkflowExecutor {
   ) {
     const node = step.node as ApproveNode;
     const timeoutMs = node.timeoutMs ?? this.options.approvalTimeoutMs;
+    // 审批不占运行锁；等待期间其他分支可能继续执行，因此以提交审批时的快照为准。
+    const scope = state.scope;
     const context: Record<string, unknown> = {
-      artifact: state.scope.lastArtifact,
-      artifactNodeId: state.scope.lastArtifactNodeId,
-      score: state.scope.lastVerifyScore,
-      confidence: state.scope.lastVerifyConfidence,
-      issues: state.scope.lastVerifyIssues ?? [],
+      artifact: scope.lastArtifact,
+      artifactNodeId: scope.lastArtifactNodeId,
+      score: scope.lastVerifyScore,
+      confidence: scope.lastVerifyConfidence,
+      issues: scope.lastVerifyIssues ?? [],
       input
     };
     const approval = this.store.createApproval({
@@ -911,9 +1105,9 @@ export class WorkflowExecutor {
       reviewer: outcome.reviewer,
       comment: outcome.comment,
       decidedAt: decided?.decidedAt,
-      artifact: state.scope.lastArtifact,
-      score: state.scope.lastVerifyScore,
-      issues: state.scope.lastVerifyIssues ?? [],
+      artifact: context.artifact,
+      score: context.score,
+      issues: context.issues,
       input
     };
 
@@ -926,6 +1120,74 @@ export class WorkflowExecutor {
       throw new ApprovalRejectedError(message);
     }
 
+    scope.outputs.set(node.id, payload);
+    state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
+    this.store.completeStep(stepId, "succeeded", payload, undefined, { attempts: 1 });
+  }
+
+  /**
+   * 人工交互：落待输入记录 → 运行挂起 → API 提交后唤醒。
+   * 提交值同时成为节点输出（扁平字段 + values 副本），供下游模板与条件直接引用。
+   */
+  private async executeHumanStep(
+    step: CompiledStep,
+    input: Record<string, unknown>,
+    state: RunState,
+    stepId: string
+  ) {
+    const node = step.node as HumanNode;
+    const timeoutMs = node.timeoutMs ?? this.options.humanTimeoutMs;
+    const interaction = this.store.createInteraction({
+      runId: state.runId,
+      stepId,
+      nodeId: node.id,
+      path: step.path,
+      title: node.title ?? node.id,
+      prompt: node.prompt,
+      fields: node.fields ?? [],
+      context: input,
+      expiresAt: timeoutMs > 0 ? new Date(Date.now() + timeoutMs).toISOString() : undefined
+    });
+
+    this.store.updateStepStatus(stepId, "waiting");
+    this.setStatus(state.runId, "waiting_input");
+
+    let outcome;
+    try {
+      outcome = await this.humans.wait(interaction.id, timeoutMs);
+    } finally {
+      if (this.store.getRun(state.runId)?.status === "waiting_input") {
+        this.setStatus(state.runId, "running");
+      }
+    }
+
+    if (outcome.status === "cancelled") {
+      this.store.decideInteraction(interaction.id, "cancelled");
+      this.store.completeStep(stepId, "failed", undefined, "运行已取消。", { attempts: 1 });
+      throw new RunCancelledError();
+    }
+    if (outcome.status === "expired") {
+      this.store.decideInteraction(interaction.id, "expired");
+      const message = `人工输入超时（${timeoutMs}ms），运行已终止。`;
+      this.store.completeStep(stepId, "failed", undefined, message, { attempts: 1 });
+      throw new HumanInputError(message);
+    }
+
+    const decided = this.store.decideInteraction(
+      interaction.id,
+      "answered",
+      outcome.values,
+      outcome.actor
+    );
+    const payload: Record<string, unknown> = {
+      ...outcome.values,
+      values: outcome.values,
+      interaction: interaction.id,
+      nodeId: node.id,
+      submittedAt: decided?.decidedAt,
+      actor: outcome.actor,
+      input
+    };
     state.scope.outputs.set(node.id, payload);
     state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
     this.store.completeStep(stepId, "succeeded", payload, undefined, { attempts: 1 });
@@ -1147,6 +1409,12 @@ export class WorkflowExecutor {
       };
     }
     if (node.kind === "tool") {
+      if (this.handlers.trainingTool) {
+        const handled = await this.handlers.trainingTool(node, input, context);
+        if (handled !== undefined) {
+          return handled;
+        }
+      }
       if (this.handlers.knowledgeTool) {
         const handled = await this.handlers.knowledgeTool(node, input, context);
         if (handled !== undefined) {
@@ -1276,7 +1544,8 @@ function isActiveStatus(status: RunStatus): boolean {
     status === "running" ||
     status === "verifying" ||
     status === "revising" ||
-    status === "waiting_approval"
+    status === "waiting_approval" ||
+    status === "waiting_input"
   );
 }
 
@@ -1383,6 +1652,81 @@ const MAX_EVIDENCE = 32;
 /** 吸收任一节点产物里的 citation（含嵌套在 inputs/outputs 中的对象），写入当前作用域证据池。 */
 function statementNodeId(statement: CompiledStatement): string {
   return statement.type === "step" ? statement.step.nodeId : statement.nodeId;
+}
+
+function statementPath(statement: CompiledStatement): string {
+  return statement.type === "step" ? statement.step.path : statement.path;
+}
+
+function statementKind(statement: CompiledStatement): NodeKind {
+  return statement.type === "step" ? statement.step.node.kind : statement.type;
+}
+
+/**
+ * 会改写共享运行态的语句独占执行：容器会切换作用域/循环栈，验证会改写验证态。
+ * 普通步骤共享执行；审批只等待外部决策，不占锁，避免一个待审节点冻结其他分支。
+ */
+function lockModeForStatement(statement: CompiledStatement): "read" | "write" | undefined {
+  if (statement.type !== "step") {
+    return "write";
+  }
+  if (statement.step.node.kind === "verify") {
+    return "write";
+  }
+  if (statement.step.node.kind === "approve") {
+    return undefined;
+  }
+  if (statement.step.node.kind === "human") {
+    return undefined;
+  }
+  return "read";
+}
+
+/**
+ * 顶层 DAG 的读写锁：普通步骤共享执行；容器/审批/验证独占执行。
+ * 队列按 FIFO 放行，写锁等待时后来的读请求不能插队，避免独占节点被并发分支长期饿死。
+ */
+class AsyncReadWriteLock {
+  private readers = 0;
+  private writer = false;
+  private readonly queue: Array<{
+    mode: "read" | "write";
+    resolve: (release: () => void) => void;
+  }> = [];
+
+  acquire(mode: "read" | "write"): Promise<() => void> {
+    return new Promise((resolve) => {
+      this.queue.push({ mode, resolve });
+      this.drain();
+    });
+  }
+
+  private drain() {
+    while (this.queue.length > 0) {
+      const next = this.queue[0];
+      if (next.mode === "write") {
+        if (this.writer || this.readers > 0) {
+          return;
+        }
+        this.writer = true;
+        this.queue.shift();
+        next.resolve(() => {
+          this.writer = false;
+          this.drain();
+        });
+        return;
+      }
+      if (this.writer) {
+        return;
+      }
+      this.readers += 1;
+      this.queue.shift();
+      next.resolve(() => {
+        this.readers -= 1;
+        this.drain();
+      });
+    }
+  }
 }
 
 function absorbEvidence(scope: RunScope, output: unknown) {
@@ -1543,10 +1887,20 @@ function resolveExecutorOptions(options: ExecutorOptions): ResolvedExecutorOptio
       0,
       60000
     ),
+    maxConcurrency: clampInt(
+      options.maxConcurrency ?? envInt("PLATFORM_MAX_CONCURRENCY", 4),
+      1,
+      16
+    ),
     rollbackOnFailure:
       options.rollbackOnFailure ?? process.env.PLATFORM_ROLLBACK_ON_FAILURE === "true",
     approvalTimeoutMs: clampInt(
       options.approvalTimeoutMs ?? envInt("PLATFORM_APPROVAL_TIMEOUT_MS", 600000),
+      1000,
+      86_400_000
+    ),
+    humanTimeoutMs: clampInt(
+      options.humanTimeoutMs ?? envInt("PLATFORM_HUMAN_TIMEOUT_MS", 1_800_000),
       1000,
       86_400_000
     ),
@@ -1657,8 +2011,60 @@ function evaluateExpression(expression: CompiledExpression, scope: RunScope, fra
   }
 }
 
-function looseEquals(actual: unknown, expected: unknown): boolean {
-  if (typeof expected === "number") {
+function normalizeHumanResponse(
+  fields: HumanField[],
+  raw: Record<string, unknown>
+): Record<string, unknown> {
+  const declared = new Set(fields.map((field) => field.key));
+  const values: Record<string, unknown> = fields.length === 0
+    ? { ...raw }
+    : Object.fromEntries(
+        Object.entries(raw).filter(([key]) => declared.has(key))
+      );
+
+  for (const field of fields) {
+    let value = values[field.key];
+    if (value === undefined || value === "") {
+      if (field.defaultValue !== undefined) {
+        value = field.defaultValue;
+        values[field.key] = value;
+      } else if (field.required) {
+        throw new PlatformError(`字段「${field.label}」不能为空。`, 400);
+      } else {
+        continue;
+      }
+    }
+
+    const type = field.type ?? "text";
+    if (type === "number") {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) {
+        throw new PlatformError(`字段「${field.label}」必须是数字。`, 400);
+      }
+      values[field.key] = parsed;
+      continue;
+    }
+    if (type === "boolean") {
+      if (typeof value !== "boolean") {
+        throw new PlatformError(`字段「${field.label}」必须是布尔值。`, 400);
+      }
+      continue;
+    }
+    if (typeof value !== "string") {
+      throw new PlatformError(`字段「${field.label}」必须是字符串。`, 400);
+    }
+    if (type === "select" && !(field.options ?? []).includes(value)) {
+      throw new PlatformError(
+        `字段「${field.label}」只能是 ${field.options?.join(" / ") ?? "预置选项"}。`,
+        400
+      );
+    }
+  }
+
+  return values;
+}
+
+function looseEquals(actual: unknown, expected: unknown): boolean {  if (typeof expected === "number") {
     return Number(actual) === expected;
   }
   if (typeof expected === "boolean") {

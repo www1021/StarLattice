@@ -48,6 +48,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
 import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
 import { WorkflowCanvasPage } from "./features/platform/WorkflowCanvasPage";
+import { ScenarioValidationPage } from "./features/platform/ScenarioValidationPage";
 import { RegistryPage } from "./features/platform/RegistryPage";
 import { KnowledgePage } from "./features/platform/KnowledgePage";
 import { McpPage } from "./features/platform/McpPage";
@@ -558,7 +559,8 @@ type SpeakDraftInputMode = "manual" | "speech" | "mixed";
 type ConversationSummary = {
   id: string;
   title: string;
-  trainingType: TrainingType;
+  trainingType: TrainingType | "通用对话";
+  assistantMode: "office" | "education";
   messageCount: number;
   artifactCount: number;
   citationCount: number;
@@ -7671,19 +7673,23 @@ function HistoryCenter({
   onRefresh: () => void;
   onRestore: (id: string) => void;
 }) {
-  const [filter, setFilter] = useState<TrainingType | "全部">("全部");
+  const [filter, setFilter] = useState<TrainingType | "通用对话" | "全部">("全部");
   const visibleConversations =
     filter === "全部"
       ? conversations
-      : conversations.filter((conversation) => conversation.trainingType === filter);
+      : conversations.filter((conversation) =>
+          filter === "通用对话"
+            ? conversation.assistantMode === "office"
+            : conversation.trainingType === filter
+        );
 
   return (
-    <section className="history-center" aria-label="历史训练记录">
+    <section className="history-center" aria-label="对话历史">
       <header className="knowledge-page-header">
         <div>
-          <span>Practice Archive</span>
-          <h1>历史记录</h1>
-          <p>沉淀每次设计、演练、反馈和修改，方便答辩时展示训练闭环。</p>
+          <span>Conversation History</span>
+          <h1>对话历史</h1>
+          <p>统一查看通用对话与教育训练记录，可按类型筛选并回到原对话继续。</p>
         </div>
         <div className="page-header-actions">
           <button type="button" onClick={onRefresh}>
@@ -7698,8 +7704,8 @@ function HistoryCenter({
       </header>
 
       <div className="history-toolbar">
-        {(["全部", "教案诊断", "说课陪练", "模拟课堂", "实习反思", "谈心谈话"] as Array<
-          TrainingType | "全部"
+        {(["全部", "通用对话", "教案诊断", "说课陪练", "模拟课堂", "实习反思", "谈心谈话"] as Array<
+          TrainingType | "通用对话" | "全部"
         >).map((type) => (
           <button
             className={filter === type ? "history-filter-active" : ""}
@@ -7719,7 +7725,9 @@ function HistoryCenter({
           visibleConversations.map((conversation) => (
             <article className="history-item" key={conversation.id}>
               <div className="history-main">
-                <span className="training-badge">{conversation.trainingType}</span>
+                <span className="training-badge">
+                  {conversation.assistantMode === "office" ? "通用对话" : conversation.trainingType}
+                </span>
                 <h2>{conversation.title}</h2>
                 <p>{truncateText(conversation.lastMessage || "暂无回复摘要", 140)}</p>
                 <div className="history-meta">
@@ -7730,7 +7738,12 @@ function HistoryCenter({
                 </div>
               </div>
               <div className="history-score">
-                {conversation.latestEvaluation ? (
+                {conversation.assistantMode === "office" ? (
+                  <>
+                    <strong>{conversation.messageCount}</strong>
+                    <span>条消息 · 通用对话</span>
+                  </>
+                ) : conversation.latestEvaluation ? (
                   <>
                     <strong>{conversation.latestEvaluation.overallScore}</strong>
                     <span>综合评价</span>
@@ -7751,7 +7764,7 @@ function HistoryCenter({
         ) : (
           <div className="history-empty">
             <FileText size={28} strokeWidth={1.9} />
-            <p>还没有匹配的训练记录。</p>
+            <p>还没有匹配的对话记录。</p>
           </div>
         )}
       </div>
@@ -8309,6 +8322,7 @@ function App() {
     | "counseling"
     | "classroom"
     | "platform"
+    | "scenarios"
     | "registry"
     | "library"
     | "mcp"
@@ -8317,6 +8331,18 @@ function App() {
   >("platform");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [newTaskToken, setNewTaskToken] = useState(0);
+  const [workflowOpenRequest, setWorkflowOpenRequest] = useState<
+    { id: string; token: number; nodeId?: string } | undefined
+  >();
+  const [monitorRunRequest, setMonitorRunRequest] = useState<
+    { runId: string; token: number } | undefined
+  >();
+  const [classroomRunRequest, setClassroomRunRequest] = useState<
+    { runId: string; token: number } | undefined
+  >();
+  const [counselingRunRequest, setCounselingRunRequest] = useState<
+    { runId: string; token: number } | undefined
+  >();
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -8753,7 +8779,7 @@ function App() {
       setConversationHistory(payload.conversations || []);
       setHistoryStatus(undefined);
     } catch {
-      setHistoryStatus("历史记录加载失败。");
+      setHistoryStatus("对话记录加载失败。");
     }
   }
 
@@ -8762,7 +8788,7 @@ function App() {
       const response = await fetch(`/api/conversations/${conversationId}`);
 
       if (!response.ok) {
-        throw new Error("训练记录不存在。");
+        throw new Error("对话记录不存在。");
       }
 
       const payload = (await response.json()) as {
@@ -8797,14 +8823,17 @@ function App() {
       }));
       setConversationId(conversation.id);
       setMessages(restoredMessages);
-      setChatMode("education");
-      setCurrentTrainingType(conversation.trainingType);
+      const restoredMode = conversation.assistantMode === "office" ? "office" : "education";
+      setChatMode(restoredMode);
+      if (conversation.trainingType !== "通用对话") {
+        setCurrentTrainingType(conversation.trainingType);
+      }
       setSelectedKnowledgeBaseIds(conversation.knowledgeBaseIds);
       setActiveInsightMessageId(undefined);
       setActiveSection("chat");
     } catch (error) {
       setHistoryStatus(
-        error instanceof Error ? error.message : "训练记录恢复失败。"
+        error instanceof Error ? error.message : "对话记录恢复失败。"
       );
     }
   }
@@ -10616,8 +10645,8 @@ function App() {
           message.id === assistantId ? { ...message, status: "done" } : message
         )
       );
+      void loadConversationHistory();
       if (chatMode === "education") {
-        void loadConversationHistory();
         void loadGrowthSummary();
       }
     } catch (error) {
@@ -10739,6 +10768,57 @@ function App() {
     setActiveInsightMessageId(undefined);
   }
 
+  function handleOpenWorkflow(workflowId: string, nodeId?: string) {
+    setWorkflowOpenRequest((current) => ({
+      id: workflowId,
+      nodeId,
+      token: (current?.token ?? 0) + 1
+    }));
+    setActiveSection("platform");
+    setActiveInsightMessageId(undefined);
+  }
+
+  function handleOpenMonitorRun(runId: string) {
+    setMonitorRunRequest((current) => ({ runId, token: (current?.token ?? 0) + 1 }));
+    setActiveSection("monitor");
+    setActiveInsightMessageId(undefined);
+  }
+
+  function handleOpenSessionFromRun(target: {
+    workflowId: string;
+    runId: string;
+    sessionId?: string;
+  }) {
+    if (target.workflowId === "classroom-session-v1") {
+      setClassroomRunRequest((current) => ({
+        runId: target.runId,
+        token: (current?.token ?? 0) + 1
+      }));
+      setActiveSection("classroom");
+      return;
+    }
+    if (target.workflowId === "counseling-session-v1") {
+      setCounselingRunRequest((current) => ({
+        runId: target.runId,
+        token: (current?.token ?? 0) + 1
+      }));
+      setRestoredCounselingSessionId(target.sessionId);
+      setActiveSection("counseling");
+    }
+  }
+
+  useEffect(() => {
+    if (activeSection !== "classroom") {
+      setClassroomRunRequest(undefined);
+    }
+    if (activeSection !== "counseling") {
+      setCounselingRunRequest(undefined);
+    }
+    if (activeSection !== "monitor") {
+      setMonitorRunRequest(undefined);
+    }
+  }, [activeSection]);
+
   const hasMessages = messages.length > 0;
   const activeInsightMessage = messages.find(
     (message) => message.id === activeInsightMessageId
@@ -10786,6 +10866,10 @@ function App() {
           setActiveSection("platform");
           setActiveInsightMessageId(undefined);
         }}
+        onOpenScenarios={() => {
+          setActiveSection("scenarios");
+          setActiveInsightMessageId(undefined);
+        }}
         onOpenRegistry={() => {
           setActiveSection("registry");
           setActiveInsightMessageId(undefined);
@@ -10812,7 +10896,7 @@ function App() {
           setActiveInsightMessageId(undefined);
         }}
         onOpenChat={handleOpenSceneChat}
-        onNewConversation={() => handleNewConversation("office")}
+        onNewConversation={(mode) => handleNewConversation(mode)}
         onToggle={() => setSidebarCollapsed((value) => !value)}
       />
       <section className="workspace">
@@ -10895,15 +10979,22 @@ function App() {
         ) : activeSection === "classroom" ? (
           <div className="workspace-inner classroom-workspace">
             <ClassroomTrainingPage
+              key={`classroom-${classroomRunRequest?.token ?? 0}`}
               selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+              initialRunId={classroomRunRequest?.runId}
+              onOpenMonitorRun={handleOpenMonitorRun}
+              onOpenWorkflow={handleOpenWorkflow}
               onOpenMaterials={() => setActiveSection("knowledge")}
             />
           </div>
         ) : activeSection === "counseling" ? (
           <div className="workspace-inner counseling-workspace">
             <CounselingTrainingPage
-              key={restoredCounselingSessionId || "new-counseling-session"}
+              key={`${restoredCounselingSessionId || "new-counseling-session"}-${counselingRunRequest?.token ?? 0}`}
               initialSessionId={restoredCounselingSessionId}
+              initialRunId={counselingRunRequest?.runId}
+              onOpenMonitorRun={handleOpenMonitorRun}
+              onOpenWorkflow={handleOpenWorkflow}
               onTrainingSaved={() => {
                 void loadConversationHistory();
                 void loadGrowthSummary();
@@ -10912,7 +11003,32 @@ function App() {
           </div>
         ) : activeSection === "platform" ? (
           <div className="workspace-inner platform-workspace">
-            <WorkflowCanvasPage newTaskToken={newTaskToken} />
+            <WorkflowCanvasPage
+              newTaskToken={newTaskToken}
+              openWorkflowId={workflowOpenRequest?.id}
+              openWorkflowToken={workflowOpenRequest?.token}
+              openNodeId={workflowOpenRequest?.nodeId}
+            />
+          </div>
+        ) : activeSection === "scenarios" ? (
+          <div className="workspace-inner platform-workspace">
+            <ScenarioValidationPage
+              onOpenWorkflow={handleOpenWorkflow}
+              onOpenMonitor={() => setActiveSection("monitor")}
+              onOpenMonitorRun={handleOpenMonitorRun}
+              onOpenSession={handleOpenSessionFromRun}
+              onOpenReport={() => setActiveSection("report")}
+              onOpenRegistry={() => setActiveSection("registry")}
+              onOpenLibrary={() => setActiveSection("library")}
+              onOpenMcp={() => setActiveSection("mcp")}
+              onOpenClassroom={() => setActiveSection("classroom")}
+              onOpenCounseling={() => {
+                setCurrentTrainingType("谈心谈话");
+                setRestoredCounselingSessionId(undefined);
+                setActiveSection("counseling");
+              }}
+              onOpenChat={handleOpenSceneChat}
+            />
           </div>
         ) : activeSection === "registry" ? (
           <div className="workspace-inner platform-workspace">
@@ -10928,7 +11044,11 @@ function App() {
           </div>
         ) : activeSection === "monitor" ? (
           <div className="workspace-inner platform-workspace">
-            <RunMonitorPage />
+            <RunMonitorPage
+              initialRunId={monitorRunRequest?.runId}
+              initialRunToken={monitorRunRequest?.token}
+              onOpenSession={handleOpenSessionFromRun}
+            />
           </div>
         ) : activeSection === "report" ? (
           <div className="workspace-inner platform-workspace">

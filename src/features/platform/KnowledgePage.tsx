@@ -311,7 +311,7 @@ export function KnowledgePage() {
             知识库名称
             <input
               value={newName}
-              placeholder="例：分数的意义-课标与课例"
+              placeholder="例：教育-初中数学-分数教案语料"
               onChange={(event) => setNewName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -319,6 +319,7 @@ export function KnowledgePage() {
                 }
               }}
             />
+            <small>用「场景-主题-用途」说明内容，不要用日期、ID 或测试编号。</small>
           </label>
           <button
             type="button"

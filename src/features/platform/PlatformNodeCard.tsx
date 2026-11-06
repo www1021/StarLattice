@@ -1,5 +1,7 @@
+import { useContext } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { AlertTriangle, Clock3 } from "lucide-react";
+import { AlertTriangle, ChevronsDownUp, ChevronsUpDown, Clock3 } from "lucide-react";
+import { CanvasContainerContext } from "./canvasContainerContext";
 import { categoryLabel, categoryOf, NODE_VISUALS } from "./nodeVisuals";
 import type { PlatformIssue, WorkflowNode } from "./types";
 
@@ -11,21 +13,32 @@ export type PlatformNodeData = {
   durationMs?: number;
   issues: PlatformIssue[];
   inputs: string[];
+  /** 展开容器时给内部步骤加的路由标签（分支 1 / 满足条件 / 循环体）。 */
+  innerLabel?: string;
+  /** 内部步骤归属的顶层容器；点击时回落到容器检查器。 */
+  ownerId?: string;
+  canExpand?: boolean;
+  expanded?: boolean;
+  childCount?: number;
+  readOnly?: boolean;
 };
 
 export type PlatformFlowNode = Node<PlatformNodeData, "platform">;
 
 export function PlatformNodeCard({ data, selected }: NodeProps<PlatformFlowNode>) {
   const { definition, label, accent, status, durationMs, issues, inputs } = data;
+  const { isExpanded, toggle } = useContext(CanvasContainerContext);
   const Icon = NODE_VISUALS[definition.kind].icon;
   const category = categoryOf(definition.kind);
+  const expanded = data.expanded ?? isExpanded(definition.id);
 
   return (
     <div
       className={`platform-node ${selected ? "is-selected" : ""} ${status ? `is-${status}` : ""} ${
         issues.length > 0 ? "has-issue" : ""
-      }`}
+      } ${data.readOnly ? "is-inner" : ""}`}
     >
+      {data.innerLabel && <span className="platform-node-inline-label">{data.innerLabel}</span>}
       <Handle type="target" position={Position.Left} className="platform-handle" />
 
       <div className="platform-node-head">
@@ -69,6 +82,20 @@ export function PlatformNodeCard({ data, selected }: NodeProps<PlatformFlowNode>
         <span className="platform-node-kind" style={{ background: `${accent}14`, color: accent }}>
           {label}
         </span>
+        {data.canExpand && (
+          <button
+            type="button"
+            className="platform-node-expand nodrag"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggle(definition.id);
+            }}
+            title={expanded ? "收起内部步骤" : `展开 ${data.childCount ?? 0} 个内部步骤`}
+          >
+            {expanded ? <ChevronsDownUp size={11} /> : <ChevronsUpDown size={11} />}
+            {expanded ? "收起" : `展开 ${data.childCount ?? 0} 步`}
+          </button>
+        )}
         {durationMs !== undefined && (
           <span className="platform-node-time">
             <Clock3 size={11} />
@@ -131,6 +158,8 @@ function summarize(node: WorkflowNode): string {
       return `验证器 ${node.verifier || "未配置"} · 阈值 ${node.threshold ?? 0.8}`;
     case "approve":
       return `人工审批 · ${node.assignee || "未指定审批人"}`;
+    case "human":
+      return `人工交互 · ${node.assignee || "未指定操作人"}`;
     case "parallel":
       return `${node.branches?.length ?? 0} 个并行分支`;
     case "condition":

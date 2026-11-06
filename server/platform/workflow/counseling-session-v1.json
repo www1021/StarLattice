@@ -1,0 +1,118 @@
+{
+  "id": "counseling-session-v1",
+  "name": "谈心谈话交互会话",
+  "version": 1,
+  "description": "把谈心谈话训练变成可追踪的平台运行：创建虚拟个案 → 每轮辅导员发言暂停等待人工输入 → 学生 Agent 回应 → 督导提示 → 循环 → 结束复盘。",
+  "inputs": [
+    { "name": "config", "type": "object", "required": true, "description": "个案 id、训练方式、情绪、风险与初始状态" }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始谈话"
+    },
+    {
+      "id": "create-session",
+      "kind": "tool",
+      "title": "创建虚拟个案",
+      "tool": "counseling.create",
+      "args": {
+        "config": "${input.config}"
+      }
+    },
+    {
+      "id": "turns",
+      "kind": "loop",
+      "title": "逐轮谈话（人工 + 多 Agent）",
+      "maxIterations": 20,
+      "budget": { "maxDurationMs": 0, "maxTokens": 0 },
+      "while": "${counselor-turn.action} != finish",
+      "body": [
+        {
+          "id": "counselor-turn",
+          "kind": "human",
+          "title": "辅导员发言（人工交互）",
+          "prompt": "输入本轮辅导员发言；提交后学生 Agent 会回应，督导 Agent 会给出下一步提示。",
+          "submitLabel": "发送谈话",
+          "assignee": "参训辅导员",
+          "timeoutMs": 1800000,
+          "fields": [
+            {
+              "key": "text",
+              "label": "辅导员发言",
+              "type": "textarea",
+              "placeholder": "例如：听起来这段时间你一直很紧绷，愿意和我说说最担心的是什么吗？"
+            },
+            {
+              "key": "turnId",
+              "label": "发言标识",
+              "type": "text",
+              "description": "由训练页自动生成，用于幂等与打断关联。"
+            },
+            {
+              "key": "action",
+              "label": "动作",
+              "type": "select",
+              "options": ["speak", "finish"],
+              "defaultValue": "speak",
+              "required": true,
+              "description": "结束时选择 finish，运行会退出循环并生成复盘报告。"
+            }
+          ],
+          "inputs": {
+            "sessionId": "${create-session.session.id}"
+          }
+        },
+        {
+          "id": "after-turn",
+          "kind": "condition",
+          "title": "是否继续谈话",
+          "when": "${counselor-turn.action} != finish",
+          "then": [
+            {
+              "id": "counselor-turn-result",
+              "kind": "tool",
+              "title": "学生 Agent 回应",
+              "tool": "counseling.turn",
+              "args": {
+                "sessionId": "${create-session.session.id}",
+                "text": "${counselor-turn.text}",
+                "turnId": "${counselor-turn.turnId}"
+              }
+            },
+            {
+              "id": "coach-feedback",
+              "kind": "tool",
+              "title": "督导即时提示",
+              "tool": "counseling.feedback",
+              "args": {
+                "sessionId": "${create-session.session.id}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finish-session",
+      "kind": "tool",
+      "title": "结束并复盘",
+      "tool": "counseling.finish",
+      "args": {
+        "sessionId": "${create-session.session.id}"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "训练结束"
+    }
+  ],
+  "edges": [
+    { "from": "start", "to": "create-session" },
+    { "from": "create-session", "to": "turns" },
+    { "from": "turns", "to": "finish-session" },
+    { "from": "finish-session", "to": "end" }
+  ]
+}

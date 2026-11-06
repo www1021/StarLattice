@@ -24,6 +24,7 @@ import {
   LayoutGrid,
   LayoutTemplate,
   Loader2,
+  Maximize2,
   Play,
   Plus,
   Redo2,
@@ -42,9 +43,12 @@ import {
   collectNodeIds,
   computeElkLayout,
   computeLayout,
+  containerChildCount,
   createNode,
   defaultEdgeLabel,
+  expandedContainerSizes,
   isActiveRun,
+  layoutContainer,
   runStatusLabel,
   runStatusTone,
   selfLoopActionLabel,
@@ -53,15 +57,24 @@ import {
   type RunNodeStatus
 } from "./layout";
 import { PlatformNodeCard, type PlatformFlowNode, type PlatformNodeData } from "./PlatformNodeCard";
+import {
+  PlatformContainerNode,
+  type PlatformContainerData,
+  type PlatformContainerFlowNode
+} from "./PlatformContainerNode";
 import { NodeInspector } from "./NodeInspector";
+import { EdgeInspector } from "./EdgeInspector";
 import { NodePalette } from "./NodePalette";
+import { CanvasContainerContext } from "./canvasContainerContext";
 import { CanvasEdgeContext } from "./canvasEdgeContext";
 import { WorkflowEdge } from "./WorkflowEdge";
 import { applyTemplate, WORKFLOW_TEMPLATES, type WorkflowTemplate } from "./templates";
 import {
+  FLAGSHIP_WORKFLOW_BY_SCENE,
   SCENARIO_PACK_FILTERS,
   SCENARIO_PACK_ITEMS,
   filterByPack,
+  readScenePreference,
   type ScenarioPackFilter
 } from "../../../shared/scenarioPacks";
 import { NODE_VISUALS } from "./nodeVisuals";
@@ -81,20 +94,67 @@ import type {
 } from "./types";
 import "./platform.css";
 
-const nodeTypes = { platform: PlatformNodeCard };
+const nodeTypes = { platform: PlatformNodeCard, container: PlatformContainerNode };
 const edgeTypes = { workflow: WorkflowEdge };
+type CanvasNode = PlatformFlowNode | PlatformContainerFlowNode;
 const EMPTY_SPECS: NodeTypeSpec[] = [];
 const EDGE_COLOR = "#94a3b8";
 const PENDING_NODE_KEY = "platform:pending-node";
 const CORE_WORKFLOW_IDS = new Set<string>(SCENARIO_PACK_ITEMS.core.workflows);
+const FLAGSHIP_WORKFLOW_IDS = new Set<string>(Object.values(FLAGSHIP_WORKFLOW_BY_SCENE));
+/** 旗舰地图默认展开的容器；会话流程默认展开循环体，让编排结构一眼可见。 */
+const DEMO_CONTAINER_IDS: Record<string, string[]> = {
+  "classroom-map-v1": ["rehearse", "quality-gate"],
+  "business-map-v1": ["dimensions", "calibration"],
+  "classroom-session-v1": ["turns"],
+  "counseling-session-v1": ["turns"]
+};
 
-/** 通用流程排在最前，保证平台默认打开的不是某个行业场景。 */
-function orderWorkflowsByPack(workflows: WorkflowSummary[]): WorkflowSummary[] {
-  return [...workflows].sort(
-    (left, right) =>
-      Number(CORE_WORKFLOW_IDS.has(left.id) ? 0 : 1) -
-      Number(CORE_WORKFLOW_IDS.has(right.id) ? 0 : 1)
+/**
+ * 当前场景的旗舰地图排最前，其次才是通用流水线与其他流程；
+ * 「通用模板」分组里保留 task-report-v1，避免它抢占默认视图。
+ */
+function orderWorkflowsByPack(
+  workflows: WorkflowSummary[],
+  preferredFlagship: string
+): WorkflowSummary[] {
+  const rank = (id: string) =>
+    id === preferredFlagship
+      ? 0
+      : FLAGSHIP_WORKFLOW_IDS.has(id)
+        ? 1
+        : CORE_WORKFLOW_IDS.has(id)
+          ? 2
+          : 3;
+  return [...workflows].sort((left, right) => rank(left.id) - rank(right.id));
+}
+
+function demoContainersFor(definition: WorkflowDefinition): Set<string> {
+  const configured = DEMO_CONTAINER_IDS[definition.id] ?? [];
+  const available = new Set(
+    definition.nodes.filter((node) => containerChildCount(node) > 0).map((node) => node.id)
   );
+  return new Set(configured.filter((id) => available.has(id)));
+}
+
+function allContainerIds(definition: WorkflowDefinition): string[] {
+  return definition.nodes.filter((node) => containerChildCount(node) > 0).map((node) => node.id);
+}
+
+function childNodesOf(node: WorkflowNode): WorkflowNode[] {
+  return [
+    ...(node.branches ?? []),
+    ...(node.then ?? []),
+    ...(node.else ?? []),
+    ...(node.body ?? [])
+  ];
+}
+
+/** 找到包含目标节点的顶层节点（节点本身或最近的容器）。 */
+function topLevelAncestorFor(definition: WorkflowDefinition, nodeId: string): WorkflowNode | undefined {
+  const contains = (node: WorkflowNode): boolean =>
+    node.id === nodeId || childNodesOf(node).some(contains);
+  return definition.nodes.find(contains);
 }
 
 type Banner = {
@@ -105,26 +165,48 @@ type Banner = {
 
 type WorkflowCanvasPageProps = {
   newTaskToken?: number;
+  openWorkflowId?: string;
+  openWorkflowToken?: number;
+  openNodeId?: string;
 };
 
-export function WorkflowCanvasPage({ newTaskToken }: WorkflowCanvasPageProps) {
+export function WorkflowCanvasPage({
+  newTaskToken,
+  openWorkflowId,
+  openWorkflowToken,
+  openNodeId
+}: WorkflowCanvasPageProps) {
   return (
     <ReactFlowProvider>
-      <PlatformWorkspace newTaskToken={newTaskToken} />
+      <PlatformWorkspace
+        newTaskToken={newTaskToken}
+        openWorkflowId={openWorkflowId}
+        openWorkflowToken={openWorkflowToken}
+        openNodeId={openNodeId}
+      />
     </ReactFlowProvider>
   );
 }
 
-function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
+function PlatformWorkspace({
+  newTaskToken,
+  openWorkflowId,
+  openWorkflowToken,
+  openNodeId
+}: WorkflowCanvasPageProps) {
   const { fitView, getZoom, setCenter, screenToFlowPosition } = useReactFlow();
   const [contract, setContract] = useState<NodeTypesResponse>();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>();
+  const scenePreference = useMemo(() => readScenePreference(), []);
+  const preferredFlagship = FLAGSHIP_WORKFLOW_BY_SCENE[scenePreference];
   const definition = useDefinitionHistory((state) => state.definition);
   const setDefinition = useDefinitionHistory((state) => state.setDefinition);
   const canUndo = useStore(definitionTemporal, (state) => state.pastStates.length > 0);
   const canRedo = useStore(definitionTemporal, (state) => state.futureStates.length > 0);
   const [selectedId, setSelectedId] = useState<string>();
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
+  const [expandedContainers, setExpandedContainers] = useState<Set<string>>(new Set());
   const [issuesByNode, setIssuesByNode] = useState<Record<string, PlatformIssue[]>>({});
   const [banner, setBanner] = useState<Banner>();
   const [loading, setLoading] = useState(true);
@@ -155,6 +237,13 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
   const definitionRef = useRef<WorkflowDefinition | undefined>(undefined);
   definitionRef.current = definition;
   const newTaskTokenRef = useRef(0);
+  const requestedWorkflowRef = useRef(openWorkflowId);
+  requestedWorkflowRef.current = openWorkflowId;
+  const requestedNodeRef = useRef(openNodeId);
+  requestedNodeRef.current = openNodeId;
+  const openWorkflowTokenRef = useRef(openWorkflowToken);
+  openWorkflowTokenRef.current = openWorkflowToken;
+  const handledOpenTokenRef = useRef<number | undefined>(openWorkflowToken);
 
   useEffect(() => {
     if (!newTaskToken || newTaskToken === newTaskTokenRef.current || !definition) {
@@ -167,7 +256,7 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     setRunOpen(true);
   }, [newTaskToken, definition]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<PlatformFlowNode>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const specs = contract?.nodeTypes ?? EMPTY_SPECS;
@@ -188,15 +277,87 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     }
     return durations;
   }, [trace]);
+  const childStatuses = useMemo(() => {
+    const statuses = new Map<string, RunNodeStatus>();
+    for (const step of trace?.steps ?? []) {
+      const parts = step.path.split("/");
+      if (parts.length < 2) {
+        continue;
+      }
+      const current = statuses.get(parts[1]);
+      if (step.status === "failed") {
+        statuses.set(parts[1], "failed");
+      } else if (
+        (step.status === "running" || step.status === "waiting") &&
+        current !== "succeeded" &&
+        current !== "failed"
+      ) {
+        statuses.set(parts[1], "running");
+      } else if (step.status === "succeeded" && !current) {
+        statuses.set(parts[1], "succeeded");
+      }
+    }
+    return statuses;
+  }, [trace]);
+  const childDurations = useMemo(() => {
+    const durations = new Map<string, number>();
+    for (const step of trace?.steps ?? []) {
+      const parts = step.path.split("/");
+      if (parts.length < 2) {
+        continue;
+      }
+      durations.set(parts[1], (durations.get(parts[1]) ?? 0) + (step.durationMs ?? 0));
+    }
+    return durations;
+  }, [trace]);
+  const containerBoxes = useMemo(() => {
+    const boxes = new Map<string, NonNullable<ReturnType<typeof layoutContainer>>>();
+    for (const id of expandedContainers) {
+      const node = definition?.nodes.find((item) => item.id === id);
+      if (!node) {
+        continue;
+      }
+      const box = layoutContainer(node);
+      if (box) {
+        boxes.set(id, box);
+      }
+    }
+    return boxes;
+  }, [definition, expandedContainers]);
+  const expandedKey = useMemo(
+    () => [...expandedContainers].sort().join("|"),
+    [expandedContainers]
+  );
   const nodeById = useMemo(
     () => new Map(definition?.nodes.map((node) => [node.id, node]) ?? []),
     [definition]
   );
   const selectedNode = definition?.nodes.find((node) => node.id === selectedId);
+  const selectedEdge = selectedEdgeId
+    ? definition?.edges.find((edge) => edgeIdOf(edge) === selectedEdgeId)
+    : undefined;
   const pendingEdge = pendingInsertEdge
     ? definition?.edges.find((edge) => edgeIdOf(edge) === pendingInsertEdge)
     : undefined;
   const runScore = trace ? finalScoreOf(trace.run, trace) : undefined;
+  const flagshipWorkflows = useMemo(
+    () => workflows.filter((workflow) => FLAGSHIP_WORKFLOW_IDS.has(workflow.id)),
+    [workflows]
+  );
+  const coreWorkflows = useMemo(
+    () =>
+      workflows.filter(
+        (workflow) => !FLAGSHIP_WORKFLOW_IDS.has(workflow.id) && CORE_WORKFLOW_IDS.has(workflow.id)
+      ),
+    [workflows]
+  );
+  const otherWorkflows = useMemo(
+    () =>
+      workflows.filter(
+        (workflow) => !FLAGSHIP_WORKFLOW_IDS.has(workflow.id) && !CORE_WORKFLOW_IDS.has(workflow.id)
+      ),
+    [workflows]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -210,10 +371,12 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           return;
         }
         setContract(contractResponse);
-        const ordered = orderWorkflowsByPack(listResponse.workflows);
+        const ordered = orderWorkflowsByPack(listResponse.workflows, preferredFlagship);
         setWorkflows(ordered);
-        const first = ordered[0];
+        const requested = requestedWorkflowRef.current;
+        const first = (requested && ordered.find((item) => item.id === requested)) || ordered[0];
         if (first) {
+          handledOpenTokenRef.current = openWorkflowTokenRef.current;
           const detail = await platformApi.getWorkflow(first.id);
           if (cancelled) {
             return;
@@ -222,6 +385,8 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           positionsRef.current = new Map();
           setDefinition(detail.workflow.definition);
           definitionTemporal.getState().clear();
+          setExpandedContainers(demoContainersFor(detail.workflow.definition));
+          focusNodeInDefinition(detail.workflow.definition, requestedNodeRef.current);
           setRunValues(initialRunValues(detail.workflow.definition));
           setLoadToken((value) => value + 1);
         }
@@ -241,6 +406,19 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
   }, []);
 
   useEffect(() => {
+    if (
+      !openWorkflowId ||
+      !openWorkflowToken ||
+      openWorkflowToken === handledOpenTokenRef.current ||
+      !workflows.some((item) => item.id === openWorkflowId)
+    ) {
+      return;
+    }
+    handledOpenTokenRef.current = openWorkflowToken;
+    handleSelectWorkflow(openWorkflowId, openNodeId);
+  }, [openWorkflowId, openWorkflowToken, openNodeId, workflows]);
+
+  useEffect(() => {
     if (!definition) {
       setNodes([]);
       setEdges([]);
@@ -252,58 +430,157 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     positionsRef.current = new Map([...positions, ...positionsRef.current]);
     setNodes((current) => {
       const currentById = new Map(current.map((node) => [node.id, node]));
-      return definition.nodes.map((node): PlatformFlowNode => {
+      const topLevel = definition.nodes.map((node): CanvasNode => {
         const spec = specByKind.get(node.kind);
+        const accent = spec?.accent ?? "#6366f1";
+        const existing = currentById.get(node.id);
+        const position = existing?.position ?? positions.get(node.id) ?? { x: 60, y: 80 };
+        const box = containerBoxes.get(node.id);
+        if (box) {
+          const data: PlatformContainerData = {
+            definition: node,
+            accent,
+            width: box.width,
+            height: box.height,
+            childCount: containerChildCount(node),
+            columns: box.columns
+          };
+          return {
+            id: node.id,
+            type: "container",
+            position,
+            data,
+            style: { width: box.width, height: box.height },
+            zIndex: 0
+          };
+        }
         const data: PlatformNodeData = {
           definition: node,
           label: spec?.label ?? node.kind,
-          accent: spec?.accent ?? "#6366f1",
+          accent,
           status: runStatuses.get(node.id),
           durationMs: nodeDurations.get(node.id),
           issues: issuesByNode[node.id] ?? [],
-          inputs: inputNamesOf(node, definition)
+          inputs: inputNamesOf(node, definition),
+          canExpand: containerChildCount(node) > 0,
+          expanded: false,
+          childCount: containerChildCount(node)
         };
-        const existing = currentById.get(node.id);
-        return existing
+        return existing && existing.type === "platform"
           ? { ...existing, data }
           : {
               id: node.id,
               type: "platform",
-              position: positions.get(node.id) ?? { x: 60, y: 80 },
+              position,
               data
             };
       });
+
+      const children = [...containerBoxes].flatMap(([ownerId, box]) => {
+        return box.children.map((child): CanvasNode => {
+          const spec = specByKind.get(child.node.kind);
+          const data: PlatformNodeData = {
+            definition: child.node,
+            label: spec?.label ?? child.node.kind,
+            accent: spec?.accent ?? "#6366f1",
+            status: childStatuses.get(child.node.id),
+            durationMs: childDurations.get(child.node.id),
+            issues: issuesByNode[child.node.id] ?? [],
+            inputs: inputNamesOf(child.node, definition),
+            innerLabel: child.label,
+            ownerId,
+            canExpand: false,
+            expanded: false,
+            childCount: 0,
+            readOnly: true
+          };
+          return {
+            id: child.node.id,
+            type: "platform",
+            parentId: ownerId,
+            extent: "parent",
+            position: { x: child.x, y: child.y },
+            data,
+            draggable: false,
+            deletable: false,
+            connectable: false,
+            selectable: false,
+            focusable: false,
+            zIndex: 1
+          };
+        });
+      });
+
+      return [...topLevel, ...children];
     });
     const activeRun = trace ? isActiveRun(trace.run.status) : false;
-    setEdges(
-      definition.edges.map((edge) => {
+    setEdges((current) => {
+      const selected = new Set(current.filter((edge) => edge.selected).map((edge) => edge.id));
+      const topLevel = definition.edges.map((edge) => {
         const sourceNode = nodeById.get(edge.from);
         const accent = (sourceNode && specByKind.get(sourceNode.kind)?.accent) || EDGE_COLOR;
+        const condition = edge.when?.trim() || undefined;
         const running =
           activeRun &&
           (runStatuses.get(edge.from) === "running" || runStatuses.get(edge.to) === "running");
         return {
-          id: `${edge.from}->${edge.to}`,
+          id: edgeIdOf(edge),
           source: edge.from,
           target: edge.to,
           type: "workflow",
-          data: { accent, running },
+          data: { accent, running, condition },
+          selected: selected.has(edgeIdOf(edge)),
           markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: accent },
-          label: edge.label ?? defaultEdgeLabel(sourceNode)
+          label: edge.label ?? (condition ? "条件" : defaultEdgeLabel(sourceNode))
         };
-      })
-    );
+      });
+      const inner = [...containerBoxes].flatMap(([ownerId, box]) => {
+        const owner = nodeById.get(ownerId);
+        const accent = (owner && specByKind.get(owner.kind)?.accent) || EDGE_COLOR;
+        return box.edges.map((edge) => ({
+          id: `inner:${ownerId}:${edge.from}->${edge.to}`,
+          source: edge.from,
+          target: edge.to,
+          type: "workflow",
+          data: {
+            accent,
+            inner: true,
+            running:
+              activeRun &&
+              (childStatuses.get(edge.from) === "running" || childStatuses.get(edge.to) === "running")
+          },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 13, height: 13, color: accent },
+          selectable: false,
+          deletable: false,
+          focusable: false,
+          zIndex: 0
+        }));
+      });
+      return [...topLevel, ...inner];
+    });
   }, [
     definition,
     specByKind,
     nodeById,
     runStatuses,
     nodeDurations,
+    childStatuses,
+    childDurations,
+    containerBoxes,
     issuesByNode,
     trace,
     setNodes,
     setEdges
   ]);
+
+  useEffect(() => {
+    if (
+      selectedEdgeId &&
+      !definition?.edges.some((edge) => edgeIdOf(edge) === selectedEdgeId)
+    ) {
+      setSelectedEdgeId(undefined);
+    }
+  }, [definition, selectedEdgeId]);
 
   useEffect(() => {
     if (!loadToken || nodes.length === 0 || fittedTokenRef.current === loadToken) {
@@ -327,9 +604,10 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     const token = layoutTokenRef.current + 1;
     layoutTokenRef.current = token;
     const definitionId = current.id;
+    const sizes = expandedContainerSizes(current, expandedContainers);
     void (async () => {
       try {
-        const positions = await computeElkLayout(current);
+        const positions = await computeElkLayout(current, sizes);
         if (layoutTokenRef.current !== token || definitionRef.current?.id !== definitionId) {
           return;
         }
@@ -338,7 +616,7 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
         // ELK 失败时保留 computeLayout 的同步结果
       }
     })();
-  }, [loadToken]);
+  }, [loadToken, expandedKey]);
 
   useEffect(() => () => window.clearTimeout(fitTimerRef.current), []);
 
@@ -473,7 +751,9 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
       try {
         const next = await platformApi.nodeTypes();
         setContract(next);
-        setWorkflows(orderWorkflowsByPack((await platformApi.listWorkflows()).workflows));
+        setWorkflows(
+          orderWorkflowsByPack((await platformApi.listWorkflows()).workflows, preferredFlagship)
+        );
         const count = (kind: NodeTypeSpec["kind"], key: string = kind) =>
           next.nodeTypes.find((spec) => spec.kind === kind)?.fields.find((field) => field.key === key)
             ?.options?.length ?? 0;
@@ -499,7 +779,10 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     setLayouting(true);
     void (async () => {
       try {
-        const positions = await computeElkLayout(current);
+        const positions = await computeElkLayout(
+          current,
+          expandedContainerSizes(current, expandedContainers)
+        );
         if (layoutTokenRef.current === token && definitionRef.current?.id === current.id) {
           applyElkPositions(positions);
         }
@@ -558,6 +841,8 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     setDefinition(draft);
     definitionTemporal.getState().clear();
     setSelectedId(undefined);
+    setSelectedEdgeId(undefined);
+    setExpandedContainers(new Set());
     setIssuesByNode({});
     setTrace(undefined);
     setRunValues(initialRunValues(draft));
@@ -568,6 +853,7 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
 
   function selectNode(id: string) {
     setSelectedId(id);
+    setSelectedEdgeId(undefined);
     const position = positionsRef.current.get(id);
     if (position) {
       void setCenter(position.x + 126, position.y + 80, {
@@ -577,7 +863,97 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     }
   }
 
-  function handleSelectWorkflow(id: string) {
+  /** 从会话页或运行监控深链到画布时，展开目标节点所在容器并选中它。 */
+  function focusNodeInDefinition(current: WorkflowDefinition, nodeId?: string) {
+    if (!nodeId) {
+      return;
+    }
+    const ancestor = topLevelAncestorFor(current, nodeId);
+    if (!ancestor) {
+      return;
+    }
+    if (containerChildCount(ancestor) > 0) {
+      setExpandedContainers((existing) => new Set(existing).add(ancestor.id));
+    }
+    setSelectedId(ancestor.id);
+    setSelectedEdgeId(undefined);
+    window.setTimeout(() => {
+      const position = positionsRef.current.get(ancestor.id);
+      if (position) {
+        void setCenter(position.x + 126, position.y + 80, {
+          zoom: Math.max(getZoom(), 0.55),
+          duration: 240
+        });
+      }
+    }, 360);
+  }
+
+  function selectEdge(id: string) {
+    setSelectedEdgeId(id);
+    setSelectedId(undefined);
+  }
+
+  function toggleContainer(id: string) {
+    setExpandedContainers((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    setSelectedId(id);
+    setSelectedEdgeId(undefined);
+  }
+
+  function applyExpandedView(ids: Iterable<string>) {
+    setExpandedContainers(new Set(ids));
+    setSelectedId(undefined);
+    setSelectedEdgeId(undefined);
+    // 等 ELK 按展开尺寸重排后再聚焦，避免视图停在折叠布局的坐标上。
+    window.setTimeout(() => {
+      void fitView({ padding: 0.08, minZoom: 0.35, duration: 280 });
+    }, 520);
+  }
+
+  function handleDemoView() {
+    const current = definitionRef.current;
+    if (!current) {
+      return;
+    }
+    applyExpandedView(demoContainersFor(current));
+  }
+
+  function handleExpandAll() {
+    const current = definitionRef.current;
+    if (!current) {
+      return;
+    }
+    applyExpandedView(allContainerIds(current));
+  }
+
+  function updateEdge(
+    edgeId: string,
+    patch: Partial<Pick<WorkflowDefinition["edges"][number], "label" | "when">>
+  ) {
+    patchDefinition((current) => ({
+      ...current,
+      edges: current.edges.map((edge) =>
+        edgeIdOf(edge) === edgeId ? { ...edge, ...patch } : edge
+      )
+    }));
+  }
+
+  function deleteEdge(edgeId: string) {
+    patchDefinition((current) => ({
+      ...current,
+      edges: current.edges.filter((edge) => edgeIdOf(edge) !== edgeId)
+    }));
+    setSelectedEdgeId(undefined);
+  }
+
+  function handleSelectWorkflow(id: string, focusNodeId?: string) {
     if (id === workflowId) {
       return;
     }
@@ -590,6 +966,9 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
         setDefinition(response.workflow.definition);
         definitionTemporal.getState().clear();
         setSelectedId(undefined);
+        setSelectedEdgeId(undefined);
+        setExpandedContainers(demoContainersFor(response.workflow.definition));
+        focusNodeInDefinition(response.workflow.definition, focusNodeId);
         setIssuesByNode({});
         setTrace(undefined);
         setBanner(undefined);
@@ -781,6 +1160,8 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
     setDefinition(next);
     definitionTemporal.getState().clear();
     setSelectedId(undefined);
+    setSelectedEdgeId(undefined);
+    setExpandedContainers(new Set());
     setIssuesByNode({});
     setTrace(undefined);
     setRunValues(initialRunValues(next));
@@ -798,6 +1179,20 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
       edges: current.edges.filter((edge) => !removed.has(edge.from) && !removed.has(edge.to))
     }));
     setSelectedId((current) => (current && removed.has(current) ? undefined : current));
+    setSelectedEdgeId((current) =>
+      current && definitionRef.current?.edges.some(
+        (edge) => edgeIdOf(edge) === current && (removed.has(edge.from) || removed.has(edge.to))
+      )
+        ? undefined
+        : current
+    );
+    setExpandedContainers((current) => {
+      const next = new Set(current);
+      for (const id of removed) {
+        next.delete(id);
+      }
+      return next;
+    });
   }
 
   function updateSelectedNode(next: WorkflowNode) {
@@ -959,6 +1354,9 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           <h1>
             {definition.name}
             <span className="platform-version">v{definition.version}</span>
+            <span className="platform-version">
+              {scenePreference === "education" ? "教育场景" : "经营分析"}
+            </span>
           </h1>
           {definition.description && <p>{definition.description}</p>}
         </div>
@@ -971,11 +1369,33 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
             value={workflowId}
             onChange={(event) => handleSelectWorkflow(event.target.value)}
           >
-            {workflows.map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>
-                {workflow.name}
-              </option>
-            ))}
+            {flagshipWorkflows.length > 0 && (
+              <optgroup label="旗舰地图">
+                {flagshipWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {coreWorkflows.length > 0 && (
+              <optgroup label="通用模板">
+                {coreWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {otherWorkflows.length > 0 && (
+              <optgroup label="其他流程">
+                {otherWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
             {definition && !workflows.some((workflow) => workflow.id === definition.id) && (
               <option value={definition.id}>{definition.name}（未保存）</option>
             )}
@@ -1043,12 +1463,13 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
         <span className="platform-toolbar-label">画布</span>
         <span className="platform-toolbar-meta">
           {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条连线
+          {expandedContainers.size > 0 ? ` · 展开 ${expandedContainers.size} 个容器` : ""}
         </span>
         <span
           className="platform-toolbar-hint"
-          title="只渲染顶层 DAG；并行 / 条件 / 循环容器折叠显示，内部步骤在右侧面板按列表编辑。变量引用 ${节点ID.字段}，条件形如 ${verify.score} < 0.85。"
+          title="容器可展开查看内部步骤；点击连线可在右侧编辑标签与边条件。变量引用 ${节点ID.字段}，条件形如 ${verify.score} < 0.85。"
         >
-          从左侧节点库点击或拖入画布 · 选中节点后添加会自动连线
+          点节点看配置 · 点连线改条件 · 容器卡片可展开
         </span>
         <div className="platform-toolbar-actions">
           <button
@@ -1078,6 +1499,24 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           >
             {refreshing ? <Loader2 size={12} className="is-spinning" /> : <RefreshCw size={12} />}
             刷新注册项
+          </button>
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={handleDemoView}
+            title="展开课堂演练、质量分流等关键容器，并聚焦整张地图"
+          >
+            <Sparkles size={12} />
+            演示视图
+          </button>
+          <button
+            type="button"
+            className="platform-chip"
+            onClick={handleExpandAll}
+            title="展开当前流程的全部容器，查看完整编排"
+          >
+            <Maximize2 size={12} />
+            展开全部
           </button>
           <button
             type="button"
@@ -1160,65 +1599,94 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           }}
           onDrop={handleDrop}
         >
-          <CanvasEdgeContext.Provider
-            value={{ hoveredEdgeId, keepEdgeHover, scheduleEdgeLeave, insertOnEdge }}
+          <CanvasContainerContext.Provider
+            value={{ isExpanded: (id) => expandedContainers.has(id), toggle: toggleContainer }}
           >
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={handleConnect}
-              isValidConnection={(connection) =>
-                validateConnection(connection.source, connection.target) === undefined
-              }
-              onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
-              onEdgesDelete={(deleted) => {
-                const removed = new Set(deleted.map((edge) => `${edge.source}->${edge.target}`));
-                patchDefinition((current) => ({
-                  ...current,
-                  edges: current.edges.filter((edge) => !removed.has(`${edge.from}->${edge.to}`))
-                }));
-              }}
-              onNodeClick={(_event, node) => selectNode(node.id)}
-              onNodeDragStop={(_event, node) => positionsRef.current.set(node.id, node.position)}
-              onPaneClick={() => setSelectedId(undefined)}
-              onEdgeMouseEnter={(_event, edge) => handleEdgeHover(edge.id)}
-              onEdgeMouseLeave={scheduleEdgeLeave}
-              connectionLineStyle={{ stroke: "#6366f1", strokeWidth: 2, strokeDasharray: "6 5" }}
-              minZoom={0.25}
-              maxZoom={1.6}
-              deleteKeyCode={["Backspace", "Delete"]}
+            <CanvasEdgeContext.Provider
+              value={{ hoveredEdgeId, keepEdgeHover, scheduleEdgeLeave, insertOnEdge }}
             >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d9dfea" />
-              <Controls showInteractive={false} />
-              <MiniMap
-                className="platform-minimap"
-                pannable
-                zoomable
-                nodeBorderRadius={7}
-                nodeStrokeWidth={2}
-                maskColor="rgba(247, 249, 252, 0.78)"
-                nodeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
-                nodeStrokeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
-              />
-              {pendingEdge && (
-                <div className="platform-insert-hint">
-                  <Sparkles size={13} />
-                  <span>
-                    正在为 <code>{pendingEdge.from}</code> → <code>{pendingEdge.to}</code> 选择插入节点
-                  </span>
-                  <button type="button" onClick={() => setPendingInsertEdge(undefined)}>
-                    取消
-                  </button>
-                </div>
-              )}
-            </ReactFlow>
-          </CanvasEdgeContext.Provider>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={handleConnect}
+                isValidConnection={(connection) =>
+                  validateConnection(connection.source, connection.target) === undefined
+                }
+                onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
+                onEdgesDelete={(deleted) => {
+                  const removable = deleted.filter((edge) => !edge.data?.inner);
+                  const removed = new Set(
+                    removable.map((edge) => `${edge.source}->${edge.target}`)
+                  );
+                  if (removed.size === 0) {
+                    return;
+                  }
+                  patchDefinition((current) => ({
+                    ...current,
+                    edges: current.edges.filter((edge) => !removed.has(`${edge.from}->${edge.to}`))
+                  }));
+                  setSelectedEdgeId((current) =>
+                    current && removed.has(current) ? undefined : current
+                  );
+                }}
+                onNodeClick={(_event, node) => {
+                  const data = node.data as PlatformNodeData | PlatformContainerData;
+                  selectNode("ownerId" in data && data.ownerId ? data.ownerId : node.id);
+                }}
+                onNodeDragStop={(_event, node) => {
+                  if (!node.parentId) {
+                    positionsRef.current.set(node.id, node.position);
+                  }
+                }}
+                onEdgeClick={(_event, edge) => {
+                  if (!edge.data?.inner) {
+                    selectEdge(edge.id);
+                  }
+                }}
+                onPaneClick={() => {
+                  setSelectedId(undefined);
+                  setSelectedEdgeId(undefined);
+                }}
+                onEdgeMouseEnter={(_event, edge) => handleEdgeHover(edge.id)}
+                onEdgeMouseLeave={scheduleEdgeLeave}
+                connectionLineStyle={{ stroke: "#6366f1", strokeWidth: 2, strokeDasharray: "6 5" }}
+                minZoom={0.25}
+                maxZoom={1.6}
+                deleteKeyCode={["Backspace", "Delete"]}
+              >
+                <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d9dfea" />
+                <Controls showInteractive={false} />
+                <MiniMap
+                  className="platform-minimap"
+                  pannable
+                  zoomable
+                  nodeBorderRadius={7}
+                  nodeStrokeWidth={2}
+                  maskColor="rgba(247, 249, 252, 0.78)"
+                  nodeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
+                  nodeStrokeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
+                />
+                {pendingEdge && (
+                  <div className="platform-insert-hint">
+                    <Sparkles size={13} />
+                    <span>
+                      正在为 <code>{pendingEdge.from}</code> → <code>{pendingEdge.to}</code> 选择插入节点
+                    </span>
+                    <button type="button" onClick={() => setPendingInsertEdge(undefined)}>
+                      取消
+                    </button>
+                  </div>
+                )}
+              </ReactFlow>
+            </CanvasEdgeContext.Provider>
+          </CanvasContainerContext.Provider>
           <div className="platform-canvas-badge">
             {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条边
+            {expandedContainers.size > 0 ? ` · 展开 ${expandedContainers.size} 个容器` : ""}
             {trace && ` · 上次运行 ${runStatusLabel(trace.run.status)}`}
           </div>
           {definition.nodes.length === 0 && (
@@ -1226,7 +1694,23 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
           )}
         </div>
 
-        {selectedNode && (
+        {selectedEdge ? (
+          <div className="platform-side">
+            <div className="platform-side-bar">
+              <button type="button" className="platform-link" onClick={() => setSelectedEdgeId(undefined)}>
+                收起连线面板
+              </button>
+            </div>
+            <EdgeInspector
+              edge={selectedEdge}
+              source={nodeById.get(selectedEdge.from)}
+              target={nodeById.get(selectedEdge.to)}
+              onChange={(patch) => updateEdge(selectedEdgeId!, patch)}
+              onDelete={() => deleteEdge(selectedEdgeId!)}
+              onClose={() => setSelectedEdgeId(undefined)}
+            />
+          </div>
+        ) : selectedNode ? (
           <div className="platform-side">
             <div className="platform-side-bar">
               <button type="button" className="platform-link" onClick={() => setSelectedId(undefined)}>
@@ -1247,7 +1731,7 @@ function PlatformWorkspace({ newTaskToken }: WorkflowCanvasPageProps) {
               trialState={runState}
             />
           </div>
-        )}
+        ) : null}
       </div>
 
       {newOpen && (

@@ -1,5 +1,36 @@
 export type ScenarioPackId = "core" | "education" | "business-analysis";
 
+export type ScenePackId = "education" | "business-analysis";
+
+export const SCENE_STORAGE_KEY = "starlattice-scene-pack";
+
+/** 每个场景默认打开的地图版旗舰流程。 */
+export const FLAGSHIP_WORKFLOW_BY_SCENE: Record<ScenePackId, string> = {
+  education: "classroom-map-v1",
+  "business-analysis": "business-map-v1"
+};
+
+export const FLAGSHIP_WORKFLOW_IDS: string[] = Object.values(FLAGSHIP_WORKFLOW_BY_SCENE);
+
+/** 读取用户上次选择的场景；服务端渲染或隐私模式下回落到教育场景。 */
+export function readScenePreference(): ScenePackId {
+  const storage = (
+    globalThis as { localStorage?: { getItem(key: string): string | null } }
+  ).localStorage;
+  if (!storage) {
+    return "education";
+  }
+  try {
+    const stored = storage.getItem(SCENE_STORAGE_KEY);
+    if (stored === "business-analysis" || stored === "education") {
+      return stored;
+    }
+  } catch {
+    // localStorage 被禁用时仍可使用默认场景。
+  }
+  return "education";
+}
+
 export type ScenarioPackFilter = ScenarioPackId | "custom";
 
 export type ScenarioPackKind = "agents" | "tools" | "workflows" | "templates";
@@ -56,12 +87,23 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     tools: [
       "report.build",
       "classroom.simulate",
+      "classroom.create",
+      "classroom.turn",
+      "classroom.feedback",
+      "classroom.report",
+      "counseling.create",
+      "counseling.turn",
+      "counseling.feedback",
+      "counseling.finish",
       "lms.publish",
       "mcp.teaching-resources.teaching_resource_search",
       "mcp.teaching-resources.lesson_timing_check",
       "mcp.teaching-resources.classroom_feedback"
     ],
     workflows: [
+      "classroom-map-v1",
+      "classroom-session-v1",
+      "counseling-session-v1",
       "classroom-v1",
       "lesson-approval-v1",
       "mcp-resources-v1",
@@ -87,7 +129,7 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
       "mcp.data-analysis.trend",
       "mcp.data-analysis.chart"
     ],
-    workflows: ["business-analysis-v1"],
+    workflows: ["business-map-v1", "business-analysis-v1"],
     templates: ["business-analysis"]
   }
 };

@@ -2,8 +2,14 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { MicVAD } from "@ricky0123/vad-web";
 import { AlertTriangle, ArrowLeft, AudioLines, Bot, CheckCircle2, ChevronRight, CircleStop, Headphones, LoaderCircle, MessageCircleHeart, Mic, Radio, Send, ShieldAlert, Sparkles, Square, UserRound, Volume2, VolumeX } from "lucide-react";
 import type { CounselingCase, CounselingConfig, CounselingEvent, CounselingMessage, CounselingServerEvent, CounselingSession, StudentState } from "../../../shared/counseling";
-import { createCounselingSession, finishCounselingSession, getCounselingSession, loadCounselingConfig, saveCounselingDraft, submitCounselingTurn } from "./api";
+import { platformApi } from "../platform/api";
+import { cancelTrainingRun, isTerminalStatus, latestStepOutputOf, pendingInteractionOf, respondTrainingInteraction, startTrainingRun, waitForTrainingCheckpoint } from "../platform/trainingRuns";
+import type { InteractionRecord, TraceResponse } from "../platform/types";
+import { finishCounselingSession, getCounselingSession, loadCounselingConfig, saveCounselingDraft, submitCounselingTurn } from "./api";
+import { SessionRunBar, SessionRunRail } from "../platform/SessionRunPanel";
 
+const counselingSessionWorkflow = "counseling-session-v1";
+const counselingRunKey = "starlattice.counseling.run.v1";
 const statusText = (session?: CounselingSession) => {
   if (!session) return "选择一个虚拟个案，开始谈话训练。";
   if (session.status === "finished") return "本次谈话已结束，复盘报告已保存。";
@@ -13,12 +19,22 @@ const idOf = () => `turn_${Date.now().toString(36)}_${Math.random().toString(36)
 const stateLabel: Array<[keyof StudentState, string]> = [["trust", "信任"], ["openness", "开放"], ["tension", "紧张"]];
 const waveBars = Array.from({ length: 15 }, (_, index) => index);
 
-type CounselingTrainingPageProps = { onTrainingSaved?: () => void; initialSessionId?: string };
-export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: CounselingTrainingPageProps) {
+type CounselingTrainingPageProps = { onTrainingSaved?: () => void; initialSessionId?: string; initialRunId?: string; onOpenMonitorRun?: (runId: string) => void; onOpenWorkflow?: (workflowId: string, nodeId?: string) => void };
+const counselingRailSteps = [
+  { id: "start", label: "开始谈话", hint: "工作流入口" },
+  { id: "create-session", label: "创建虚拟个案", hint: "counseling.create · 学生画像与初始状态" },
+  { id: "turns", label: "逐轮谈话（人工 + 多 Agent）", hint: "辅导员发言 → 学生 Agent 回应 → 督导提示" },
+  { id: "finish-session", label: "结束并复盘", hint: "counseling.finish · 生成复盘报告" },
+  { id: "end", label: "训练结束" }
+];
+export function CounselingTrainingPage({ onTrainingSaved, initialSessionId, initialRunId, onOpenMonitorRun, onOpenWorkflow }: CounselingTrainingPageProps) {
   const [cases, setCases] = useState<CounselingCase[]>([]);
   const [capabilities, setCapabilities] = useState<{ model: boolean; iflytek: boolean }>({ model: false, iflytek: false });
   const [config, setConfig] = useState<CounselingConfig>();
   const [session, setSession] = useState<CounselingSession>();
+  const [runId, setRunId] = useState<string>();
+  const [trace, setTrace] = useState<TraceResponse>();
+  const [interaction, setInteraction] = useState<InteractionRecord>();
   const [status, setStatus] = useState("正在读取虚拟个案...");
   const [error, setError] = useState<string>();
   const [draft, setDraft] = useState("");
@@ -42,32 +58,31 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
   const finalDraftRef = useRef("");
   const voiceSubmitTimerRef = useRef<number | undefined>(undefined);
   const isWorkingRef = useRef(false);
+  const runIdRef = useRef<string | undefined>(undefined);
+  const interactionRef = useRef<InteractionRecord | undefined>(undefined);
   const activeTurnIdRef = useRef<string | undefined>(undefined);
   const voiceLevelRef = useRef({ value: 0, updatedAt: 0 });
   const voiceAutoSendRef = useRef(false);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => {
-    if (initialSessionId) {
-      void getCounselingSession(initialSessionId).then((payload) => {
-        setSession(payload.session);
-        setConfig(payload.session.config);
-        if (payload.session.status === "active") {
-          connect(payload.session);
-        }
-        setStatus(statusText(payload.session));
-      }).catch((err) => setError(err instanceof Error ? err.message : "谈话记录加载失败。"));
+    if (initialRunId) {
+      void restoreByRun(initialRunId);
+    } else if (initialSessionId) {
+      void restoreSession(initialSessionId);
     }
     void loadCounselingConfig().then(payload => {
       setCases(payload.cases);
       setCapabilities(payload.capabilities);
       const initial = payload.cases[0];
-      if (initial) setConfig({ caseId: initial.id, mode: "guided", ...initial.defaults });
-      setStatus("请选择虚拟个案，设置状态后开始训练。");
+      if (initial) setConfig(current => current ?? { caseId: initial.id, mode: "guided", ...initial.defaults });
+      setStatus(current => initialSessionId || initialRunId ? current : "请选择虚拟个案，设置状态后开始训练。");
     }).catch(err => { setError(err instanceof Error ? err.message : "虚拟个案加载失败。"); setStatus("虚拟个案加载失败。"); });
     return () => { shouldKeepListeningRef.current = false; recognitionRef.current?.abort(); void vadRef.current?.destroy(); if (voiceSubmitTimerRef.current) window.clearTimeout(voiceSubmitTimerRef.current); disconnect(); setIsCounselorSpeaking(false); setIsStudentSpeaking(false); setCounselorVoiceLevel(0); window.speechSynthesis?.cancel(); };
-  }, [initialSessionId]);
+  }, [initialSessionId, initialRunId]);
   useEffect(() => { isWorkingRef.current = isWorking; }, [isWorking]);
+  useEffect(() => { runIdRef.current = runId; }, [runId]);
+  useEffect(() => { interactionRef.current = interaction; }, [interaction]);
   useEffect(() => { voiceAutoSendRef.current = voiceAutoSend; }, [voiceAutoSend]);
   useEffect(() => { if (session?.events.length) eventsRef.current?.scrollTo({ top: eventsRef.current.scrollHeight, behavior: "smooth" }); }, [session?.events.length]);
 
@@ -107,30 +122,133 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
   }
   async function begin() {
     if (!config) return;
-    setIsWorking(true); setError(undefined);
-    try { const payload = await createCounselingSession(config); setSession(payload.session); connect(payload.session); setStatus("虚拟个案已就绪。先建立关系，再慢慢了解发生了什么。"); } catch (err) { setError(err instanceof Error ? err.message : "创建谈话失败。"); } finally { setIsWorking(false); }
+    setIsWorking(true); setError(undefined); setInteraction(undefined); setTrace(undefined);
+    try {
+      await cancelTrainingRun(runIdRef.current);
+      const run = await startTrainingRun(counselingSessionWorkflow, { config });
+      setRunId(run.id);
+      const trace = await waitForTrainingCheckpoint(run.id);
+      const nextSession = applyTrace(trace, { speakLatest: false });
+      if (nextSession) {
+        setConfig(nextSession.config);
+        connect(nextSession);
+        cacheRunMapping(nextSession.id, run.id);
+        if (pendingInteractionOf(trace)) {
+          setStatus("虚拟个案已就绪。先建立关系，再慢慢了解发生了什么。");
+        }
+      } else {
+        setError("虚拟个案创建失败，请重试。");
+      }
+    } catch (err) { setError(err instanceof Error ? err.message : "创建谈话失败。"); } finally { setIsWorking(false); }
   }
   async function submit(text = draft, source: "text" | "voice" = "text") {
     if (!session || !text.trim() || isWorking || session.status !== "active") return;
+    const currentInteraction = interactionRef.current;
+    if (!currentInteraction && runIdRef.current) {
+      setStatus("训练运行正在推进，请稍候再发送下一段发言。");
+      return;
+    }
     const turnId = idOf(); setIsWorking(true); activeTurnIdRef.current = turnId; setError(undefined); setDraft(""); setInterim("");
     // The local microphone must take priority over TTS; the server also aborts an unfinished reply.
     if (playingRef.current) { sendRealtime({ type: "delivery", messageId: playingRef.current.messageId, delivery: "interrupted", playedMs: Date.now() - playingRef.current.startedAt }); window.speechSynthesis?.cancel(); playingRef.current = undefined; }
-    const usesRealtime = socketRef.current?.readyState === WebSocket.OPEN;
     try {
-      if (usesRealtime) { sendRealtime({ type: "cancel" }); sendRealtime({ type: "turn", turnId, text: text.trim() }); }
-      else { const payload = await submitCounselingTurn(session.id, text.trim(), turnId); setSession(payload.session); const latest = payload.session.messages[payload.session.messages.length - 1]; if (latest?.role === "student") speakStudent(latest); }
-      setStatus("正在分析谈话行为并组织学生回应...");
+      if (currentInteraction) {
+        const trace = await respondTrainingInteraction(currentInteraction.id, { text: text.trim(), turnId, action: "speak" }, "参训辅导员");
+        applyTrace(trace);
+        if (!pendingInteractionOf(trace) && !isTerminalStatus(trace.run.status)) setStatus("学生已回应，训练运行正在继续。");
+      } else {
+        setStatus("正在分析谈话行为并组织学生回应...");
+        const usesRealtime = socketRef.current?.readyState === WebSocket.OPEN;
+        if (usesRealtime) { sendRealtime({ type: "cancel" }); sendRealtime({ type: "turn", turnId, text: text.trim() }); }
+        else { const payload = await submitCounselingTurn(session.id, text.trim(), turnId); setSession(payload.session); const latest = payload.session.messages[payload.session.messages.length - 1]; if (latest?.role === "student") speakStudent(latest); }
+      }
     } catch (err) {
-      activeTurnIdRef.current = undefined;
       setError(err instanceof Error ? err.message : "发言提交失败。");
       setDraft(text);
-      setIsWorking(false);
     } finally {
-      if (!usesRealtime) {
+      if (currentInteraction || socketRef.current?.readyState !== WebSocket.OPEN) {
         activeTurnIdRef.current = undefined;
         setIsWorking(false);
       }
     }
+  }
+  /** 把平台 trace 的步骤输出映射回谈话页面；返回最新的会话视图。 */
+  function applyTrace(trace: TraceResponse, options: { speakLatest?: boolean; notifySaved?: boolean } = {}): CounselingSession | undefined {
+    setTrace(trace);
+    const created = latestStepOutputOf<{ session: CounselingSession }>(trace, ["create-session"]);
+    const turnResult = latestStepOutputOf<{ session: CounselingSession }>(trace, ["counselor-turn-result"]);
+    const finished = latestStepOutputOf<{ session: CounselingSession }>(trace, ["finish-session"]);
+    const nextSession = finished?.session ?? turnResult?.session ?? created?.session;
+    if (nextSession) {
+      setSession(nextSession);
+      if (options.speakLatest !== false) {
+        const latestStudent = [...nextSession.messages].reverse().find(message => message.role === "student");
+        if (latestStudent && !spokenRef.current.has(latestStudent.id)) speakStudent(latestStudent);
+      }
+    }
+    setInteraction(pendingInteractionOf(trace));
+    if (isTerminalStatus(trace.run.status)) {
+      if (trace.run.status === "succeeded") {
+        disconnect();
+        clearRunMapping();
+        setStatus("复盘已生成并保存到历史记录与成长档案。");
+        if (options.notifySaved !== false) onTrainingSaved?.();
+      } else {
+        const failedStep = [...trace.steps].reverse().find(step => step.status === "failed");
+        const message = trace.run.error || failedStep?.error || "谈话运行已中断，请重新创建个案。";
+        setError(message);
+        setStatus(message);
+      }
+    }
+    return nextSession;
+  }
+  async function restoreByRun(targetRunId: string) {
+    try {
+      const trace = await platformApi.trace(targetRunId);
+      setRunId(trace.run.id);
+      const restored = applyTrace(trace, { speakLatest: false, notifySaved: false });
+      if (!restored) {
+        setError("该运行还没有生成谈话会话，可能仍在创建个案。");
+        return;
+      }
+      setConfig(restored.config);
+      cacheRunMapping(restored.id, trace.run.id);
+      if (restored.status === "active" && !isTerminalStatus(trace.run.status)) {
+        connect(restored);
+      }
+      setStatus(statusText(restored));
+    } catch {
+      setError("该谈话运行已过期或已被清理，请从历史记录重新打开。");
+    }
+  }
+  async function restoreSession(sessionId: string) {
+    const mapping = readRunMapping();
+    if (mapping?.sessionId === sessionId) {
+      try {
+        const trace = await platformApi.trace(mapping.runId);
+        if (trace.run.status !== "failed" && trace.run.status !== "cancelled") {
+          setRunId(trace.run.id);
+          const restored = applyTrace(trace, { speakLatest: false, notifySaved: false });
+          if (restored) {
+            setConfig(restored.config);
+            connect(restored);
+            setStatus(statusText(restored));
+            return;
+          }
+        }
+        clearRunMapping();
+      } catch {
+        clearRunMapping();
+      }
+    }
+    // 历史记录里只有谈话会话、没有平台运行时，回退到原有会话接口继续查看/训练。
+    const payload = await getCounselingSession(sessionId);
+    setSession(payload.session);
+    setConfig(payload.session.config);
+    if (payload.session.status === "active") {
+      connect(payload.session);
+    }
+    setStatus(statusText(payload.session));
   }
   function speakStudent(message: CounselingMessage) {
     if (!("speechSynthesis" in window) || !message.text.trim() || message.delivery === "interrupted") return;
@@ -200,8 +318,13 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
     window.speechSynthesis?.cancel();
     setIsStudentSpeaking(false);
     disconnect();
+    void cancelTrainingRun(runIdRef.current);
+    clearRunMapping();
     activeTurnIdRef.current = undefined;
+    setRunId(undefined);
+    setInteraction(undefined);
     setSession(undefined);
+    setTrace(undefined);
     setDraft("");
     setError(undefined);
     setIsWorking(false);
@@ -230,7 +353,16 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
   }
   async function finish() {
     if (!session || isWorking) return; stopListening(); window.speechSynthesis?.cancel(); setIsWorking(true);
-    try { const payload = await finishCounselingSession(session.id); setSession(payload.session); disconnect(); setStatus("复盘已生成并保存到历史记录与成长档案。"); onTrainingSaved?.(); } catch (err) { setError(err instanceof Error ? err.message : "生成复盘失败。"); } finally { setIsWorking(false); }
+    const currentInteraction = interactionRef.current;
+    try {
+      if (currentInteraction) {
+        const trace = await respondTrainingInteraction(currentInteraction.id, { action: "finish" }, "参训辅导员");
+        applyTrace(trace);
+      } else {
+        const payload = await finishCounselingSession(session.id);
+        setSession(payload.session); disconnect(); setStatus("复盘已生成并保存到历史记录与成长档案。"); onTrainingSaved?.();
+      }
+    } catch (err) { setError(err instanceof Error ? err.message : "生成复盘失败。"); } finally { setIsWorking(false); }
   }
   const selected = cases.find(item => item.id === config?.caseId);
   const state = session?.state;
@@ -242,6 +374,7 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
       <div><span>Student Affairs Practice</span><h1>谈心谈话实训</h1><p>在虚拟个案中练习倾听、共情、安全确认、支持计划与被打断后的修复。</p></div>
       <div className="counseling-header-actions"><span className={`counseling-live ${session?.status === "active" ? "is-live" : ""}`}><Radio size={15} /> {session?.status === "active" ? "实时通话中" : "准备训练"}</span>{session ? <button type="button" className="counseling-exit" onClick={exitCase}><ArrowLeft size={16} />退出个案</button> : null}{session ? <button type="button" className="counseling-end" disabled={isWorking || session.status === "finished"} onClick={() => void finish()}><Square size={16} />结束并复盘</button> : null}</div>
     </header>
+    <SessionRunBar workflowId={counselingSessionWorkflow} workflowName="谈心谈话交互会话" runId={runId} trace={trace} steps={counselingRailSteps} turnLabel="辅导员发言" onOpenMonitor={runId && onOpenMonitorRun ? () => onOpenMonitorRun(runId) : undefined} onOpenWorkflow={onOpenWorkflow ? nodeId => onOpenWorkflow(counselingSessionWorkflow, nodeId) : undefined} />
     {!session ? <section className="counseling-setup">
       <div className="counseling-case-picker"><div className="counseling-section-heading"><MessageCircleHeart size={20}/><div><h2>选择虚拟个案</h2><p>状态仅用于训练情境，不是对真实学生的心理诊断。</p></div></div><div className="counseling-case-list">{cases.map(item => <button type="button" key={item.id} className={config?.caseId === item.id ? "is-selected" : ""} onClick={() => setConfig(current => current ? { ...current, caseId: item.id, ...item.defaults, risk: item.defaults.risk } : undefined)}><strong>{item.title}</strong><span>{item.year} · {item.name}</span><small>{item.background}</small></button>)}</div></div>
       <aside className="counseling-config"><div className="counseling-section-heading"><Sparkles size={20}/><div><h2>设定谈话状态</h2><p>先设置当下可观察的情绪与互动倾向。</p></div></div>{config && selected ? <><label>训练方式<select value={config.mode} onChange={event => setConfig({ ...config, mode: event.target.value as CounselingConfig["mode"] })}><option value="guided">引导练习</option><option value="assessment">实战测评</option></select></label><label>当前情绪<select value={config.emotion} onChange={event => setConfig({ ...config, emotion: event.target.value as CounselingConfig["emotion"] })}>{["焦虑", "低落", "愤怒", "委屈", "麻木"].map(item => <option key={item}>{item}</option>)}</select></label>{[["intensity", "情绪强度", 1, 5], ["trust", "初始信任", 0, 100], ["openness", "表达意愿", 0, 100]].map(([key, label, min, max]) => <label key={key as string}>{label}<span>{config[key as keyof CounselingConfig] as number}</span><input type="range" min={min as number} max={max as number} value={config[key as keyof CounselingConfig] as number} onChange={event => setConfig({ ...config, [key]: Number(event.target.value) })} /></label>)}<div className={`counseling-risk risk-${config.risk}`}><ShieldAlert size={18}/><p><strong>{config.risk === "urgent" ? "安全演练个案" : config.risk === "screening" ? "需要进一步了解" : "普通关注个案"}</strong>{config.risk === "urgent" ? "系统将提示直接安全确认与现实支持联结；仅供演练。" : "系统会根据谈话内容提示关系、边界与节奏风险。"}</p></div><button type="button" className="counseling-start" disabled={isWorking} onClick={() => void begin()}>{isWorking ? <LoaderCircle className="is-spinning" size={17}/> : <ChevronRight size={18}/>}开始谈话训练</button></> : null}</aside>
@@ -250,13 +383,38 @@ export function CounselingTrainingPage({ onTrainingSaved, initialSessionId }: Co
       <main className="counseling-conversation"><div className="counseling-conversation-head"><div><span>{isListening ? "实时语音对话" : "双轨谈话记录"}</span><small>{statusText(session)}</small></div><span>{session.messages.length} 条记录</span></div>{isListening ? <VoiceConversationStage counselorText={latestCounselorText} studentName={session.student.name} studentText={latestStudentText} counselorSpeaking={isCounselorSpeaking} counselorLevel={counselorVoiceLevel} studentSpeaking={isStudentSpeaking} recentMessages={recentVoiceMessages} autoSend={voiceAutoSend} onAutoSendChange={setVoiceAutoSend} onConfirm={() => { const text = draft.trim(); if (text) { finalDraftRef.current = ""; void submit(text, "voice"); } }} onStop={() => { stopListening(); window.speechSynthesis?.cancel(); setIsStudentSpeaking(false); }} /> : <div className="counseling-transcript" aria-live="polite">{session.messages.map(message => <article key={message.id} className={`counseling-message ${message.role}${message.delivery === "interrupted" ? " is-interrupted" : ""}`}><span>{message.role === "counselor" ? "辅导员" : session.student.name}{message.delivery === "interrupted" ? " · 已被打断" : ""}</span><p>{message.text}</p>{message.role === "student" ? <button type="button" title="播放学生语音" aria-label="播放学生语音" onClick={() => speakStudent(message)} disabled={message.delivery === "interrupted"}><Volume2 size={15}/></button> : null}</article>)}</div>}
         {session.status === "active" && !isListening ? <div className="counseling-composer"><div className="counseling-voice-status"><AudioLines size={16}/><span>{voiceSupported ? "浏览器语音可用；学生播放中开口会触发打断。" : "当前浏览器不支持语音识别，仍可文字谈话。"}</span></div><textarea value={draft + interim} aria-label="辅导员发言" placeholder="先从学生感受与事实开始，例如：听起来这段时间你一直很紧绷，愿意和我说说是什么让你最担心吗？" onChange={event => { setDraft(event.target.value); setInterim(""); }} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void submit(); } }} /><div><button type="button" onClick={startListening} disabled={!voiceSupported || isWorking}><Mic size={17}/>语音谈话</button><button className="counseling-send" type="button" disabled={!draft.trim() || isWorking} onClick={() => void submit()}>{isWorking ? <LoaderCircle className="is-spinning" size={17}/> : <Send size={17}/>}发送</button></div></div> : null}
       </main>
-      <aside className="counseling-coach"><div className="counseling-section-heading"><Headphones size={20}/><div><h2>实时教练</h2><p>{session.config.mode === "assessment" && session.status === "active" ? "测评模式只呈现必要安全提醒。" : "只在关系或安全节点提示。"}</p></div></div>{error ? <div className="counseling-alert is-error"><AlertTriangle size={17}/><p>{error}</p></div> : null}<div className="counseling-event-list" ref={eventsRef}>{visibleEvents(session).length ? visibleEvents(session).map(event => <CoachEvent key={event.id} event={event}/>) : <p className="counseling-empty">保持好奇和耐心，系统会在关键节点留下可复盘的提示。</p>}</div>{session.report ? <Report report={session.report} session={session} /> : null}<div className="counseling-status"><CheckCircle2 size={16}/><span>{status}</span></div></aside>
+      <aside className="counseling-coach">{session ? <SessionRunRail workflowId={counselingSessionWorkflow} workflowName="谈心谈话交互会话" runId={runId} trace={trace} steps={counselingRailSteps} turnNodeId="counselor-turn" turnStepId="turns" turnLabel="辅导员发言" followupLabels={["学生 Agent 回应", "督导提示"]} onOpenMonitor={runId && onOpenMonitorRun ? () => onOpenMonitorRun(runId) : undefined} onOpenWorkflow={onOpenWorkflow ? nodeId => onOpenWorkflow(counselingSessionWorkflow, nodeId) : undefined} /> : null}<div className="counseling-section-heading"><Headphones size={20}/><div><h2>实时教练</h2><p>{session.config.mode === "assessment" && session.status === "active" ? "测评模式只呈现必要安全提醒。" : "只在关系或安全节点提示。"}</p></div></div>{error ? <div className="counseling-alert is-error"><AlertTriangle size={17}/><p>{error}</p></div> : null}<div className="counseling-event-list" ref={eventsRef}>{visibleEvents(session).length ? visibleEvents(session).map(event => <CoachEvent key={event.id} event={event}/>) : <p className="counseling-empty">保持好奇和耐心，系统会在关键节点留下可复盘的提示。</p>}</div>{session.report ? <Report report={session.report} session={session} /> : null}<div className="counseling-status"><CheckCircle2 size={16}/><span>{status}</span></div></aside>
     </section>}
     {isExitChoiceOpen ? <div className="counseling-exit-choice" role="status"><div><strong>保存未完成谈话？</strong><p>保存后可从历史记录继续查看当前进度；不保存则仅退出当前个案。</p></div><div><button type="button" onClick={() => void saveDraftAndExit()} disabled={isWorking}>保存并退出</button><button type="button" onClick={completeExit} disabled={isWorking}>不保存退出</button><button type="button" onClick={() => setIsExitChoiceOpen(false)} disabled={isWorking}>继续谈话</button></div></div> : null}
   </section>;
 }
 
 function visibleEvents(session: CounselingSession) { return session.config.mode === "assessment" && session.status === "active" ? session.events.filter(event => event.severity === "critical" || event.kind === "interruption") : session.events; }
+type CounselingRunMapping = { sessionId: string; runId: string };
+function cacheRunMapping(sessionId: string, runId: string) {
+  try {
+    window.localStorage.setItem(counselingRunKey, JSON.stringify({ sessionId, runId } satisfies CounselingRunMapping));
+  } catch {
+    // Local storage can be unavailable in restricted browser contexts.
+  }
+}
+function readRunMapping(): CounselingRunMapping | undefined {
+  try {
+    const raw = window.localStorage.getItem(counselingRunKey);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as CounselingRunMapping;
+    return parsed?.sessionId && parsed?.runId ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function clearRunMapping() {
+  try {
+    window.localStorage.removeItem(counselingRunKey);
+  } catch {
+    // Local storage can be unavailable in restricted browser contexts.
+  }
+}
 function VoiceConversationStage({ counselorText, studentName, studentText, counselorSpeaking, counselorLevel, studentSpeaking, recentMessages, autoSend, onAutoSendChange, onConfirm, onStop }: { counselorText?: string; studentName: string; studentText?: string; counselorSpeaking: boolean; counselorLevel: number; studentSpeaking: boolean; recentMessages: CounselingMessage[]; autoSend: boolean; onAutoSendChange: (value: boolean) => void; onConfirm: () => void; onStop: () => void; }) {
   return <section className="counseling-voice-stage" aria-label="实时语音对话舞台">
     <div className={`voice-audio-channel counselor ${counselorSpeaking ? "is-active" : ""}`}>

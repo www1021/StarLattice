@@ -6,6 +6,8 @@ import type {
   KnowledgeBaseOverview,
   KnowledgeCitation,
   KnowledgeDocument,
+  InteractionRecord,
+  InteractionResponse,
   McpCallResponse,
   McpRefreshResponse,
   McpServerView,
@@ -139,6 +141,29 @@ export const platformApi = {
       `/approvals/${encodeURIComponent(approvalId)}/decide`,
       { method: "POST", body: JSON.stringify(input) }
     ),
+
+  listInteractions: (runId?: string, status?: InteractionRecord["status"]) => {
+    const params = new URLSearchParams();
+    if (runId) {
+      params.set("runId", runId);
+    }
+    if (status) {
+      params.set("status", status);
+    }
+    return request<{ interactions: InteractionRecord[] }>(
+      `/interactions${params.size ? `?${params.toString()}` : ""}`
+    );
+  },
+
+  respondInteraction: (
+    interactionId: string,
+    values: Record<string, unknown>,
+    actor?: string
+  ) =>
+    request<InteractionResponse>(`/interactions/${encodeURIComponent(interactionId)}/respond`, {
+      method: "POST",
+      body: JSON.stringify({ values, ...(actor ? { actor } : {}) })
+    }),
 
   listAgents: () => request<{ agents: AgentRecord[]; total: number }>("/agents"),
 

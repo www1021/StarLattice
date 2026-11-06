@@ -116,6 +116,88 @@ test("feeds the previous round's artifact and issues into revise", async () => {
   }
 });
 
+test("runs classroom-map-v1 through the parallel rehearsal, gate and revision loop", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-map-v1");
+  assert.ok(workflow);
+  try {
+    for (const item of loadBuiltinWorkflows()) {
+      store.saveWorkflow(item);
+    }
+    const { run, steps } = await new WorkflowExecutor(store, knowledgeHandlers()).run(workflow, {
+      topic: "分数的意义",
+      subject: "数学",
+      grade: "五年级",
+      focus: "提问梯度"
+    });
+
+    assert.equal(run.status, "succeeded");
+    // 教学设计子流程 1 次验证 + 演练验证 + 修订复核 + 学情报告验证。
+    assert.deepEqual(
+      store.listVerifyResults(run.id).map((result) => result.score),
+      [0.62, 0.74, 0.86, 0.98]
+    );
+
+    const loops = store.listLoopIterations(run.id);
+    assert.equal(loops.length, 1);
+    assert.equal(loops[0]?.scoreBefore, 0.74);
+    assert.equal(loops[0]?.scoreAfter, 0.86);
+
+    const executed = new Set(steps.filter((step) => step.status === "succeeded").map((step) => step.nodeId));
+    for (const nodeId of [
+      "teacher-actions",
+      "student-top",
+      "student-weak",
+      "student-silent",
+      "student-naughty",
+      "student-misunderstanding",
+      "expert-review",
+      "revise"
+    ]) {
+      assert.ok(executed.has(nodeId), `节点 ${nodeId} 应执行成功`);
+    }
+
+    const end = steps.find((step) => step.nodeId === "end");
+    assert.ok(end);
+    assert.ok((end.output as { insight?: unknown }).insight !== undefined);
+  } finally {
+    dispose();
+  }
+});
+
+test("runs business-map-v1 fan-out, calibration loop and final verification", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "business-map-v1");
+  assert.ok(workflow);
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, {
+      question: "本月各区域与品类的毛利表现如何？",
+      focus: "退款影响"
+    });
+
+    assert.equal(run.status, "succeeded");
+    const verifications = store.listVerifyResults(run.id);
+    assert.equal(verifications.length, 4);
+    assert.ok((verifications[0]?.score ?? 1) < 0.85, "初稿口径错误应低于阈值");
+    assert.ok((verifications.at(-1)?.score ?? 0) < 0.9, "终稿验证分应被记录");
+
+    const loops = store.listLoopIterations(run.id);
+    assert.equal(loops.length, 2, "未达标时应重算两轮");
+
+    const executed = steps.filter((step) => step.status === "succeeded").map((step) => step.nodeId);
+    for (const nodeId of ["region", "product", "channel", "trend", "chart", "reference-metrics"]) {
+      assert.ok(executed.includes(nodeId), `节点 ${nodeId} 应执行成功`);
+    }
+    assert.equal(executed.filter((nodeId) => nodeId === "rebuild").length, 2);
+
+    const end = steps.find((step) => step.nodeId === "end");
+    assert.ok(end);
+    assert.ok((end.output as { report?: unknown }).report !== undefined);
+  } finally {
+    dispose();
+  }
+});
+
 test("counts sub-workflow verifications toward the run attempt curve", async () => {
   const { store, dispose } = createStore();
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "teaching-pipeline-v1");
@@ -1912,6 +1994,551 @@ test("rejects stopAfter targets that are not top-level nodes", async () => {
       () => new WorkflowExecutor(store).run(workflow, {}, { stopAfter: "missing" }),
       /stopAfter 只能指向顶层节点/
     );
+  } finally {
+    dispose();
+  }
+});
+
+test("runs independent branches concurrently and joins after all of them settle", async () => {
+  const { store, dispose } = createStore();
+  let active = 0;
+  let maxActive = 0;
+  const workflow: WorkflowDefinition = {
+    id: "dag-fan-out",
+    name: "并发扇出",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "left", kind: "tool", tool: "test.slow", args: { branch: "left" } },
+      { id: "middle", kind: "tool", tool: "test.slow", args: { branch: "middle" } },
+      { id: "right", kind: "tool", tool: "test.slow", args: { branch: "right" } },
+      {
+        id: "join",
+        kind: "template",
+        template: "${left.output} | ${middle.output} | ${right.output}"
+      }
+    ],
+    edges: [
+      { from: "left", to: "join" },
+      { from: "middle", to: "join" },
+      { from: "right", to: "join" }
+    ]
+  };
+  const startedAt = Date.now();
+  try {
+    const { run, steps } = await new WorkflowExecutor(
+      store,
+      {
+        tool: async (node) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          active -= 1;
+          return { mode: "live", tool: node.tool, output: node.id };
+        }
+      },
+      { maxConcurrency: 4 }
+    ).run(workflow);
+    const elapsed = Date.now() - startedAt;
+
+    assert.equal(run.status, "succeeded");
+    assert.equal(maxActive, 3, "三个入口节点应同时执行");
+    assert.ok(elapsed < 300, `并发耗时 ${elapsed}ms 应明显短于串行约 360ms`);
+    assert.equal(steps.length, 4);
+    const join = steps.find((step) => step.nodeId === "join");
+    assert.equal(join?.status, "succeeded");
+    assert.match(String((join?.output as { output?: string }).output), /left \| middle \| right/);
+  } finally {
+    dispose();
+  }
+});
+
+test("selects conditional edges and propagates skipped nodes to the join", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "dag-condition",
+    name: "条件分支",
+    version: 1,
+    inputs: [{ name: "approved", type: "boolean", required: true }],
+    nodes: [
+      { id: "start", kind: "start" },
+      { id: "approved-path", kind: "template", template: "approved" },
+      { id: "fallback-path", kind: "template", template: "fallback" },
+      { id: "deep", kind: "template", template: "deep" },
+      { id: "join", kind: "template", template: "${fallback-path.output}" }
+    ],
+    edges: [
+      { from: "start", to: "approved-path", when: "${input.approved} == true" },
+      { from: "start", to: "fallback-path", when: "${input.approved} == false" },
+      { from: "approved-path", to: "deep" },
+      { from: "deep", to: "join" },
+      { from: "fallback-path", to: "join" }
+    ]
+  };
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(workflow, { approved: false });
+    assert.equal(run.status, "succeeded");
+    const byId = new Map(steps.map((step) => [step.nodeId, step]));
+    assert.equal(byId.get("approved-path")?.status, "skipped");
+    assert.equal(byId.get("deep")?.status, "skipped");
+    assert.equal(byId.get("fallback-path")?.status, "succeeded");
+    const join = byId.get("join");
+    assert.equal(join?.status, "succeeded");
+    assert.match(String((join?.output as { output?: string }).output), /fallback/);
+  } finally {
+    dispose();
+  }
+});
+
+test("drains in-flight branches after a failure without launching downstream nodes", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "dag-failure",
+    name: "失败收敛",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "slow", kind: "tool", tool: "test.slow" },
+      { id: "boom", kind: "tool", tool: "test.boom" },
+      { id: "join", kind: "template", template: "${slow.output}" }
+    ],
+    edges: [
+      { from: "slow", to: "join" },
+      { from: "boom", to: "join" }
+    ]
+  };
+  try {
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        tool: async (node) => {
+          if (node.id === "boom") {
+            throw new Error("boom");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          return { mode: "live", tool: node.tool, output: node.id };
+        }
+      },
+      { maxAttempts: 1, maxConcurrency: 2 }
+    );
+    const started = executor.start(workflow, {});
+    const finished = await waitFor("运行失败", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "failed" ? run : undefined;
+    });
+    assert.match(finished.error ?? "", /boom/);
+    const steps = store.listSteps(started.id);
+    assert.deepEqual(
+      steps.map((step) => step.nodeId).sort(),
+      ["boom", "slow"],
+      "失败后不应再启动汇合节点"
+    );
+    assert.equal(steps.find((step) => step.nodeId === "slow")?.status, "succeeded");
+    assert.equal(steps.find((step) => step.nodeId === "boom")?.status, "failed");
+  } finally {
+    dispose();
+  }
+});
+
+test("keeps an unrelated branch running while an approval is pending", async () => {
+  const { store, dispose } = createStore();
+  const workflow: WorkflowDefinition = {
+    id: "dag-approval",
+    name: "审批并发",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      {
+        id: "review",
+        kind: "approve",
+        title: "人工审核",
+        instructions: "确认后通过",
+        assignee: "教研组长",
+        timeoutMs: 60_000
+      },
+      { id: "side", kind: "tool", tool: "test.side" },
+      {
+        id: "join",
+        kind: "template",
+        template: "${side.output} / ${review.decision}"
+      }
+    ],
+    edges: [
+      { from: "start", to: "review" },
+      { from: "start", to: "side" },
+      { from: "review", to: "join" },
+      { from: "side", to: "join" }
+    ]
+  };
+  try {
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        tool: async (node) => {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return { mode: "live", tool: node.tool, output: node.id };
+        }
+      },
+      { maxConcurrency: 4 }
+    );
+    const started = executor.start(workflow, {});
+    const approval = await waitFor("待审记录", () =>
+      store.listApprovals({ runId: started.id, status: "pending" })[0]
+    );
+    await waitFor("旁支完成", () =>
+      store
+        .listSteps(started.id)
+        .find((step) => step.nodeId === "side" && step.status === "succeeded")
+    );
+    assert.equal(store.getRun(started.id)?.status, "waiting_approval");
+
+    executor.decideApproval(approval.id, { decision: "approved", reviewer: "tester" });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const join = store
+      .listSteps(finished.id)
+      .find((step) => step.nodeId === "join");
+    assert.equal(join?.status, "succeeded");
+    assert.match(String((join?.output as { output?: string }).output), /side \/ approved/);
+  } finally {
+    dispose();
+  }
+});
+
+function humanProbe(timeoutMs = 60_000): WorkflowDefinition {
+  return {
+    id: "human-probe",
+    name: "人工交互探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      {
+        id: "gather",
+        kind: "human",
+        title: "教师发言",
+        prompt: "请输入本轮发言",
+        assignee: "参训教师",
+        timeoutMs,
+        fields: [
+          { key: "text", label: "发言", type: "textarea", required: true },
+          {
+            key: "action",
+            label: "动作",
+            type: "select",
+            options: ["speak", "finish"],
+            defaultValue: "speak",
+            required: true
+          }
+        ],
+        inputs: { topic: "分数的意义" }
+      },
+      {
+        id: "echo",
+        kind: "template",
+        template: "${gather.text} / ${gather.action}"
+      }
+    ],
+    edges: [{ from: "gather", to: "echo" }]
+  };
+}
+
+test("pauses at a human node, records the interaction and resumes with the submitted values", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(humanProbe(), {});
+    const interaction = await waitFor("待输入记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+    assert.equal(store.getStep(interaction.stepId)?.status, "waiting");
+    assert.equal(interaction.nodeId, "gather");
+    assert.equal(interaction.fields.length, 2);
+    assert.equal(interaction.context?.topic, "分数的意义");
+
+    executor.respondInteraction(interaction.id, {
+      values: { text: "请第三排的同学说说理由。", action: "speak" },
+      actor: "张老师"
+    });
+
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const steps = store.listSteps(finished.id);
+    const gather = steps.find((step) => step.nodeId === "gather");
+    const output = gather?.output as Record<string, unknown>;
+    assert.equal(output.text, "请第三排的同学说说理由。");
+    assert.equal(output.action, "speak");
+    assert.equal(output.actor, "张老师");
+    assert.equal(output.interaction, interaction.id);
+    assert.deepEqual(output.input, { topic: "分数的意义" });
+
+    const echo = steps.find((step) => step.nodeId === "echo");
+    assert.equal((echo?.output as { value?: string }).value, "请第三排的同学说说理由。 / speak");
+
+    const decided = store.getInteraction(interaction.id);
+    assert.equal(decided?.status, "answered");
+    assert.equal(decided?.actor, "张老师");
+    assert.ok(decided?.decidedAt);
+  } finally {
+    dispose();
+  }
+});
+
+test("validates human input fields before waking the run", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(humanProbe(), {});
+    const interaction = await waitFor("待输入记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+
+    assert.throws(
+      () => executor.respondInteraction(interaction.id, { values: { action: "speak" } }),
+      /不能为空/
+    );
+    assert.throws(
+      () =>
+        executor.respondInteraction(interaction.id, {
+          values: { text: "继续", action: "skip" }
+        }),
+      /只能是 speak \/ finish/
+    );
+    assert.equal(store.getInteraction(interaction.id)?.status, "pending");
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+
+    executor.respondInteraction(interaction.id, {
+      values: { text: "继续", action: "finish" }
+    });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    assert.equal(store.getInteraction(interaction.id)?.status, "answered");
+    assert.equal(finished.id, started.id);
+  } finally {
+    dispose();
+  }
+});
+
+test("cancels a run waiting for human input", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(humanProbe(), {});
+    const interaction = await waitFor("待输入记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+
+    executor.cancelRun(started.id);
+    const finished = await waitFor("运行取消", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "cancelled" ? run : undefined;
+    });
+
+    assert.match(finished.error ?? "", /取消/);
+    assert.equal(store.getInteraction(interaction.id)?.status, "cancelled");
+    assert.equal(store.getStep(interaction.stepId)?.status, "failed");
+  } finally {
+    dispose();
+  }
+});
+
+test("expires a human interaction and fails the run on timeout", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(humanProbe(1000), {});
+    const interaction = await waitFor("待输入记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    const failed = await waitFor(
+      "运行超时",
+      () => {
+        const run = store.getRun(started.id);
+        return run?.status === "failed" ? run : undefined;
+      },
+      4000
+    );
+
+    assert.match(failed.error ?? "", /超时/);
+    assert.equal(store.getInteraction(interaction.id)?.status, "expired");
+    assert.equal(store.getStep(interaction.stepId)?.status, "failed");
+  } finally {
+    dispose();
+  }
+});
+
+/** 用确定性假工具替代课堂/谈话服务，验证会话工作流的循环与人工暂停点。 */
+function sessionToolHandlers() {
+  return {
+    trainingTool: async (node: ToolNode, input: Record<string, unknown>) => {
+      if (node.tool === "classroom.create") {
+        return {
+          sessionId: "classroom-1",
+          classroomState: { sessionId: "classroom-1", topic: input.topic, turnCount: 0 }
+        };
+      }
+      if (node.tool === "classroom.turn") {
+        return {
+          classroomState: { sessionId: "classroom-1", lastText: input.teacherText },
+          observerTips: [`已处理：${input.teacherText}`],
+          events: []
+        };
+      }
+      if (node.tool === "classroom.feedback") {
+        return {
+          summary: `第 1 轮点评：${input.sessionId}`,
+          nextMoves: ["扩大参与面"],
+          risks: []
+        };
+      }
+      if (node.tool === "classroom.report") {
+        return { report: { overallScore: 88 }, citations: [], saveError: undefined };
+      }
+      if (node.tool === "counseling.create") {
+        return { session: { id: "counseling-1", config: input.config, messages: [] } };
+      }
+      if (node.tool === "counseling.turn") {
+        return {
+          session: {
+            id: "counseling-1",
+            messages: [{ role: "student", text: `回应：${input.text}`, turnId: input.turnId }]
+          }
+        };
+      }
+      if (node.tool === "counseling.feedback") {
+        return { turn: 1, suggestions: ["先回应感受，再澄清事实。"] };
+      }
+      if (node.tool === "counseling.finish") {
+        return { session: { id: "counseling-1", status: "finished", report: { overallScore: 90 } } };
+      }
+      return undefined;
+    }
+  };
+}
+
+test("classroom-session-v1 pauses for each teacher turn, loops, then generates the report", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-session-v1");
+  assert.ok(workflow);
+  try {
+    const executor = new WorkflowExecutor(store, sessionToolHandlers());
+    const started = executor.start(workflow, {
+      subject: "数学",
+      grade: "初中",
+      topic: "分数的意义",
+      classType: "普通班"
+    });
+
+    const first = await waitFor("第一次教师输入", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(first.nodeId, "teacher-turn");
+    assert.deepEqual(first.context, { sessionId: "classroom-1" });
+
+    executor.respondInteraction(first.id, {
+      values: { text: "请第三排的同学说说理由。", action: "speak" },
+      actor: "参训教师"
+    });
+    const second = await waitFor("第二次教师输入", () => {
+      const pending = store.listInteractions({ runId: started.id, status: "pending" })[0];
+      return pending && pending.id !== first.id ? pending : undefined;
+    });
+
+    const turnStep = store
+      .listSteps(started.id)
+      .find((step) => step.nodeId === "student-reactions");
+    assert.equal(turnStep?.status, "succeeded");
+    assert.match(String((turnStep?.output as { observerTips?: string[] }).observerTips?.[0]), /请第三排/);
+    const feedbackStep = store
+      .listSteps(started.id)
+      .find((step) => step.nodeId === "teacher-feedback");
+    assert.equal(feedbackStep?.status, "succeeded");
+    assert.match(String((feedbackStep?.output as { summary?: string }).summary), /第 1 轮点评/);
+
+    executor.respondInteraction(second.id, {
+      values: { action: "finish" },
+      actor: "参训教师"
+    });
+    const finished = await waitFor("课堂运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+
+    const reportStep = store.listSteps(finished.id).find((step) => step.nodeId === "report");
+    assert.equal(reportStep?.status, "succeeded");
+    assert.equal((reportStep?.output as { report?: { overallScore?: number } }).report?.overallScore, 88);
+    assert.equal(
+      store.listInteractions({ runId: finished.id, status: "answered" }).length,
+      2
+    );
+  } finally {
+    dispose();
+  }
+});
+
+test("counseling-session-v1 turns each counselor speech into a human pause and finishes the session", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "counseling-session-v1");
+  assert.ok(workflow);
+  try {
+    const executor = new WorkflowExecutor(store, sessionToolHandlers());
+    const started = executor.start(workflow, {
+      config: { caseId: "case-1", mode: "guided", emotion: "焦虑", intensity: 3, trust: 40, openness: 30, risk: "ordinary" }
+    });
+
+    const first = await waitFor("第一次辅导员输入", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(first.nodeId, "counselor-turn");
+    assert.deepEqual(first.context, { sessionId: "counseling-1" });
+
+    executor.respondInteraction(first.id, {
+      values: { text: "听起来你最近很紧绷。", turnId: "turn_1", action: "speak" },
+      actor: "参训辅导员"
+    });
+    const second = await waitFor("第二次辅导员输入", () => {
+      const pending = store.listInteractions({ runId: started.id, status: "pending" })[0];
+      return pending && pending.id !== first.id ? pending : undefined;
+    });
+
+    const turnStep = store
+      .listSteps(started.id)
+      .find((step) => step.nodeId === "counselor-turn-result");
+    assert.equal(turnStep?.status, "succeeded");
+    assert.match(
+      String((turnStep?.output as { session?: { messages?: Array<{ text?: string }> } }).session?.messages?.[0]?.text),
+      /听起来你最近很紧绷/
+    );
+    const feedbackStep = store
+      .listSteps(started.id)
+      .find((step) => step.nodeId === "coach-feedback");
+    assert.equal(feedbackStep?.status, "succeeded");
+    assert.match(
+      String((feedbackStep?.output as { suggestions?: string[] }).suggestions?.[0]),
+      /先回应感受/
+    );
+
+    executor.respondInteraction(second.id, {
+      values: { action: "finish" },
+      actor: "参训辅导员"
+    });
+    const finished = await waitFor("谈话运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+
+    const finishStep = store.listSteps(finished.id).find((step) => step.nodeId === "finish-session");
+    assert.equal(finishStep?.status, "succeeded");
+    assert.equal((finishStep?.output as { session?: { status?: string } }).session?.status, "finished");
   } finally {
     dispose();
   }

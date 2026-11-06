@@ -87,5 +87,5 @@ export function registerCounseling(app: Express, server: Server, repository: SQL
     });
     socket.on("close", () => { if (id) service.cancel(id); asr?.close(); asr = undefined; });
   });
-  return realtime;
+  return { realtime, service };
 }

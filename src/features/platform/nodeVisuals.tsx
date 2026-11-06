@@ -4,6 +4,7 @@ import {
   FileText,
   GitBranch,
   Globe,
+  MessageSquare,
   Play,
   Repeat,
   ShieldCheck,
@@ -48,7 +49,8 @@ export const NODE_VISUALS: Record<NodeKind, NodeVisual> = {
   http: { icon: Globe, category: "integration", tint: "#f97316" },
   subworkflow: { icon: Workflow, category: "integration", tint: "#0d9488" },
   verify: { icon: ShieldCheck, category: "quality", tint: "#ef4444" },
-  approve: { icon: UserCheck, category: "quality", tint: "#0891b2" }
+  approve: { icon: UserCheck, category: "quality", tint: "#0891b2" },
+  human: { icon: MessageSquare, category: "quality", tint: "#7c3aed" }
 };
 
 export function categoryOf(kind: NodeKind): NodeCategory {

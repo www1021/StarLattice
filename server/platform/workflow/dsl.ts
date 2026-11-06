@@ -249,7 +249,69 @@ function parseNode(value: unknown, location: string): WorkflowNode {
             ? undefined
             : requireInteger(record.timeoutMs, `${location}.timeoutMs`)
       };
+    case "human": {
+      const fields =
+        record.fields === undefined
+          ? undefined
+          : asArray(record.fields, `${location}.fields`).map((item, index) =>
+              parseHumanField(item, `${location}.fields[${index}]`)
+            );
+      return {
+        ...base,
+        kind: "human",
+        prompt: requireString(record.prompt, `${location}.prompt`),
+        fields,
+        submitLabel: optionalString(record.submitLabel, `${location}.submitLabel`),
+        assignee: optionalString(record.assignee, `${location}.assignee`),
+        timeoutMs:
+          record.timeoutMs === undefined
+            ? undefined
+            : requireInteger(record.timeoutMs, `${location}.timeoutMs`)
+      };
+    }
   }
+}
+
+const HUMAN_FIELD_TYPES = new Set(["text", "textarea", "number", "boolean", "select"]);
+
+function parseHumanField(value: unknown, location: string) {
+  const record = asRecord(value, location);
+  const type = optionalString(record.type, `${location}.type`) ?? "text";
+  if (!HUMAN_FIELD_TYPES.has(type)) {
+    throw new WorkflowSyntaxError(
+      `${location}.type`,
+      `未知的输入类型 "${type}"，仅支持 ${[...HUMAN_FIELD_TYPES].join(" / ")}`
+    );
+  }
+  const options =
+    record.options === undefined
+      ? undefined
+      : asArray(record.options, `${location}.options`).map((item, index) =>
+          requireString(item, `${location}.options[${index}]`)
+        );
+  if (type === "select" && (!options || options.length === 0)) {
+    throw new WorkflowSyntaxError(`${location}.options`, "select 字段至少需要一个选项");
+  }
+  const defaultValue = record.defaultValue;
+  if (
+    defaultValue !== undefined &&
+    typeof defaultValue !== "string" &&
+    typeof defaultValue !== "number" &&
+    typeof defaultValue !== "boolean"
+  ) {
+    throw new WorkflowSyntaxError(`${location}.defaultValue`, "默认值只能是字符串、数字或布尔值");
+  }
+  return {
+    key: requireString(record.key, `${location}.key`),
+    label: requireString(record.label, `${location}.label`),
+    type: type as "text" | "textarea" | "number" | "boolean" | "select",
+    required:
+      record.required === undefined ? undefined : requireBoolean(record.required, `${location}.required`),
+    options,
+    defaultValue,
+    placeholder: optionalString(record.placeholder, `${location}.placeholder`),
+    description: optionalString(record.description, `${location}.description`)
+  };
 }
 
 function parseStringArray(value: unknown, location: string): string[] {
@@ -333,7 +395,8 @@ function parseEdge(value: unknown, location: string): WorkflowEdge {
   return {
     from: requireString(record.from, `${location}.from`),
     to: requireString(record.to, `${location}.to`),
-    label: optionalString(record.label, `${location}.label`)
+    label: optionalString(record.label, `${location}.label`),
+    when: optionalString(record.when, `${location}.when`)
   };
 }
 
