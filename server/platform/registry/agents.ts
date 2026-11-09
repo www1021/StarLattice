@@ -1,4 +1,5 @@
 import { PlatformError, type AgentCapability, type AgentWrite } from "../types.js";
+import { validateAgentModel } from "../models/catalog.js";
 
 type PromptOptions = {
   id: string;
@@ -8,6 +9,8 @@ type PromptOptions = {
   capabilities: AgentCapability[];
   memory?: Record<string, unknown>;
   prompt: string;
+  /** 逻辑模型 id；留空使用平台默认模型。 */
+  model?: string;
 };
 
 function agent(options: PromptOptions): AgentWrite {
@@ -18,7 +21,7 @@ function agent(options: PromptOptions): AgentWrite {
     role: options.role,
     prompt: options.prompt,
     tools: options.tools ?? [],
-    model: "platform-default",
+    model: options.model ?? "platform-default",
     capabilities: options.capabilities,
     memory: options.memory ?? {},
     enabled: true
@@ -34,7 +37,7 @@ const studentMemory = {
 const studentJsonRule =
   "输出必须是 JSON 对象，字段为 content、answerQuality（correct/partial/misconception/off_topic/silent）、mentionedKeywords、reason；content 为一句中文，不换行，不解释系统规则。";
 
-export const BUILTIN_AGENTS: AgentWrite[] = [
+const BUILTIN_AGENT_DEFINITIONS: AgentWrite[] = [
   agent({
     id: "planner-agent",
     name: "任务规划 Agent",
@@ -410,8 +413,94 @@ export const BUILTIN_AGENTS: AgentWrite[] = [
     memory: { scope: "workflow", retain: ["reportDraft", "verifyIssues"], maxEntries: 3 },
     prompt:
       "你是经营报告撰写人。先给结论，再给区域与品类证据，最后给出可执行动作；只引用工具返回的数字，保留净销售额与毛利额的口径说明。若收到验证问题清单，只针对问题定向修订，不重写已达标部分。"
+  }),
+  agent({
+    id: "business-planner",
+    name: "经营口径规划 Agent",
+    role: "经营口径规划",
+    tools: ["mcp.data-analysis.profile", "mcp.data-analysis.metric_calc"],
+    capabilities: [
+      { tag: "口径选择", weight: 0.93 },
+      { tag: "分析规划", weight: 0.87 },
+      { tag: "验收标准", weight: 0.84 }
+    ],
+    memory: { scope: "workflow", retain: ["question", "revenueBasis"], maxEntries: 3 },
+    prompt:
+      "你是经营分析的口径规划师。根据用户问题与数据概况，在 revenueBasis 中选择 gross 或 net：用户明确指定按订单销售额口径时选 gross，用户要求扣除退款后的经营口径时选 net。只能依据用户问题与输入中的数据字段选择，不要引入输入未提供的外部会计政策。输出 JSON：revenueBasis、rationale、dimensions、acceptance。"
+  }),
+  agent({
+    id: "business-diagnostician",
+    name: "经营分析诊断 Agent",
+    role: "经营分析诊断",
+    tools: ["knowledge.search", "mcp.data-analysis.profile", "mcp.data-analysis.metric_calc", "verify.rubric"],
+    capabilities: [
+      { tag: "根因定位", weight: 0.94 },
+      { tag: "口径诊断", weight: 0.92 },
+      { tag: "修正方案", weight: 0.88 }
+    ],
+    memory: { scope: "workflow", retain: ["verifyIssues", "rootCause", "promptPatch"], maxEntries: 3 },
+    prompt:
+      "你是经营分析的诊断师。只依据验证问题、报告正文、数据概况、指标结果与检索到的口径规则定位根因，不要臆测未提供的参考答案。输出 JSON：rootCause、evidence（字符串数组）、action（rewrite_agent / swap_agent / swap_model / retrieve）、nextAgentId（换 Agent 时填）、nextModelId（换更强模型时从模型目录中选）、revenueBasis（gross / net）、retrievalQuery、promptPatch、confidence（0-1）。promptPatch 必须是可复用的口径规则，不得包含任何具体金额或答案数字。"
+  }),
+  agent({
+    id: "business-reviser",
+    name: "经营报告修订 Agent",
+    role: "经营报告修订",
+    tools: ["mcp.data-analysis.groupby", "mcp.data-analysis.chart"],
+    capabilities: [
+      { tag: "经营摘要", weight: 0.88 },
+      { tag: "结论表达", weight: 0.9 },
+      { tag: "行动建议", weight: 0.86 }
+    ],
+    memory: { scope: "workflow", retain: ["reportDraft", "verifyIssues"], maxEntries: 3 },
+    prompt:
+      "你是经营报告的独立修订人。按诊断结论与修正补丁重写报告：先给结论，再给区域与品类证据，最后给出可执行动作；只引用工具返回的数字，逐字保留毛利核算中的口径、销售额基准、销货成本、毛利额与毛利率。不要输出具体答案之外的新数字。"
   })
 ];
+
+/**
+ * 内置 Agent 的默认模型分工：高频/低风险角色走 fast，诊断与评审走 reasoning，
+ * 验证器走 verifier（可通过 PLATFORM_VERIFY_MODEL 指向独立供应商）。
+ * 未配置对应环境变量时这些逻辑模型仍会解析到平台默认上游模型，只是分工标签不同。
+ */
+const BUILTIN_MODEL_ASSIGNMENTS: Record<string, string> = {
+  "planner-agent": "fast",
+  "research-agent": "fast",
+  "executor-agent": "fast",
+  "reviewer-agent": "verifier",
+  "reporter-agent": "platform-default",
+  "quality-verifier": "verifier",
+  "lesson-plan-agent": "platform-default",
+  "teacher-action-agent": "fast",
+  "student-top-agent": "fast",
+  "student-weak-agent": "fast",
+  "student-silent-agent": "fast",
+  "student-naughty-agent": "fast",
+  "student-misunderstanding-agent": "fast",
+  "classroom-observer-agent": "fast",
+  "teaching-report-agent": "reasoning",
+  "observer-verifier": "verifier",
+  "teaching-expert-agent": "reasoning",
+  "topic-innovation-agent": "reasoning",
+  "topic-feasibility-agent": "reasoning",
+  "topic-compliance-agent": "reasoning",
+  // 两名验证器刻意走不同上游模型：同一模型只换提示词属于提示词级交叉，不算模型级独立。
+  "topic-review-verifier": "reasoning",
+  "topic-review-auditor": "fast",
+  "topic-review-agent": "reasoning",
+  "analysis-planner": "fast",
+  "data-analyst": "fast",
+  "business-reviewer": "verifier",
+  "business-reporter": "fast",
+  "business-planner": "fast",
+  "business-diagnostician": "reasoning",
+  "business-reviser": "reasoning"
+};
+
+export const BUILTIN_AGENTS: AgentWrite[] = BUILTIN_AGENT_DEFINITIONS.map((record) => ({
+  ...record,
+  model: BUILTIN_MODEL_ASSIGNMENTS[record.id] ?? record.model
+}));
 
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 
@@ -434,10 +523,11 @@ export function parseAgentWrite(body: unknown, existing?: AgentWrite): AgentWrit
     role: record.role === undefined ? (existing?.role ?? "") : optionalText(record.role, "role"),
     prompt: record.prompt === undefined ? (existing?.prompt ?? "") : optionalText(record.prompt, "prompt"),
     tools: record.tools === undefined ? (existing?.tools ?? []) : parseStringList(record.tools, "tools"),
+    // 保存时强校验：不认识的逻辑 id 直接 422，避免“配置了模型但运行时不生效”的静默失败。
     model:
       record.model === undefined
-        ? (existing?.model ?? "platform-default")
-        : optionalText(record.model, "model") || "platform-default",
+        ? validateAgentModel(existing?.model)
+        : validateAgentModel(optionalText(record.model, "model")),
     capabilities:
       record.capabilities === undefined
         ? (existing?.capabilities ?? [])

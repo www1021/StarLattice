@@ -3,6 +3,17 @@ import type {
   AgentVersionsResponse,
   ApprovalDecision,
   BindKnowledgeResponse,
+  EvolutionAlert,
+  EvolutionCandidate,
+  EvolutionChange,
+  EvolutionDataset,
+  EvolutionEvaluation,
+  EvolutionGateDecision,
+  EvolutionLedger,
+  EvolutionObservation,
+  EvolutionOverview,
+  EvolutionRelease,
+  EvolutionRollout,
   KnowledgeBaseOverview,
   KnowledgeCitation,
   KnowledgeDocument,
@@ -13,20 +24,26 @@ import type {
   McpServerView,
   McpServerWrite,
   MetricsReport,
+  ModelProfileView,
   NodeTypesResponse,
   PlatformIssue,
   RegistryOverview,
+  ReclaimerStatusView,
   RollbackAgentResponse,
   RunRecord,
   SaveAgentResponse,
   SaveTeamResponse,
   SaveToolResponse,
   SaveWorkflowResponse,
+  SchedulerLeadershipView,
+  SchedulerProcessView,
+  SchedulerWorkerView,
   StarterKnowledgePack,
   StepRecord,
   TeamRecord,
   ToolRecord,
   TraceResponse,
+  WhatIfResponse,
   WorkflowDefinition,
   WorkflowDetail,
   WorkflowSummary
@@ -110,6 +127,47 @@ export const platformApi = {
 
   trace: (runId: string) => request<TraceResponse>(`/runs/${encodeURIComponent(runId)}/trace`),
 
+  schedulerWorkers: () =>
+    request<{
+      workers: SchedulerWorkerView[];
+      processes: SchedulerProcessView[];
+      workerId: string;
+    }>("/scheduler/workers"),
+
+  schedulerLeadership: () =>
+    request<{ leadership?: SchedulerLeadershipView; reclaimer?: ReclaimerStatusView }>(
+      "/scheduler/leadership"
+    ),
+
+  reclaimNow: (force = false) =>
+    request<Record<string, unknown>>("/scheduler/reclaim", {
+      method: "POST",
+      body: JSON.stringify({ force })
+    }),
+
+  whatIf: (input: {
+    runId?: string;
+    tasks?: unknown[];
+    capacity?: number;
+    policies?: string[];
+  }) =>
+    request<WhatIfResponse>("/scheduler/whatif", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  resumeRun: (runId: string) =>
+    request<{ run: RunRecord; resumedFrom: string }>(
+      `/runs/${encodeURIComponent(runId)}/resume`,
+      { method: "POST" }
+    ),
+
+  killSchedulerWorker: (workerId: string) =>
+    request<{ workerId: string; killed: boolean; aborted: number }>(
+      `/scheduler/workers/${encodeURIComponent(workerId)}/kill`,
+      { method: "POST" }
+    ),
+
   metricsSummary: (workflowId?: string, limit = 200) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (workflowId) {
@@ -165,6 +223,7 @@ export const platformApi = {
       body: JSON.stringify({ values, ...(actor ? { actor } : {}) })
     }),
 
+  listModels: () => request<{ models: ModelProfileView[]; total: number }>("/models"),
   listAgents: () => request<{ agents: AgentRecord[]; total: number }>("/agents"),
 
   getAgent: (id: string) => request<{ agent: AgentRecord }>(`/agents/${encodeURIComponent(id)}`),
@@ -257,5 +316,135 @@ export const platformApi = {
   getTool: (id: string) => request<{ tool: ToolRecord }>(`/tools/${encodeURIComponent(id)}`),
 
   saveTool: (tool: Partial<ToolRecord> & { id: string; name: string; type: ToolRecord["type"] }) =>
-    request<SaveToolResponse>("/tools", { method: "POST", body: JSON.stringify(tool) })
+    request<SaveToolResponse>("/tools", { method: "POST", body: JSON.stringify(tool) }),
+
+  evolution: {
+    overview: () => requestFrom<EvolutionOverview>("/api/evolution/overview"),
+
+    releases: (workflowId?: string) =>
+      requestFrom<{ releases: EvolutionRelease[] }>(
+        `/api/evolution/releases${workflowId ? `?workflowId=${encodeURIComponent(workflowId)}` : ""}`
+      ),
+
+    release: (id: string) =>
+      requestFrom<{
+        release: EvolutionRelease;
+        integrity: { hash: string; verified: boolean };
+        artifactSummary: {
+          workflowId: string;
+          workflowVersion: number;
+          workflowCount: number;
+          agentCount: number;
+        };
+      }>(`/api/evolution/releases/${encodeURIComponent(id)}`),
+
+    createBaseline: (input: { workflowId: string; version?: number; createdBy?: string; label?: string }) =>
+      requestFrom<{ release: EvolutionRelease }>("/api/evolution/releases", {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+
+    rollbackRelease: (id: string, input: { reviewer?: string; reason?: string }) =>
+      requestFrom<{ release: EvolutionRelease; restored: EvolutionRelease }>(
+        `/api/evolution/releases/${encodeURIComponent(id)}/rollback`,
+        { method: "POST", body: JSON.stringify(input) }
+      ),
+
+    candidates: (workflowId?: string) =>
+      requestFrom<{ candidates: EvolutionCandidate[] }>(
+        `/api/evolution/candidates${workflowId ? `?workflowId=${encodeURIComponent(workflowId)}` : ""}`
+      ),
+
+    candidate: (id: string) =>
+      requestFrom<{ candidate: EvolutionCandidate; evaluations: EvolutionEvaluation[] }>(
+        `/api/evolution/candidates/${encodeURIComponent(id)}`
+      ),
+
+    createCandidate: (input: {
+      workflowId: string;
+      baseReleaseId?: string;
+      title: string;
+      summary?: string;
+      source?: EvolutionCandidate["source"];
+      proposedBy?: string;
+      changes: Array<Omit<EvolutionChange, "id"> & { id?: string }>;
+    }) =>
+      requestFrom<{ candidate: EvolutionCandidate }>("/api/evolution/candidates", {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+
+    gate: (id: string, input: { mode?: "stub" | "live"; datasetId?: string; maxCases?: number }) =>
+      requestFrom<{
+        candidate: EvolutionCandidate;
+        evaluationRun: EvolutionEvaluation;
+        decision: EvolutionGateDecision;
+      }>(`/api/evolution/candidates/${encodeURIComponent(id)}/gate`, {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+
+    approve: (id: string, input: { reviewer: string; comment?: string }) =>
+      requestFrom<{ candidate: EvolutionCandidate }>(
+        `/api/evolution/candidates/${encodeURIComponent(id)}/approve`,
+        { method: "POST", body: JSON.stringify(input) }
+      ),
+
+    reject: (id: string, input: { reviewer?: string; comment?: string }) =>
+      requestFrom<{ candidate: EvolutionCandidate }>(
+        `/api/evolution/candidates/${encodeURIComponent(id)}/reject`,
+        { method: "POST", body: JSON.stringify(input) }
+      ),
+
+    promote: (id: string, input: { reviewer: string; comment?: string; canaryPercent?: number }) =>
+      requestFrom<{
+        candidate: EvolutionCandidate;
+        release: EvolutionRelease;
+        rollout?: EvolutionRollout;
+      }>(`/api/evolution/candidates/${encodeURIComponent(id)}/promote`, {
+        method: "POST",
+        body: JSON.stringify(input)
+      }),
+
+    rollouts: () =>
+      requestFrom<{ rollouts: EvolutionRollout[] }>("/api/evolution/rollouts"),
+
+    rollout: (id: string) =>
+      requestFrom<{
+        rollout: EvolutionRollout;
+        observations: EvolutionObservation[];
+        guardrail?: Record<string, unknown>;
+      }>(`/api/evolution/rollouts/${encodeURIComponent(id)}`),
+
+    promoteRollout: (id: string, input: { reviewer: string }) =>
+      requestFrom<{ rollout: EvolutionRollout; release: EvolutionRelease }>(
+        `/api/evolution/rollouts/${encodeURIComponent(id)}/promote`,
+        { method: "POST", body: JSON.stringify(input) }
+      ),
+
+    stopRollout: (id: string, input: { reviewer?: string; reason?: string }) =>
+      requestFrom<{ rollout: EvolutionRollout; release: EvolutionRelease }>(
+        `/api/evolution/rollouts/${encodeURIComponent(id)}/stop`,
+        { method: "POST", body: JSON.stringify(input) }
+      ),
+
+    alerts: (acknowledged?: boolean) =>
+      requestFrom<{ alerts: EvolutionAlert[] }>(
+        `/api/evolution/alerts${acknowledged === undefined ? "" : `?acknowledged=${acknowledged}`}`
+      ),
+
+    acknowledgeAlert: (id: string) =>
+      requestFrom<{ alert: EvolutionAlert }>(
+        `/api/evolution/alerts/${encodeURIComponent(id)}/ack`,
+        { method: "POST" }
+      ),
+
+    ledger: (limit = 200) =>
+      requestFrom<EvolutionLedger>(`/api/evolution/ledger?limit=${limit}`),
+
+    datasets: (workflowId?: string) =>
+      requestFrom<{ datasets: EvolutionDataset[] }>(
+        `/api/evolution/datasets${workflowId ? `?workflowId=${encodeURIComponent(workflowId)}` : ""}`
+      )
+  }
 };

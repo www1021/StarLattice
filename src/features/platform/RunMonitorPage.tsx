@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  History,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -23,8 +24,15 @@ import type {
   HumanField,
   InteractionRecord,
   NodeKind,
+  ReclaimerStatusView,
   RunRecord,
+  SchedulerLeadershipView,
+  SchedulerProcessView,
+  SchedulerQueueEntry,
+  SchedulerWorkerView,
   TraceResponse,
+  VerifyIndependence,
+  WhatIfResponse,
   WorkflowSummary
 } from "./types";
 import "./platform.css";
@@ -39,6 +47,7 @@ const NODE_KIND_LABELS: Record<NodeKind, string> = {
   end: "结束",
   agent: "Agent",
   llm: "模型思考",
+  clarify: "意图澄清",
   knowledge: "知识检索",
   tool: "工具",
   http: "HTTP 请求",
@@ -51,6 +60,38 @@ const NODE_KIND_LABELS: Record<NodeKind, string> = {
   approve: "人工审批",
   human: "人工交互"
 };
+
+const QUEUE_STATUS_LABELS: Record<SchedulerQueueEntry["status"], string> = {
+  queued: "排队中",
+  claimed: "已认领",
+  running: "运行中",
+  succeeded: "已完成",
+  failed: "失败",
+  skipped: "跳过",
+  cancelled: "已撤销",
+  expired: "已过期"
+};
+
+const REPLAY_POLICY_LABELS: Record<string, string> = {
+  dynamic: "动态优先级",
+  static: "静态分层",
+  "critical-path": "关键路径",
+  fifo: "先到先得",
+  recorded: "实际记录"
+};
+
+function independenceLabel(level: VerifyIndependence["level"]): string {
+  switch (level) {
+    case "cross-provider":
+      return "跨供应商独立";
+    case "model":
+      return "模型级独立";
+    case "evidence":
+      return "证据级独立";
+    default:
+      return "提示词级交叉";
+  }
+}
 
 export type MonitorSessionTarget = {
   workflowId: string;
@@ -80,6 +121,13 @@ export function RunMonitorPage({
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<string>();
+  const [workers, setWorkers] = useState<SchedulerWorkerView[]>([]);
+  const [processes, setProcesses] = useState<SchedulerProcessView[]>([]);
+  const [leadership, setLeadership] = useState<SchedulerLeadershipView>();
+  const [reclaimer, setReclaimer] = useState<ReclaimerStatusView>();
+  const [workerBusy, setWorkerBusy] = useState(false);
+  const [whatIf, setWhatIf] = useState<WhatIfResponse>();
+  const [whatIfBusy, setWhatIfBusy] = useState(false);
   const [reviewer, setReviewer] = useState("实训用户");
   const [comments, setComments] = useState<Record<string, string>>({});
   const [interactionValues, setInteractionValues] = useState<
@@ -159,6 +207,7 @@ export function RunMonitorPage({
     }
     let cancelled = false;
     setDetailLoading(true);
+    setWhatIf(undefined);
     void platformApi
       .trace(selectedId)
       .then((value) => {
@@ -206,6 +255,45 @@ export function RunMonitorPage({
     return () => window.clearInterval(timer);
   }, [active, selectedId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      platformApi
+        .schedulerWorkers()
+        .then((response) => {
+          if (!cancelled) {
+            setWorkers(response.workers);
+            setProcesses(response.processes);
+          }
+        })
+        .catch(() => {
+          // Worker 面板失败不影响主监控链路
+        });
+    const loadLeadership = () =>
+      platformApi
+        .schedulerLeadership()
+        .then((response) => {
+          if (!cancelled) {
+            setLeadership(response.leadership);
+            setReclaimer(response.reclaimer);
+          }
+        })
+        .catch(() => {
+          // 单实例部署或旧后端没有该接口时静默跳过
+        });
+    void load();
+    void loadLeadership();
+    const timer = active ? window.setInterval(load, 1500) : undefined;
+    const leadershipTimer = window.setInterval(loadLeadership, 4000);
+    return () => {
+      cancelled = true;
+      if (timer) {
+        window.clearInterval(timer);
+      }
+      window.clearInterval(leadershipTimer);
+    };
+  }, [active]);
+
   async function refreshAll() {
     try {
       const [runResponse, workflowResponse] = await Promise.all([
@@ -219,6 +307,31 @@ export function RunMonitorPage({
       }
     } catch (error) {
       setBanner({ tone: "error", text: describe(error) });
+    }
+  }
+
+  async function handleKillWorker(workerId: string) {
+    setWorkerBusy(true);
+    try {
+      const result = await platformApi.killSchedulerWorker(workerId);
+      setBanner({
+        tone: result.killed ? "info" : "error",
+        text: result.killed
+          ? `已终止 Worker ${result.workerId}，${result.aborted} 个在飞任务进入重派。`
+          : `Worker ${result.workerId} 已终止或不存在。`
+      });
+      const [workerResponse, nextTrace] = await Promise.all([
+        platformApi.schedulerWorkers(),
+        selectedId ? platformApi.trace(selectedId) : Promise.resolve(undefined)
+      ]);
+      setWorkers(workerResponse.workers);
+      if (nextTrace) {
+        setTrace(nextTrace);
+      }
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setWorkerBusy(false);
     }
   }
 
@@ -273,6 +386,44 @@ export function RunMonitorPage({
       setBanner({ tone: "error", text: describe(error) });
     } finally {
       setBusy(undefined);
+    }
+  }
+
+  async function handleResumeRun() {
+    if (!trace) {
+      return;
+    }
+    setBusy("resume");
+    setBanner(undefined);
+    try {
+      const response = await platformApi.resumeRun(trace.run.id);
+      setRuns((current) => [response.run, ...current.filter((run) => run.id !== response.run.id)]);
+      setSelectedId(response.run.id);
+      setTrace(await platformApi.trace(response.run.id));
+      setBanner({
+        tone: "info",
+        text: `已从最近检查点创建续跑 ${shortId(response.run.id)}；已完成节点直接回放，不会重复调用 Agent 或工具。`
+      });
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function handleWhatIf() {
+    if (!trace) {
+      return;
+    }
+    setWhatIfBusy(true);
+    setBanner(undefined);
+    try {
+      const result = await platformApi.whatIf({ runId: trace.run.id, capacity: 4 });
+      setWhatIf(result);
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setWhatIfBusy(false);
     }
   }
 
@@ -497,6 +648,9 @@ export function RunMonitorPage({
                   <p>
                     {formatDateTime(trace.run.startedAt)} 启动 · {trace.run.mode === "stub" ? "确定性 stub" : "真实 Agent"} ·
                     {" "}用时 {trace.run.durationMs ?? 0} ms
+                    {(trace.run.priorityClass ?? 0) > 0 && ` · 优先级分层 ${trace.run.priorityClass}`}
+                    {(trace.run.resumeCount ?? 0) > 0 && ` · 已续跑 ${trace.run.resumeCount} 次`}
+                    {trace.run.cancelRequestedAt && " · 已收到取消请求"}
                   </p>
                 </div>
                 <div className="monitor-detail-actions">
@@ -535,6 +689,24 @@ export function RunMonitorPage({
                       <XCircle size={14} />
                     )}
                     取消运行
+                  </button>
+                  <button
+                    type="button"
+                    className="platform-button is-ghost"
+                    onClick={() => void handleResumeRun()}
+                    disabled={
+                      busy !== undefined ||
+                      isActiveRun(trace.run.status) ||
+                      (trace.checkpoints?.length ?? 0) === 0
+                    }
+                    title="按最近检查点续跑：已完成节点直接回放，只执行未完成节点"
+                  >
+                    {busy === "resume" ? (
+                      <Loader2 size={14} className="is-spinning" />
+                    ) : (
+                      <History size={14} />
+                    )}
+                    从检查点恢复
                   </button>
                   <button
                     type="button"
@@ -814,6 +986,9 @@ export function RunMonitorPage({
                             能力 {decision.breakdown.capability.toFixed(2)} · 可用度{" "}
                             {decision.breakdown.availability.toFixed(2)} · 优先级{" "}
                             {decision.breakdown.priority.toFixed(2)}
+                            {decision.load && ` · 在飞 ${decision.load.inFlight}/${decision.load.capacity}`}
+                            {decision.model &&
+                              ` · 模型 ${decision.model.id}（${decision.model.costTier}）`}
                             {decision.dependsOn.length > 0 && ` · 依赖 ${decision.dependsOn.join("、")}`}
                             {decision.alternatives.length > 0 &&
                               ` · 次选 ${decision.alternatives
@@ -838,6 +1013,170 @@ export function RunMonitorPage({
                 </section>
               )}
 
+              {trace.queue && trace.queue.length > 0 && (
+                <section className="monitor-section">
+                  <div className="monitor-section-head">
+                    <h3>运行时调度队列</h3>
+                    <span>按关键路径优先级排序 · 队列级抢占不中断已运行步骤</span>
+                  </div>
+                  <div className="monitor-queue">
+                    {trace.queue.map((entry) => (
+                      <article className={`monitor-queue-row is-${entry.status}`} key={entry.id}>
+                        <div className="monitor-queue-head">
+                          <code>{entry.path}</code>
+                          <span>优先级 {entry.priority.toFixed(2)}</span>
+                          <em>{QUEUE_STATUS_LABELS[entry.status]}</em>
+                        </div>
+                        <small>
+                          排队 {entry.waitMs ?? 0} ms{entry.reason ? ` · ${entry.reason}` : ""}
+                        </small>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="monitor-section">
+                <div className="monitor-section-head">
+                  <h3>调度 Worker</h3>
+                  <span>
+                    {processes.length > 0
+                      ? `${processes.filter((item) => item.status !== "dead").length}/${processes.length} 个 Worker 子进程在线`
+                      : "未启用 Worker 子进程，叶子步骤在本进程执行槽内运行"}
+                  </span>
+                </div>
+                {processes.length > 0 && (
+                  <div className="monitor-workers">
+                    {processes.map((process) => (
+                      <article
+                        className={`monitor-worker${process.status === "dead" ? " is-killed" : ""}`}
+                        key={process.id}
+                      >
+                        <div>
+                          <code>{process.id}</code>
+                          <small>
+                            槽 {process.slot ?? "-"} · PID {process.pid ?? "-"} · {process.status}
+                            {process.stopReason ? ` · ${process.stopReason}` : ""}
+                          </small>
+                        </div>
+                        <button
+                          type="button"
+                          className="platform-link"
+                          disabled={process.status === "dead" || workerBusy}
+                          onClick={() => void handleKillWorker(process.id)}
+                          title="终止该 Worker 子进程，在飞任务进入重派"
+                        >
+                          终止
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                )}
+                <div className="monitor-workers">
+                  {workers.length === 0 && (
+                    <p className="monitor-hint">尚未创建执行槽，运行 Agent 步骤后出现。</p>
+                  )}
+                  {workers.map((worker) => (
+                    <article className={`monitor-worker${worker.killed ? " is-killed" : ""}`} key={worker.id}>
+                      <div>
+                        <code>{worker.id}</code>
+                        <small>
+                          {worker.pid ? `PID ${worker.pid} · ` : ""}
+                          {worker.killed
+                            ? "已终止"
+                            : worker.activeTasks.length > 0
+                              ? `在飞 ${worker.activeTasks.length}`
+                              : "空闲"}
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="platform-link"
+                        disabled={worker.killed || workerBusy}
+                        onClick={() => void handleKillWorker(worker.id)}
+                      >
+                        终止
+                      </button>
+                    </article>
+                  ))}
+                </div>
+                <p className="monitor-hint">
+                  调度租约：{leadership ? `${leadership.holder} 持有至 ${formatDateTime(leadership.expiresAt)}` : "暂无"}
+                  {reclaimer
+                    ? ` · 回收器${reclaimer.leader ? "已获领导权" : "待命"}，每 ${Math.round(reclaimer.intervalMs / 1000)}s 巡检，自动续跑${reclaimer.autoResume ? "已开启" : "关闭"}`
+                    : " · 未启用周期回收器"}
+                  {reclaimer?.lastTickAt ? ` · 上次巡检 ${formatDateTime(reclaimer.lastTickAt)}` : ""}
+                </p>
+              </section>
+
+              <section className="monitor-section">
+                <div className="monitor-section-head">
+                  <h3>检查点</h3>
+                  <span>
+                    {trace.checkpoints?.length
+                      ? `最近 ${trace.checkpoints.length} 个 · 续跑会回放已完成节点`
+                      : "尚未落检查点，运行至少完成一个顶层节点后出现"}
+                  </span>
+                </div>
+                <div className="monitor-queue">
+                  {(trace.checkpoints ?? []).map((checkpoint) => (
+                    <article className="monitor-queue-row" key={checkpoint.id}>
+                      <div className="monitor-queue-head">
+                        <code>#{checkpoint.sequence}</code>
+                        <span>{formatDateTime(checkpoint.createdAt)}</span>
+                      </div>
+                      <small>
+                        已完成节点 {checkpoint.nodeCount ?? checkpointNodeCount(checkpoint.state ?? {})} ·
+                        {" "}序号 {checkpoint.sequence}
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="monitor-section">
+                <div className="monitor-section-head">
+                  <h3>策略沙盒（离线回放）</h3>
+                  <span>复用本运行的实际耗时，在 4 槽容量下重排任务，不执行 Agent</span>
+                </div>
+                <div className="monitor-detail-actions">
+                  <button
+                    type="button"
+                    className="platform-button is-ghost"
+                    onClick={() => void handleWhatIf()}
+                    disabled={whatIfBusy || trace.steps.length === 0}
+                    title="把已完成任务的真实耗时放回队列，比较不同出队策略"
+                  >
+                    {whatIfBusy ? <Loader2 size={14} className="is-spinning" /> : <Activity size={14} />}
+                    运行回放
+                  </button>
+                </div>
+                {whatIf && (
+                  <div className="monitor-queue">
+                    {[whatIf.recorded, ...whatIf.policies.filter((item) => item.policy !== "recorded")]
+                      .filter((item) => item.policy !== "recorded" || item.tasks > 0)
+                      .map((metrics) => (
+                      <article className="monitor-queue-row" key={metrics.policy}>
+                        <div className="monitor-queue-head">
+                          <code>{REPLAY_POLICY_LABELS[metrics.policy] ?? metrics.policy}</code>
+                          <span>完工跨度 {metrics.makespanMs} ms</span>
+                          <span>等待 P95 {metrics.waitP95Ms} ms</span>
+                        </div>
+                        <small>
+                          截止违约 {metrics.deadlineMisses} · 优先级倒挂 {metrics.priorityInversions} ·
+                          {" "}利用率 {(metrics.utilization * 100).toFixed(1)}%
+                        </small>
+                      </article>
+                    ))}
+                  </div>
+                )}
+                {!whatIf && (
+                  <p className="monitor-hint">
+                    回放只重排已完成的任务，不会启动新的 Agent 调用，因此可以反复试策略。
+                  </p>
+                )}
+              </section>
+
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>执行时间线</h3>
@@ -850,6 +1189,14 @@ export function RunMonitorPage({
                   {trace.steps.map((step) => {
                     const isExpanded = expanded.has(step.id);
                     const depth = step.path.split("/").length - 1;
+                    const reschedule =
+                      step.input && typeof step.input === "object" && "reschedule" in step.input
+                        ? (
+                            step.input as {
+                              reschedule?: { attempt?: number; from?: string; to?: string; reason?: string };
+                            }
+                          ).reschedule
+                        : undefined;
                     return (
                       <article className={`monitor-step is-${step.status}`} key={step.id}>
                         <span className="monitor-step-dot" aria-hidden="true" />
@@ -875,6 +1222,13 @@ export function RunMonitorPage({
                           </div>
 
                           {step.error && <pre className="monitor-step-error">{step.error}</pre>}
+
+                          {reschedule && (
+                            <p className="monitor-step-reschedule">
+                              运行中重调度 #{reschedule.attempt}：{reschedule.from} → {reschedule.to} ·{" "}
+                              {reschedule.reason}
+                            </p>
+                          )}
 
                           {isExpanded && (
                             <div className="monitor-io">
@@ -950,11 +1304,36 @@ export function RunMonitorPage({
                                   {layers.crossCheck.verifiers.map((verifier) => (
                                     <span key={`${result.id}-${verifier.agentId}`}>
                                       {verifier.agentName} {verifier.score.toFixed(2)}
+                                      {verifier.resolvedModel ? ` · ${verifier.resolvedModel}` : ""}
+                                      {verifier.evidenceView
+                                        ? ` · ${verifier.evidenceView === "cited" ? "引用视图" : "证据池"}`
+                                        : ""}
+                                      {verifier.fallback ? " · 启发式回退" : ""}
                                     </span>
                                   ))}
                                 </div>
                               )}
                             </>
+                          )}
+                          {result.detail?.independence && (
+                            <div className="monitor-verify-layers">
+                              <span>
+                                {independenceLabel(result.detail.independence.level)}
+                                {result.detail.independence.heuristicFallback ? " · 启发式回退" : ""}
+                              </span>
+                              {!result.detail.independence.heuristicFallback &&
+                                result.detail.independence.models.length > 0 && (
+                                  <span>{result.detail.independence.models.join(" / ")}</span>
+                                )}
+                            </div>
+                          )}
+                          {result.detail?.citations && (
+                            <div className="monitor-verify-layers">
+                              <span>
+                                引用 {result.detail.citations.total} 处 · 有效{" "}
+                                {result.detail.citations.valid} · 缺失 {result.detail.citations.missing}
+                              </span>
+                            </div>
                           )}
                           {result.dimensions.length > 0 && (
                             <div className="monitor-dims">
@@ -1001,6 +1380,13 @@ export function RunMonitorPage({
                             {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)}
                           </span>
                           <em>{selfLoopActionLabel(iteration.action)}</em>
+                          {iteration.modelBefore &&
+                            iteration.modelAfter &&
+                            iteration.modelBefore !== iteration.modelAfter && (
+                              <span>
+                                模型 {iteration.modelBefore} → {iteration.modelAfter}
+                              </span>
+                            )}
                         </div>
                         {iteration.changes && iteration.changes.length > 0 && (
                           <ul className="monitor-loop-changes">
@@ -1086,6 +1472,13 @@ function approvalStatusLabel(status: ApprovalRecord["status"]): string {
 
 function shortId(id: string): string {
   return id.replace(/^run_/, "").slice(0, 8);
+}
+
+function checkpointNodeCount(state: Record<string, unknown>): number {
+  const nodes = state.nodes;
+  return nodes && typeof nodes === "object" && !Array.isArray(nodes)
+    ? Object.keys(nodes as Record<string, unknown>).length
+    : 0;
 }
 
 /** 运行成功只代表执行没抛错；验证结论单独展示，避免把两者混为一谈。 */

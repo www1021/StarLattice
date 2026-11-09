@@ -587,22 +587,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
 
     const uniqueBaseIds = [...new Set(knowledgeBaseIds)];
-    const ftsRows = this.searchWithFts(trimmedQuery, uniqueBaseIds, topK);
-    const fallbackRows =
-      ftsRows.length >= topK
-        ? []
-        : this.searchWithFallback(trimmedQuery, uniqueBaseIds, topK);
-    const rowsById = new Map<string, KnowledgeCitation>();
-
-    for (const row of [...ftsRows, ...fallbackRows]) {
-      if (!rowsById.has(row.id)) {
-        rowsById.set(row.id, row);
-      }
-    }
-
-    return [...rowsById.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+    return this.searchChunks(trimmedQuery, uniqueBaseIds, topK);
   }
 
   private initialize() {
@@ -679,43 +664,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     }
   }
 
-  private searchWithFts(query: string, baseIds: string[], topK: number) {
-    const ftsQuery = buildFtsQuery(query);
-
-    if (!ftsQuery) {
-      return [];
-    }
-
-    const basePlaceholders = baseIds.map(() => "?").join(", ");
-
-    try {
-      const rows = this.db
-        .prepare(
-          `
-          SELECT
-            chunk_id AS id,
-            base_id,
-            (SELECT name FROM knowledge_bases WHERE id = base_id) AS base_name,
-            document_id,
-            document_name,
-            snippet(knowledge_chunks_fts, 4, '', '', '...', 18) AS snippet,
-            bm25(knowledge_chunks_fts) AS rank
-          FROM knowledge_chunks_fts
-          WHERE knowledge_chunks_fts MATCH ?
-            AND base_id IN (${basePlaceholders})
-          ORDER BY rank
-          LIMIT ?
-          `
-        )
-        .all(ftsQuery, ...baseIds, topK) as ChunkRow[];
-
-      return rows.map((row) => rowToCitation(row, scoreFromRank(row.rank)));
-    } catch {
-      return [];
-    }
-  }
-
-  private searchWithFallback(query: string, baseIds: string[], topK: number) {
+  /**
+   * 中文没有空格，FTS5 的 unicode61 分词器会把连续汉字当成一个 token，中文查询几乎无命中，
+   * 旧回退又按单字覆盖率打分，常见字会把无关文档顶到前面。这里改为确定性词法检索：
+   * 中文按二元组、英文按词，按 IDF 加权，同一文档只保留最高分块。
+   * 本地教研资料规模有限（分块上限 20000），线性扫描可接受；超限时退化为最近分块。
+   */
+  private searchChunks(query: string, baseIds: string[], topK: number) {
     const basePlaceholders = baseIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
@@ -730,28 +685,69 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         FROM knowledge_chunks
         WHERE base_id IN (${basePlaceholders})
         ORDER BY rowid DESC
-        LIMIT 600
+        LIMIT 20000
         `
       )
       .all(...baseIds) as ChunkRow[];
 
-    return rows
-      .map((row) => ({
-        row,
-        score: scoreChunk(query, row.content)
-      }))
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const grams = queryGrams(query);
+    if (grams.length === 0) {
+      return [];
+    }
+
+    const documentFrequency = new Map<string, number>();
+    for (const row of rows) {
+      const text = row.content.toLowerCase();
+      for (const gram of grams) {
+        if (text.includes(gram)) {
+          documentFrequency.set(gram, (documentFrequency.get(gram) ?? 0) + 1);
+        }
+      }
+    }
+
+    const scored = rows
+      .map((row) => {
+        const text = row.content.toLowerCase();
+        let score = 0;
+        for (const gram of grams) {
+          if (!text.includes(gram)) continue;
+          const df = documentFrequency.get(gram) ?? 0;
+          if (df === 0) continue;
+          const idf = Math.log(1 + rows.length / (1 + df));
+          const tf = Math.min(8, countOccurrences(text, gram));
+          score += idf * (1 + Math.log(tf));
+        }
+        return { row, score };
+      })
       .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK)
-      .map((item) =>
-        rowToCitation(
-          {
-            ...item.row,
-            snippet: makeSnippet(query, item.row.content)
-          },
-          item.score
-        )
-      );
+      .sort((left, right) => right.score - left.score);
+
+    const byDocument = new Map<string, { row: ChunkRow; score: number }>();
+    for (const item of scored) {
+      if (!byDocument.has(item.row.document_id)) {
+        byDocument.set(item.row.document_id, item);
+      }
+    }
+
+    const ranked = [...byDocument.values()];
+    const maxScore = ranked[0]?.score ?? 1;
+    // 只靠一个通用二元组命中的文档不进引用列表，避免 topK 被弱相关文档填满。
+    const unique = ranked
+      .filter((item, index) => index === 0 || item.score >= maxScore * 0.2)
+      .slice(0, topK);
+    return unique.map((item) =>
+      rowToCitation(
+        {
+          ...item.row,
+          snippet: makeSnippet(query, item.row.content)
+        },
+        Math.round((item.score / maxScore) * 100) / 100
+      )
+    );
   }
 }
 
@@ -1353,47 +1349,38 @@ function splitTextIntoChunks(text: string) {
   return chunks;
 }
 
-function buildFtsQuery(query: string) {
-  return extractSearchTerms(query)
-    .slice(0, 8)
-    .map((term) => `"${term.replace(/"/g, '""')}"`)
-    .join(" OR ");
-}
-
-function extractSearchTerms(query: string) {
-  const terms = query.match(/[\p{L}\p{N}]{2,}/gu) || [];
-  const shortChineseTerms = [...query.matchAll(/[\u4e00-\u9fa5]{2,6}/g)].map(
-    (match) => match[0]
-  );
-
-  return [...new Set([...terms, ...shortChineseTerms])]
-    .map((term) => term.trim())
-    .filter(Boolean);
-}
-
-function scoreChunk(query: string, content: string) {
-  const lowerContent = content.toLowerCase();
-  const terms = extractSearchTerms(query.toLowerCase());
-  let score = 0;
-
-  for (const term of terms) {
-    if (lowerContent.includes(term.toLowerCase())) {
-      score += Math.min(6, term.length);
-    }
+function queryGrams(query: string) {
+  const normalized = query.toLowerCase().replace(/\s+/g, " ").trim();
+  const grams = new Set<string>();
+  for (const word of normalized.match(/[a-z0-9]{2,}/g) ?? []) {
+    grams.add(word);
   }
+  for (const segment of normalized.match(/[\u4e00-\u9fa5]{2,}/g) ?? []) {
+    const chars = [...segment];
+    for (let index = 0; index + 1 < chars.length; index += 1) {
+      grams.add(chars[index] + chars[index + 1]);
+    }
+    // 短词组保留整体，命中时相当于精确匹配加分。
+    if (chars.length <= 4) grams.add(segment);
+  }
+  return [...grams].slice(0, 48);
+}
 
-  const queryChars = [...new Set(query.replace(/\s+/g, "").split(""))].filter(
-    (char) => /[\u4e00-\u9fa5\p{L}\p{N}]/u.test(char)
-  );
-  const matchedChars = queryChars.filter((char) => content.includes(char)).length;
-
-  return score + matchedChars / Math.max(queryChars.length, 1);
+function countOccurrences(text: string, gram: string) {
+  let count = 0;
+  let index = text.indexOf(gram);
+  while (index >= 0) {
+    count += 1;
+    index = text.indexOf(gram, index + gram.length);
+  }
+  return count;
 }
 
 function makeSnippet(query: string, content: string) {
-  const terms = extractSearchTerms(query);
-  const index = terms
-    .map((term) => content.indexOf(term))
+  const grams = queryGrams(query).sort((left, right) => right.length - left.length);
+  const lower = content.toLowerCase();
+  const index = grams
+    .map((gram) => lower.indexOf(gram))
     .filter((value) => value >= 0)
     .sort((a, b) => a - b)[0];
   const start = Math.max(0, (index ?? 0) - 70);
@@ -1413,10 +1400,6 @@ function rowToCitation(row: ChunkRow, score: number): KnowledgeCitation {
     source: "local",
     score
   };
-}
-
-function scoreFromRank(rank = 0) {
-  return Math.max(0.01, 1 / (1 + Math.abs(rank)));
 }
 
 function trimTrailingSlash(value: string) {

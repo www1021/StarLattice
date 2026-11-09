@@ -37,6 +37,13 @@ export type StreamChatOptions = {
   onThinkingDelta: (content: string) => void;
 };
 
+/** 平台模型目录解析出的 provider 配置；缺省时沿用 QWEN_* 环境变量。 */
+export type ModelProviderConfig = {
+  baseUrl: string;
+  apiKey: string;
+  label?: string;
+};
+
 export type CompleteChatOptions = {
   system?: string;
   messages: ChatMessage[];
@@ -46,6 +53,50 @@ export type CompleteChatOptions = {
   enableThinking?: boolean;
   onThinking?: (content: string) => void;
   signal?: AbortSignal;
+  provider?: ModelProviderConfig;
+};
+
+/** OpenAI 兼容的工具声明；name 必须是 [a-zA-Z0-9_-]，平台侧负责把工具 id 映射成安全名称。 */
+export type QwenToolDefinition = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type QwenToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type ToolChatMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; tool_calls?: QwenToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export type CompleteToolChatOptions = {
+  system?: string;
+  messages: ToolChatMessage[];
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  tools?: QwenToolDefinition[];
+  onThinking?: (content: string) => void;
+  signal?: AbortSignal;
+  provider?: ModelProviderConfig;
+};
+
+export type ToolChatResult = {
+  content: string;
+  thinking?: string;
+  toolCalls: QwenToolCall[];
+  finishReason?: string;
 };
 
 type OpenAiContentPart =
@@ -79,9 +130,11 @@ type OpenAiStreamEvent = {
 
 type OpenAiChatCompletionResponse = {
   choices?: Array<{
+    finish_reason?: string;
     message?: {
       content?: string;
       reasoning_content?: string;
+      tool_calls?: QwenToolCall[];
     };
   }>;
   error?: {
@@ -97,6 +150,8 @@ export type StreamQwenChatResult = {
 
 const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_MODEL = "qwen3-vl-plus";
+/** 上游长时间不返回时必须让请求失败，否则运行会永久挂起并占住并发与 Agent 槽位。 */
+const DEFAULT_REQUEST_TIMEOUT_MS = 180_000;
 
 export class UpstreamModelError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -174,7 +229,7 @@ export async function streamQwenChat({
               ...toOpenAiMessages(compactedMessages)
             ]
           }),
-          signal
+          signal: requestSignal(signal)
         });
 
         if (!response.ok || !response.body) {
@@ -246,15 +301,21 @@ export async function completeQwenChat({
   temperature = 0.35,
   enableThinking = false,
   onThinking,
-  signal
+  signal,
+  provider
 }: CompleteChatOptions) {
-  const apiKey = getQwenApiKey();
+  const apiKey = provider?.apiKey || getQwenApiKey();
 
   if (!apiKey) {
-    throw new UpstreamModelError("QWEN_API_KEY or DASHSCOPE_API_KEY is not configured");
+    throw new UpstreamModelError(
+      `QWEN_API_KEY or DASHSCOPE_API_KEY is not configured${
+        provider?.label ? ` for provider ${provider.label}` : ""
+      }`
+    );
   }
 
-  const baseUrl = getQwenBaseUrl();
+  const baseUrl = trimTrailingSlash(provider?.baseUrl || getQwenBaseUrl());
+  const providerLabel = provider?.label || "qwen";
   const model = requestedModel?.trim() || getQwenModel();
   const compactedMessages = compactMessages(messages);
 
@@ -271,7 +332,7 @@ export async function completeQwenChat({
         maxTokens
       },
       metadata: {
-        provider: "qwen",
+        provider: providerLabel,
         baseUrl,
         stream: false
       }
@@ -294,7 +355,7 @@ export async function completeQwenChat({
               ...toOpenAiMessages(compactedMessages)
             ]
           }),
-          signal
+          signal: requestSignal(signal)
         });
 
         if (!response.ok) {
@@ -344,6 +405,148 @@ export async function completeQwenChat({
       }
     }
   );
+}
+
+/**
+ * 带工具调用的单轮补全：平台只负责把模型请求的 tool_calls 交给执行器，
+ * 真正调用与结果回填由调用方（Agent 运行器）完成，便于记录证据与限制轮次。
+ */
+export async function completeQwenToolChat({
+  system,
+  messages,
+  model: requestedModel,
+  maxTokens = 2048,
+  temperature = 0.2,
+  tools = [],
+  onThinking,
+  signal,
+  provider
+}: CompleteToolChatOptions): Promise<ToolChatResult> {
+  const apiKey = provider?.apiKey || getQwenApiKey();
+
+  if (!apiKey) {
+    throw new UpstreamModelError(
+      `QWEN_API_KEY or DASHSCOPE_API_KEY is not configured${
+        provider?.label ? ` for provider ${provider.label}` : ""
+      }`
+    );
+  }
+
+  const baseUrl = trimTrailingSlash(provider?.baseUrl || getQwenBaseUrl());
+  const providerLabel = provider?.label || "qwen";
+  const model = requestedModel?.trim() || getQwenModel();
+
+  return observeGeneration(
+    "qwen.chat.tools",
+    {
+      input: {
+        system: summarizeText(system || "", 900),
+        messages: summarizeToolMessages(messages)
+      },
+      model,
+      modelParameters: {
+        temperature,
+        maxTokens,
+        toolCount: String(tools.length)
+      },
+      metadata: {
+        provider: providerLabel,
+        baseUrl,
+        stream: false
+      }
+    },
+    async (generation) => {
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            temperature,
+            max_tokens: maxTokens,
+            messages: [
+              ...(system ? [{ role: "system" as const, content: system }] : []),
+              ...messages
+            ],
+            ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {})
+          }),
+          signal: requestSignal(signal)
+        });
+
+        if (!response.ok) {
+          const details = await response.text().catch(() => "");
+          throw new UpstreamModelError(
+            details || `Qwen model request failed with status ${response.status}`,
+            response.status
+          );
+        }
+
+        const payload = (await response.json()) as OpenAiChatCompletionResponse;
+
+        if (payload.error?.message) {
+          throw new UpstreamModelError(payload.error.message);
+        }
+
+        const choice = payload.choices?.[0];
+        const content = choice?.message?.content?.trim() || "";
+        const thinking = choice?.message?.reasoning_content?.trim();
+        const toolCalls = Array.isArray(choice?.message?.tool_calls)
+          ? choice.message.tool_calls.filter((call) => call?.function?.name)
+          : [];
+
+        if (thinking && onThinking) {
+          onThinking(thinking);
+        }
+
+        generation.update({
+          output: {
+            content: summarizeText(content),
+            characterCount: content.length,
+            toolCalls: toolCalls.map((call) => ({
+              name: call.function.name,
+              arguments: summarizeText(call.function.arguments, 300)
+            }))
+          }
+        });
+
+        return {
+          content,
+          thinking,
+          toolCalls,
+          finishReason: choice?.finish_reason
+        };
+      } catch (error) {
+        generation.update({
+          level: "ERROR",
+          statusMessage:
+            error instanceof Error ? error.message : "Qwen tool completion failed",
+          output: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+        throw error;
+      }
+    }
+  );
+}
+
+function summarizeToolMessages(messages: ToolChatMessage[]) {
+  return messages.map((message) => {
+    if (message.role === "tool") {
+      return { role: message.role, content: summarizeText(message.content, 600) };
+    }
+    if (message.role === "assistant") {
+      return {
+        role: message.role,
+        content: summarizeText(message.content, 600),
+        toolCalls: message.tool_calls?.map((call) => call.function.name) ?? []
+      };
+    }
+    return { role: message.role, content: summarizeText(message.content, 900) };
+  });
 }
 
 function getQwenApiKey() {
@@ -483,6 +686,18 @@ function handleStreamEvent(
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function requestSignal(signal?: AbortSignal): AbortSignal | undefined {
+  const timeoutMs = Number(process.env.PLATFORM_MODEL_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return signal;
+  }
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) {
+    return timeout;
+  }
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : signal;
 }
 
 const artifactInstructions = [

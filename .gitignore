@@ -17,6 +17,7 @@ data/*
 benchmarks/.tmp/
 # benchmark 原始逐次结果不入库，保留最新汇总与冻结报告
 benchmarks/results/*
+!benchmarks/results/README.md
 !benchmarks/results/latest.md
 !benchmarks/results/latest.csv
 !benchmarks/results/latest-analysis.md
@@ -26,6 +27,16 @@ benchmarks/results/*
 !benchmarks/results/verify-sensitivity-latest.md
 !benchmarks/results/audit-topic-2026-10-31T16-27-11-658Z.md
 !benchmarks/results/bench-merged-2026-10-31T15-50-58-263Z.md
+# README 直接引用的可复现实验报告
+!benchmarks/results/bench-merged-2026-11-08T02-55-02-172Z.md
+!benchmarks/results/bench-2026-11-08T02-30-36-812Z-p8790.md
+!benchmarks/results/bench-2026-11-08T03-04-44-999Z-p8792.md
+!benchmarks/results/bench-2026-11-08T08-39-17-688Z-p8791.md
+!benchmarks/results/bench-2026-11-07T17-52-16-749Z-p8790.md
+!benchmarks/results/bench-2026-11-07T17-52-16-749Z-p8790-education-only.md
+!benchmarks/results/clarify-ab-latest.md
+!benchmarks/results/verifier-accuracy.md
+!benchmarks/results/scheduler-arms-latest.md
 
 *.log
 .vite-dev.*.log

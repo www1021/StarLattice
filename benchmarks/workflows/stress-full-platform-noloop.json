@@ -1,0 +1,179 @@
+{
+  "id": "bench-full-platform-stress-noloop",
+  "name": "压力条件 C−loop · 弱初稿无自循环",
+  "version": 1,
+  "description": "与弱初稿自循环臂完全相同，但没有 Self-Loop 节点；最终交付质量只取决于弱初稿与演练观察。",
+  "inputs": [
+    {
+      "name": "topic",
+      "type": "string",
+      "required": true,
+      "description": "训练课题"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "年级"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.topic} ${input.subject} ${input.grade}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "lesson-plan",
+      "kind": "agent",
+      "title": "教案生成",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "只输出一份 4 行提纲：每行一句，分别写教学目标、活动流程、分层练习、课堂演练分析。不要展开，不要举例，不要引用来源，不要输出引用编号。"
+    },
+    {
+      "id": "verify-initial",
+      "kind": "verify",
+      "title": "初始验证",
+      "verifier": "observer-verifier",
+      "verifiers": [
+        "observer-verifier",
+        "teaching-expert-agent"
+      ],
+      "rubric": [
+        "目标达成",
+        "互动覆盖",
+        "证据支撑"
+      ],
+      "threshold": 0.85
+    },
+    {
+      "id": "rehearse",
+      "kind": "parallel",
+      "title": "学生 Agent 并行演练",
+      "branches": [
+        {
+          "id": "student-top",
+          "kind": "agent",
+          "title": "学霸型学生反应",
+          "agent": "student-top-agent",
+          "inputs": {
+            "plan": "${lesson-plan.output}"
+          }
+        },
+        {
+          "id": "student-weak",
+          "kind": "agent",
+          "title": "基础薄弱型学生反应",
+          "agent": "student-weak-agent",
+          "inputs": {
+            "plan": "${lesson-plan.output}"
+          }
+        },
+        {
+          "id": "student-silent",
+          "kind": "agent",
+          "title": "沉默型学生反应",
+          "agent": "student-silent-agent",
+          "inputs": {
+            "plan": "${lesson-plan.output}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "observer",
+      "kind": "agent",
+      "title": "观察员交叉验证",
+      "agent": "classroom-observer-agent",
+      "inputs": {
+        "top": "${student-top.output}",
+        "weak": "${student-weak.output}",
+        "silent": "${student-silent.output}"
+      }
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "draft": "${lesson-plan.output}",
+        "observer": "${observer.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "以教案初稿为基础，吸收课堂演练记录中暴露的问题，输出最终可交付教案。必须包含小节：教学目标、活动流程、分层练习、课堂演练分析；引用知识库证据使用 [1][2] 编号；不少于 800 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成训练报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${deliverable.output}",
+        "score": "${verify-initial.score}",
+        "title": "教学设计报告"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "retrieve",
+      "to": "lesson-plan"
+    },
+    {
+      "from": "lesson-plan",
+      "to": "verify-initial"
+    },
+    {
+      "from": "verify-initial",
+      "to": "rehearse"
+    },
+    {
+      "from": "rehearse",
+      "to": "observer"
+    },
+    {
+      "from": "observer",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    }
+  ]
+}

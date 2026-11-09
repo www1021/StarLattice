@@ -1,0 +1,87 @@
+{
+  "id": "intent-clarify-v1",
+  "name": "意图澄清与 Prompt 自适应改写",
+  "version": 1,
+  "description": "平台级意图理解：先把原始需求分析为任务类型、交付物、约束与歧义清单，仅在关键歧义时暂停向人确认，再改写成可执行的结构化 Prompt 交给下游。运行记录保留原始需求、改写稿、澄清回答与数字守卫结果，可与下游验证分数一起作为改写前后的对照证据。",
+  "inputs": [
+    {
+      "name": "request",
+      "type": "string",
+      "required": true,
+      "description": "用户的原始需求，例如“帮我做个期末复习的方案”"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "clarify",
+      "kind": "clarify",
+      "title": "意图理解与 Prompt 改写",
+      "clarifyOn": "high",
+      "maxQuestions": 2,
+      "assignee": "需求提出人",
+      "timeoutMs": 600000,
+      "prompt": "面向中小学课堂场景分析需求，交付物必须能被教师直接使用。",
+      "inputs": { "request": "${input.request}" },
+      "stubOutput": {
+        "taskType": "教学设计",
+        "goal": "为五年级数学“分数的意义”设计一节 40 分钟的新授课，并给出分层提问链。",
+        "audience": "五年级学生",
+        "deliverable": "一课时教案：教学目标、活动流程、提问链、评价方式",
+        "constraints": ["课时 40 分钟", "面向五年级", "包含分层提问"],
+        "ambiguities": [
+          {
+            "slot": "复习范围",
+            "question": "期末复习只覆盖本学期内容，还是包含上学期？",
+            "impact": "high"
+          },
+          {
+            "slot": "输出格式",
+            "question": "交付 Word 文档还是 Markdown？",
+            "impact": "low"
+          }
+        ],
+        "assumptions": ["默认沿用现行教材的单元顺序"],
+        "needsClarification": true,
+        "confidence": 0.72
+      }
+    },
+    {
+      "id": "draft",
+      "kind": "agent",
+      "title": "按改写 Prompt 起草",
+      "agent": "planner-agent",
+      "inputs": {
+        "request": "${clarify.rewrittenPrompt}",
+        "intent": "${clarify.intent}"
+      },
+      "prompt": "严格按以下已澄清的 Prompt 完成任务，先给交付物，再列出依据：\n${clarify.rewrittenPrompt}\n\n原始需求只用于核对，不得覆盖已澄清的结论：${clarify.rawPrompt}"
+    },
+    {
+      "id": "verify",
+      "kind": "verify",
+      "title": "交付质量验证",
+      "verifier": "quality-verifier",
+      "verifiers": ["quality-verifier", "reviewer-agent"],
+      "rubric": ["目标一致", "约束满足", "可执行性"],
+      "threshold": 0.7,
+      "inputs": { "artifact": "${draft.output}" }
+    },
+    {
+      "id": "report",
+      "kind": "template",
+      "title": "改写对照与交付",
+      "template": "## 原始需求\n${clarify.rawPrompt}\n\n## 意图分析\n任务类型：${clarify.taskType}\n置信度：${clarify.confidence}\n需要澄清：${clarify.needsClarification}\n\n## 改写后 Prompt\n${clarify.rewrittenPrompt}\n\n## 澄清补充\n${clarify.clarification.answer}\n\n## 交付物\n${draft.output}\n\n## 验证结论\n通过：${verify.passed} · 分数：${verify.score}",
+      "inputs": {
+        "request": "${clarify.rawPrompt}",
+        "rewritten": "${clarify.rewrittenPrompt}",
+        "answer": "${clarify.clarification.answer}",
+        "artifact": "${draft.output}"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "clarify", "to": "draft" },
+    { "from": "draft", "to": "verify" },
+    { "from": "verify", "to": "report" }
+  ]
+}

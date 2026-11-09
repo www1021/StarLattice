@@ -13,6 +13,8 @@ import type {
   MetricsReport,
   RunRecord,
   TraceResponse,
+  VerifyCitationSummary,
+  VerifyIndependence,
   VerifyLayers,
   VerifyResult,
   WorkflowDefinition,
@@ -209,6 +211,8 @@ export function VerifyReportPage() {
       ? thresholdOf(definition.nodes, retained.dimensions.map((dimension) => dimension.name))
       : undefined;
   const layers = trace ? layersOf(trace, retained) : undefined;
+  const independence = trace ? independenceOf(trace, retained) : undefined;
+  const citations = trace ? citationsOf(trace, retained) : undefined;
   const passed =
     summary?.passed ??
     (summary?.score !== undefined && threshold !== undefined
@@ -461,10 +465,35 @@ export function VerifyReportPage() {
                       {layers.crossCheck.spread.toFixed(2)} ·{" "}
                       {layers.crossCheck.agreement ? "结论一致" : "存在分歧"}
                     </p>
+                    {independence && (
+                      <p className="report-layer-meta">
+                        独立性：{independenceLabel(independence.level)}
+                        {independence.models.length > 0
+                          ? ` · ${independence.models.join(" / ")}`
+                          : ""}
+                        {independence.heuristicFallback ? " · 已回退启发式打分" : ""}
+                      </p>
+                    )}
+                    {citations && (
+                      <p className="report-layer-meta">
+                        正文引用 {citations.total} 条 · 可追溯 {citations.valid} · 无法绑定{" "}
+                        {citations.missing} · 证据池 {citations.pool}
+                      </p>
+                    )}
                     <ul className="report-verifiers">
                       {layers.crossCheck.verifiers.map((verifier) => (
                         <li key={verifier.agentId}>
-                          <span>{verifier.agentName}</span>
+                          <span>
+                            {verifier.agentName}
+                            {verifier.resolvedModel && <small> · {verifier.resolvedModel}</small>}
+                            {verifier.evidenceView && (
+                              <small>
+                                {" "}
+                                · {verifier.evidenceView === "cited" ? "引用内证据" : "完整证据池"}
+                              </small>
+                            )}
+                            {verifier.fallback && <small> · 启发式回退</small>}
+                          </span>
                           <strong>{verifier.score.toFixed(2)}</strong>
                         </li>
                       ))}
@@ -537,6 +566,13 @@ export function VerifyReportPage() {
                               : iteration.scoreAfter.toFixed(2)}
                           </span>
                           <em>{selfLoopActionLabel(iteration.action)}</em>
+                          {iteration.modelBefore &&
+                            iteration.modelAfter &&
+                            iteration.modelBefore !== iteration.modelAfter && (
+                              <span>
+                                模型 {iteration.modelBefore} → {iteration.modelAfter}
+                              </span>
+                            )}
                           {isRetained && <span className="report-loop-badge">已保留</span>}
                         </div>
                         {iteration.changes && iteration.changes.length > 0 && (
@@ -567,6 +603,23 @@ export function VerifyReportPage() {
               </div>
               {metrics ? (
                 <>
+                  <div className="report-alerts">
+                    {metrics.alerts.length === 0 ? (
+                      <p className="monitor-hint">最近运行未触发异常阈值（失败率、延迟突增、验证分漂移）。</p>
+                    ) : (
+                      metrics.alerts.map((alert, index) => (
+                        <div
+                          className={`report-alert is-${alert.severity}`}
+                          key={`${alert.workflowId}-${alert.kind}-${index}`}
+                        >
+                          <strong>{alert.severity === "critical" ? "严重异常" : "异常预警"}</strong>
+                          <span>
+                            {workflowNames.get(alert.workflowId) ?? alert.workflowId}：{alert.message}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
                   <div className="report-metrics-overall">
                     <Metric label="运行数" value={String(metrics.overall.runCount)} />
                     <Metric label="成功率" value={formatPercent(metrics.overall.successRate)} />
@@ -684,6 +737,57 @@ function layersOf(trace: TraceResponse, retained?: VerifyResult): VerifyLayers |
   }
   const layers = asRecord(asRecord(trace.run.output?.verify)?.layers);
   return isLayers(layers) ? layers : undefined;
+}
+
+function independenceOf(
+  trace: TraceResponse,
+  retained?: VerifyResult
+): VerifyIndependence | undefined {
+  const value =
+    retained?.detail?.independence ?? asRecord(asRecord(trace.run.output?.verify)?.independence);
+  return isIndependence(value) ? value : undefined;
+}
+
+function citationsOf(
+  trace: TraceResponse,
+  retained?: VerifyResult
+): VerifyCitationSummary | undefined {
+  const value =
+    retained?.detail?.citations ?? asRecord(asRecord(trace.run.output?.verify)?.citations);
+  return isCitations(value) ? value : undefined;
+}
+
+function isIndependence(value: unknown): value is VerifyIndependence {
+  const record = asRecord(value);
+  return (
+    record !== undefined &&
+    typeof record.level === "string" &&
+    Array.isArray(record.models) &&
+    Array.isArray(record.providers)
+  );
+}
+
+function isCitations(value: unknown): value is VerifyCitationSummary {
+  const record = asRecord(value);
+  return (
+    record !== undefined &&
+    typeof record.total === "number" &&
+    typeof record.valid === "number" &&
+    typeof record.missing === "number"
+  );
+}
+
+function independenceLabel(level: VerifyIndependence["level"]): string {
+  switch (level) {
+    case "cross-provider":
+      return "跨供应商独立";
+    case "model":
+      return "模型级独立";
+    case "evidence":
+      return "证据级独立";
+    default:
+      return "提示词级交叉";
+  }
 }
 
 function isLayers(value: unknown): value is VerifyLayers {

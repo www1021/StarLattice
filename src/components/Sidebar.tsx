@@ -12,6 +12,7 @@ import {
   Ellipsis,
   GraduationCap,
   Gauge,
+  GitBranch,
   HeartHandshake,
   Layers,
   Mic,
@@ -44,7 +45,8 @@ type SidebarSection =
   | "library"
   | "mcp"
   | "monitor"
-  | "report";
+  | "report"
+  | "evolution";
 
 type MenuItem = {
   label: string;
@@ -76,6 +78,7 @@ type SidebarProps = {
   onOpenMcp: () => void;
   onOpenMonitor: () => void;
   onOpenReport: () => void;
+  onOpenEvolution: () => void;
   onNewTask: () => void;
   onOpenChat: () => void;
   onNewConversation: (mode: "education" | "office") => void;
@@ -96,7 +99,8 @@ const platformItems: MenuItem[] = [
   { label: "对话历史", icon: Clock3, section: "history" },
   { label: "MCP 连接", icon: Cable, section: "mcp" },
   { label: "运行监控", icon: Activity, section: "monitor" },
-  { label: "验证报告", icon: ClipboardCheck, section: "report" }
+  { label: "验证报告", icon: ClipboardCheck, section: "report" },
+  { label: "自进化中心", icon: GitBranch, section: "evolution" }
 ];
 
 const scenePacks: ScenePack[] = [
@@ -158,6 +162,7 @@ export function Sidebar({
   onOpenMcp,
   onOpenMonitor,
   onOpenReport,
+  onOpenEvolution,
   onNewTask,
   onOpenChat,
   onNewConversation,
@@ -228,7 +233,8 @@ export function Sidebar({
     library: onOpenLibrary,
     mcp: onOpenMcp,
     monitor: onOpenMonitor,
-    report: onOpenReport
+    report: onOpenReport,
+    evolution: onOpenEvolution
   };
 
   function handleSceneChange(nextId: string) {

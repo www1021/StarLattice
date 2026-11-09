@@ -114,14 +114,16 @@ import { registerPlatform } from "./platform/routes.js";
 import { PlatformStateStore } from "./platform/runtime/stateStore.js";
 import { WorkflowExecutor } from "./platform/runtime/executor.js";
 import { McpManager } from "./platform/mcp/mcpManager.js";
+import { runWorkflowTool, syncWorkflowTools } from "./platform/mcp/workflowTools.js";
 import {
-  createPlatformLiveHandlers,
-  executeKnowledgeSearchNode,
-  executeMcpToolNode,
   isPlatformLiveEnabled
 } from "./platform/runtime/liveHandlers.js";
+import { createPlatformHandlers } from "./platform/runtime/handlersFactory.js";
+import { ProcessWorkerPool } from "./platform/workers/pool.js";
+import { SchedulerReclaimer } from "./platform/scheduler/reclaimer.js";
 import { createLlmDimensionScorer, isLlmVerifyEnabled } from "./platform/verify/liveScorer.js";
-import { executeHttpNode } from "./platform/runtime/httpNode.js";
+import { EvolutionService } from "./platform/evolution/service.js";
+import { seedEvolutionDatasets } from "./platform/evolution/datasets.js";
 import {
   observeOperation,
   recordTrainingEvaluationScores,
@@ -265,6 +267,8 @@ const knowledgeProvider = new KnowledgeProviderRegistry(
   new IMAKnowledgeProvider()
 );
 const port = Number(process.env.PORT || 8787);
+// 默认只监听本机；容器/局域网部署时用 HOST=0.0.0.0 显式放开。
+const host = process.env.HOST?.trim() || "127.0.0.1";
 const defaultLessonPlanAiTimeoutMs = 15_000;
 const maxUploadCount = 5;
 const maxUploadTotalBytes = 10 * 1024 * 1024;
@@ -289,6 +293,8 @@ app.use(express.json({ limit: "1mb" }));
 const counseling = registerCounseling(app, httpServer, chatRepository);
 const counselingService = counseling.service;
 const platformStore = new PlatformStateStore();
+seedEvolutionDatasets(platformStore);
+const platformEvolution = new EvolutionService({ store: platformStore });
 const platformLiveEnabled = isPlatformLiveEnabled();
 if (process.env.PLATFORM_LIVE_AGENTS === "1" && !platformLiveEnabled) {
   console.warn(
@@ -296,53 +302,101 @@ if (process.env.PLATFORM_LIVE_AGENTS === "1" && !platformLiveEnabled) {
   );
 }
 const platformMcp = new McpManager(platformStore);
-const platformLiveHandlers = createPlatformLiveHandlers({
+// 门禁默认使用无模型执行器：候选与基线在相同条件下配对比较，日常验证不消耗 token。
+const platformStubExecutor = new WorkflowExecutor(
+  platformStore,
+  {},
+  {
+    releaseProvider: {
+      resolveRelease: (releaseId) => platformEvolution.resolveRelease(releaseId)
+    }
+  }
+);
+const platformLiveHandlers = createPlatformHandlers({
   getAgent: (id) => platformStore.getAgent(id),
   getAgentVersion: (id, version) => platformStore.getAgentVersion(id, version),
   getTool: (id) => platformStore.getTool(id),
   callMcpTool: (tool, args) => platformMcp.callToolRecord(tool, args),
-  searchKnowledge
+  searchKnowledge,
+  trainingTool: (tool, input) => executeTrainingTool(tool, input)
 });
+/**
+ * 动态调度执行平面：叶子步骤交给常驻 Worker 子进程，父进程只做 DAG 编排与状态落库。
+ * 默认关闭（PLATFORM_WORKER_PROCESSES=0），需要多进程执行时显式开启。
+ */
+const workerProcessCount = Math.max(0, Math.min(64, Math.trunc(Number(process.env.PLATFORM_WORKER_PROCESSES) || 0)));
+const platformWorkerPool =
+  workerProcessCount > 0
+    ? new ProcessWorkerPool({
+        size: workerProcessCount,
+        store: platformStore,
+        services: {
+          searchKnowledge: (options) => searchKnowledge(options),
+          callMcpTool: (tool, args) => platformMcp.callToolRecord(tool, args),
+          trainingTool: (tool, input) => executeTrainingTool(tool, input)
+        }
+      })
+    : undefined;
+if (platformWorkerPool) {
+  console.log(`[platform] 已启用 ${platformWorkerPool.size} 个 Worker 子进程执行叶子步骤。`);
+}
+httpServer.on("close", () => {
+  void platformWorkerPool?.drain("HTTP 服务关闭");
+});
+const configuredCapacity = Number(process.env.PLATFORM_SCHEDULER_CAPACITY);
 const platformExecutor = new WorkflowExecutor(
   platformStore,
-  {
-    ...platformLiveHandlers,
-    // 知识库检索不依赖模型，stub 模式也接真实 provider，避免默认演示出现假引用。
-    knowledgeTool: async (node, input, context) => {
-      if (node.tool !== "knowledge.search") {
-        return undefined;
-      }
-      return executeKnowledgeSearchNode(node, input, context, searchKnowledge);
-    },
-    // 独立 knowledge 节点与 knowledge.search 工具共用检索服务，stub / live 均可用。
-    knowledgeNode: async (node, input, context) =>
-      executeKnowledgeSearchNode(node, input, context, searchKnowledge),
-    // HTTP 节点自带 SSRF 防护与响应大小上限；调用外部 API 不依赖模型是否启用。
-    http: async (node, input) => executeHttpNode(node, input),
-    // MCP 是确定性工具调用，不依赖 Qwen；stub 模式下也走真实连接，便于零成本演示。
-    mcpTool: async (node, input) => {
-      const tool = platformStore.getTool(node.tool);
-      if (tool?.type !== "mcp") {
-        return undefined;
-      }
-      return executeMcpToolNode(node, input, tool, (target, args) =>
-        platformMcp.callToolRecord(target, args)
-      );
-    },
-    // 课堂 / 谈心谈话会话由平台工作流驱动；这些工具不依赖模型开关，stub 模式同样可用。
-    trainingTool: async (node, input) => executeTrainingTool(node.tool, input)
-  },
+  platformLiveHandlers,
   {
     ...(platformLiveEnabled
       ? { timeoutMs: Number(process.env.PLATFORM_STEP_TIMEOUT_MS) || 120_000 }
       : {}),
-    ...(isLlmVerifyEnabled() ? { dimensionScorer: createLlmDimensionScorer() } : {})
+    ...(isLlmVerifyEnabled() ? { dimensionScorer: createLlmDimensionScorer() } : {}),
+    ...(platformWorkerPool
+      ? {
+          workerPool: platformWorkerPool,
+          schedulerCapacity:
+            Number.isFinite(configuredCapacity) && configuredCapacity > 0
+              ? configuredCapacity
+              : platformWorkerPool.size
+        }
+      : {}),
+    // 发布运行固定使用发布快照，自循环补丁不再直接写注册表，而是进入演化候选。
+    releaseProvider: {
+      resolveRelease: (releaseId) => platformEvolution.resolveRelease(releaseId)
+    },
+    onRunFinished: (runId) => platformEvolution.observeRun(runId),
+    onPromptCandidate: (signal) => platformEvolution.createCandidateFromSelfLoop(signal)
   }
 );
+platformEvolution.attachExecutors({ live: platformExecutor, stub: platformStubExecutor });
+/**
+ * 周期回收器：多实例部署时只有拿到租约的进程清理过期 Worker/租约与孤儿运行。
+ * 自动续跑默认关闭（PLATFORM_SCHEDULER_AUTO_RESUME=0），避免重启后悄悄消耗真实模型额度。
+ */
+const reclaimInterval = Number(process.env.PLATFORM_SCHEDULER_RECLAIM_MS);
+const schedulerReclaimer = new SchedulerReclaimer({
+  store: platformStore,
+  executor: platformExecutor,
+  intervalMs: Number.isFinite(reclaimInterval) ? reclaimInterval : 15000,
+  autoResume: process.env.PLATFORM_SCHEDULER_AUTO_RESUME === "1",
+  ...(Number(process.env.PLATFORM_SCHEDULER_GRACE_MS) > 0
+    ? { graceMs: Number(process.env.PLATFORM_SCHEDULER_GRACE_MS) }
+    : {}),
+  ...(Number(process.env.PLATFORM_SCHEDULER_RECOVER_MS) > 0
+    ? { recoverWindowMs: Number(process.env.PLATFORM_SCHEDULER_RECOVER_MS) }
+    : {})
+});
+schedulerReclaimer.start();
+httpServer.on("close", () => {
+  schedulerReclaimer.stop();
+});
 registerPlatform(app, {
   store: platformStore,
   executor: platformExecutor,
+  evolution: platformEvolution,
   mcp: platformMcp,
+  reclaimer: schedulerReclaimer,
   knowledge: {
     listBases: () => knowledgeProvider.listBases(),
     createBase: (name) => knowledgeProvider.createBase(name),
@@ -353,12 +407,41 @@ registerPlatform(app, {
     search: (options) => searchKnowledge(options)
   }
 });
+// 工作流即工具：注册为平台内联 MCP 工具，工具节点可像调用外部 MCP 一样调用工作流。
+platformMcp.setWorkflowRunner((tool, args) =>
+  runWorkflowTool(platformStore, platformExecutor, tool, args)
+);
+syncWorkflowTools(platformStore);
+
+/**
+ * 内置工作流引用的是示例资料包 id；导入资料包后本地库会生成 kb_ 前缀的新 id。
+ * 检索前把包 id 解析到已导入的同名资料库，避免跨环境演示时引用落空。
+ */
+async function resolveKnowledgeBaseIds(ids: string[]): Promise<string[]> {
+  if (ids.length === 0) {
+    return ids;
+  }
+  const bases = await knowledgeProvider.listBases();
+  const known = new Set(bases.map((base) => base.id));
+  const packs = knowledgeProvider.listStarterPacks();
+  return ids.map((id) => {
+    if (known.has(id)) {
+      return id;
+    }
+    const pack = packs.find((item) => item.id === id);
+    if (!pack) {
+      return id;
+    }
+    return bases.find((base) => base.name === `我的资料包：${pack.name}`)?.id ?? id;
+  });
+}
 
 async function searchKnowledge(options: {
   query: string;
   knowledgeBaseIds: string[];
   topK?: number;
 }) {
+  const resolved = await resolveKnowledgeBaseIds(options.knowledgeBaseIds);
   return observeOperation(
     "knowledge.search",
     {
@@ -372,7 +455,7 @@ async function searchKnowledge(options: {
       }
     },
     async (observation) => {
-      const citations = await knowledgeProvider.search(options);
+      const citations = await knowledgeProvider.search({ ...options, knowledgeBaseIds: resolved });
 
       observation.update({
         output: {
@@ -2035,8 +2118,8 @@ speakRealtimeServer.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(port, "127.0.0.1", () => {
-  console.log(`AI chat server listening on http://127.0.0.1:${port}`);
+httpServer.listen(port, host, () => {
+  console.log(`AI chat server listening on http://${host}:${port}`);
 });
 
 function parseSpeakAudioUpload(

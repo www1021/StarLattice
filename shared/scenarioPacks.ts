@@ -61,7 +61,7 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
       "quality-verifier"
     ],
     tools: ["knowledge.search", "verify.rubric", "export.docx", "web.search"],
-    workflows: ["task-report-v1"],
+    workflows: ["task-report-v1", "intent-clarify-v1"],
     templates: ["report-pipeline", "document-review"]
   },
   education: {
@@ -118,9 +118,12 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
   "business-analysis": {
     agents: [
       "analysis-planner",
+      "business-planner",
       "data-analyst",
       "business-reviewer",
-      "business-reporter"
+      "business-diagnostician",
+      "business-reporter",
+      "business-reviser"
     ],
     tools: [
       "mcp.data-analysis.profile",

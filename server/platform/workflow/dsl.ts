@@ -15,6 +15,8 @@ import {
 const VARIABLE_TYPES = new Set<WorkflowVariableType>(["string", "number", "boolean", "object"]);
 const HTTP_METHODS = new Set<string>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const VERIFY_CHECK_TYPES = new Set<VerifyCheck["type"]>(["number_match"]);
+const CLARIFY_MODES = new Set<string>(["high", "any", "never"]);
+const VERIFY_EVIDENCE_VIEWS = new Set<string>(["pool", "cited", "split"]);
 
 export class WorkflowSyntaxError extends Error {
   constructor(readonly path: string, message: string) {
@@ -82,7 +84,24 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         kind: "agent",
         agent: requireString(record.agent, `${location}.agent`),
         agentVersion: parseAgentVersion(record.agentVersion, `${location}.agentVersion`),
-        prompt: optionalString(record.prompt, `${location}.prompt`)
+        capabilities:
+          record.capabilities === undefined
+            ? undefined
+            : parseStringArray(record.capabilities, `${location}.capabilities`),
+        prompt: optionalString(record.prompt, `${location}.prompt`),
+        outputFormat: parseOutputFormat(record.outputFormat, `${location}.outputFormat`),
+        outputContract:
+          record.outputContract === undefined
+            ? undefined
+            : parseOutputContract(record.outputContract, `${location}.outputContract`),
+        stubOutput:
+          record.stubOutput === undefined
+            ? undefined
+            : asRecord(record.stubOutput, `${location}.stubOutput`),
+        loopRole: parseLoopRole(record.loopRole, `${location}.loopRole`),
+        promoteToAgent: optionalString(record.promoteToAgent, `${location}.promoteToAgent`),
+        toolCalling: parseOptionalBoolean(record.toolCalling, `${location}.toolCalling`),
+        model: optionalString(record.model, `${location}.model`)
       };
     case "tool":
       return {
@@ -149,6 +168,35 @@ function parseNode(value: unknown, location: string): WorkflowNode {
             ? undefined
             : requireInteger(record.maxTokens, `${location}.maxTokens`)
       };
+    case "clarify": {
+      const clarifyOn = optionalString(record.clarifyOn, `${location}.clarifyOn`);
+      if (clarifyOn !== undefined && !CLARIFY_MODES.has(clarifyOn)) {
+        throw new WorkflowSyntaxError(
+          `${location}.clarifyOn`,
+          `只支持 ${[...CLARIFY_MODES].join(" / ")}`
+        );
+      }
+      return {
+        ...base,
+        kind: "clarify",
+        prompt: optionalString(record.prompt, `${location}.prompt`),
+        model: optionalString(record.model, `${location}.model`),
+        clarifyOn: clarifyOn as "high" | "any" | "never" | undefined,
+        maxQuestions:
+          record.maxQuestions === undefined
+            ? undefined
+            : requireInteger(record.maxQuestions, `${location}.maxQuestions`),
+        assignee: optionalString(record.assignee, `${location}.assignee`),
+        timeoutMs:
+          record.timeoutMs === undefined
+            ? undefined
+            : requireInteger(record.timeoutMs, `${location}.timeoutMs`),
+        stubOutput:
+          record.stubOutput === undefined
+            ? undefined
+            : asRecord(record.stubOutput, `${location}.stubOutput`)
+      };
+    }
     case "template":
       return {
         ...base,
@@ -231,12 +279,29 @@ function parseNode(value: unknown, location: string): WorkflowNode {
           record.requireEvidence === undefined
             ? undefined
             : requireBoolean(record.requireEvidence, `${location}.requireEvidence`),
+        minCitations:
+          record.minCitations === undefined
+            ? undefined
+            : requireInteger(record.minCitations, `${location}.minCitations`),
+        requiredSections:
+          record.requiredSections === undefined
+            ? undefined
+            : parseStringArray(record.requiredSections, `${location}.requiredSections`),
+        verifierModels:
+          record.verifierModels === undefined
+            ? undefined
+            : parseStringRecord(record.verifierModels, `${location}.verifierModels`),
+        evidenceView:
+          record.evidenceView === undefined
+            ? undefined
+            : parseEvidenceView(record.evidenceView, `${location}.evidenceView`),
         checks:
           record.checks === undefined
             ? undefined
             : asArray(record.checks, `${location}.checks`).map((item, index) =>
                 parseVerifyCheck(item, `${location}.checks[${index}]`)
-              )
+              ),
+        model: optionalString(record.model, `${location}.model`)
       };
     case "approve":
       return {
@@ -330,7 +395,9 @@ function parseVerifyCheck(value: unknown, location: string): VerifyCheck {
   return {
     type: type as VerifyCheck["type"],
     tolerance:
-      record.tolerance === undefined ? undefined : requireNumber(record.tolerance, `${location}.tolerance`)
+      record.tolerance === undefined ? undefined : requireNumber(record.tolerance, `${location}.tolerance`),
+    anchors:
+      record.anchors === undefined ? undefined : parseStringArray(record.anchors, `${location}.anchors`)
   };
 }
 
@@ -339,6 +406,23 @@ function parseStringRecord(value: unknown, location: string): Record<string, str
   return Object.fromEntries(
     Object.entries(record).map(([key, item]) => [key, requireString(item, `${location}.${key}`)])
   );
+}
+
+function parseEvidenceView(
+  value: unknown,
+  location: string
+): "pool" | "cited" | "split" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const view = requireString(value, location);
+  if (!VERIFY_EVIDENCE_VIEWS.has(view)) {
+    throw new WorkflowSyntaxError(
+      location,
+      `证据视图只支持 ${[...VERIFY_EVIDENCE_VIEWS].join(" / ")}`
+    );
+  }
+  return view as "pool" | "cited" | "split";
 }
 
 function parseLoopBudget(value: unknown, location: string) {
@@ -353,6 +437,65 @@ function parseLoopBudget(value: unknown, location: string) {
         ? undefined
         : requireInteger(record.maxTokens, `${location}.maxTokens`)
   };
+}
+
+const LOOP_ROLES = new Set(["diagnose", "revise"]);
+
+function parseLoopRole(value: unknown, location: string): "diagnose" | "revise" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const role = requireString(value, location);
+  if (!LOOP_ROLES.has(role)) {
+    throw new WorkflowSyntaxError(location, `循环角色只支持 ${[...LOOP_ROLES].join(" / ")}`);
+  }
+  return role as "diagnose" | "revise";
+}
+
+const OUTPUT_FORMATS = new Set(["text", "json"]);
+
+function parseOptionalBoolean(value: unknown, location: string): boolean | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  // 属性面板的 select 控件输出字符串，这里统一归一化，避免保存后无法再次编译。
+  if (value === "true" || value === "false") {
+    return value === "true";
+  }
+  throw new WorkflowSyntaxError(location, "必须是布尔值");
+}
+
+function parseOutputFormat(value: unknown, location: string): "text" | "json" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const format = requireString(value, location);
+  if (!OUTPUT_FORMATS.has(format)) {
+    throw new WorkflowSyntaxError(location, `输出格式只支持 ${[...OUTPUT_FORMATS].join(" / ")}`);
+  }
+  return format as "text" | "json";
+}
+
+function parseOutputContract(value: unknown, location: string) {
+  const record = asRecord(value, location);
+  const required =
+    record.required === undefined
+      ? undefined
+      : parseStringArray(record.required, `${location}.required`);
+  let enums: Record<string, string[]> | undefined;
+  if (record.enums !== undefined) {
+    const rawEnums = asRecord(record.enums, `${location}.enums`);
+    enums = Object.fromEntries(
+      Object.entries(rawEnums).map(([key, item]) => [
+        key,
+        parseStringArray(item, `${location}.enums.${key}`)
+      ])
+    );
+  }
+  return { required, enums };
 }
 
 function parseAgentVersion(value: unknown, location: string): number | undefined {

@@ -85,6 +85,7 @@ import type {
   NodeTypesResponse,
   PlatformIssue,
   RunRecord,
+  StepRecord,
   TraceResponse,
   WorkflowDefinition,
   WorkflowDetail,
@@ -2264,6 +2265,9 @@ function RunPanel({
     trialTarget && trace
       ? [...trace.steps].reverse().find((step) => step.nodeId === trialTarget)
       : undefined;
+  const clarifyStep = trace
+    ? [...trace.steps].reverse().find((step) => step.nodeKind === "clarify" && step.status === "succeeded")
+    : undefined;
 
   return (
     <aside className="platform-run-panel">
@@ -2363,6 +2367,14 @@ function RunPanel({
             </div>
           </section>
 
+          {clarifyStep && <ClarifyTraceCard step={clarifyStep} />}
+
+          {trace.run.status === "waiting_input" && (
+            <p className="platform-inspector-note">
+              运行在意图澄清处暂停：请到「运行监控」回答澄清问题后继续。
+            </p>
+          )}
+
           {trace.verifyResults.length > 0 && (
             <section className="platform-trace-section">
               <h3>验证结果</h3>
@@ -2390,6 +2402,10 @@ function RunPanel({
                     {iteration.scoreBefore === undefined ? "—" : iteration.scoreBefore.toFixed(2)} →{" "}
                     {iteration.scoreAfter === undefined ? "—" : iteration.scoreAfter.toFixed(2)} ·{" "}
                     {selfLoopActionLabel(iteration.action)}
+                    {iteration.modelBefore &&
+                      iteration.modelAfter &&
+                      iteration.modelBefore !== iteration.modelAfter &&
+                      ` · 模型 ${iteration.modelBefore} → ${iteration.modelAfter}`}
                   </span>
                 </div>
               ))}
@@ -2417,6 +2433,90 @@ function RunPanel({
       )}
     </aside>
   );
+}
+
+/** 原 Prompt 与改写后 Prompt 必须同屏可见，澄清问题、假设与数值守门结果一并留痕。 */
+function ClarifyTraceCard({ step }: { step: StepRecord }) {
+  const record = plainRecord(step.output);
+  const intent = plainRecord(record?.intent);
+  const ambiguities = arrayOfRecords(intent?.ambiguities);
+  const assumptions = stringArray(intent?.assumptions);
+  const constraints = stringArray(intent?.constraints);
+  const changes = stringArray(record?.changes);
+  const clarification = plainRecord(record?.clarification);
+  const guardrail = plainRecord(record?.guardrail);
+  const unexpected = stringArray(guardrail?.unexpected);
+  const rawPrompt = typeof record?.rawPrompt === "string" ? record.rawPrompt : "";
+  const rewrittenPrompt = typeof record?.rewrittenPrompt === "string" ? record.rewrittenPrompt : "";
+
+  return (
+    <section className="platform-trace-section platform-clarify-card">
+      <h3>意图与 Prompt</h3>
+      <div className="platform-clarify-meta">
+        <span>任务类型 {typeof intent?.taskType === "string" ? intent.taskType : "—"}</span>
+        <span>
+          置信度{" "}
+          {typeof intent?.confidence === "number" ? intent.confidence.toFixed(2) : "—"}
+        </span>
+        <span>{clarification ? "已人工澄清" : record?.needsClarification ? "自动补假设" : "无需澄清"}</span>
+      </div>
+
+      {(constraints.length > 0 || assumptions.length > 0 || ambiguities.length > 0) && (
+        <div className="platform-clarify-notes">
+          {constraints.length > 0 && <p>约束：{constraints.join("；")}</p>}
+          {assumptions.length > 0 && <p>假设：{assumptions.join("；")}</p>}
+          {ambiguities.map((item, index) => (
+            <p key={`${item.slot}-${index}`}>
+              <span className={`platform-clarify-impact is-${item.impact}`}>{String(item.impact)}</span>
+              {String(item.question)}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div className="platform-clarify-grid">
+        <div>
+          <h4>原始需求</h4>
+          <pre>{rawPrompt || "（未记录）"}</pre>
+        </div>
+        <div>
+          <h4>改写后 Prompt</h4>
+          <pre>{rewrittenPrompt || "（未记录）"}</pre>
+        </div>
+      </div>
+
+      {clarification && (
+        <p className="platform-clarify-answer">
+          澄清补充：{typeof clarification.answer === "string" && clarification.answer ? clarification.answer : "（未填写）"}
+        </p>
+      )}
+      {changes.length > 0 && <p className="platform-clarify-notes">改写动作：{changes.join("；")}</p>}
+      {guardrail?.ok === false && (
+        <p className="platform-error-text">
+          数值守门未通过：改写稿出现原文没有的数字 {unexpected.join("、")}。
+        </p>
+      )}
+    </section>
+  );
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function arrayOfRecords(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === "object" && item !== null && !Array.isArray(item)
+      )
+    : [];
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 type RunInputFieldProps = {

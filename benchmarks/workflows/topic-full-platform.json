@@ -4,10 +4,30 @@
   "version": 1,
   "description": "检索 → 三评审并行 → 汇总 → 初始验证 → 1 轮 Self-Loop → 评审报告 → 报告终验，复用同一执行器、三层验证与可解释调度。",
   "inputs": [
-    { "name": "title", "type": "string", "required": true, "description": "论文选题名称" },
-    { "name": "field", "type": "string", "required": true, "description": "学科或研究领域" },
-    { "name": "background", "type": "string", "required": false, "description": "研究背景与已有基础" },
-    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+    {
+      "name": "title",
+      "type": "string",
+      "required": true,
+      "description": "论文选题名称"
+    },
+    {
+      "name": "field",
+      "type": "string",
+      "required": true,
+      "description": "学科或研究领域"
+    },
+    {
+      "name": "background",
+      "type": "string",
+      "required": false,
+      "description": "研究背景与已有基础"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
   ],
   "nodes": [
     {
@@ -86,8 +106,20 @@
       "kind": "verify",
       "title": "初始验证",
       "verifier": "observer-verifier",
-      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
-      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+      "verifiers": [
+        "topic-review-verifier",
+        "topic-review-auditor"
+      ],
+      "verifierModels": {
+        "topic-review-verifier": "reasoning",
+        "topic-review-auditor": "fast"
+      },
+      "rubric": [
+        "创新性",
+        "可行性",
+        "规范性",
+        "证据支撑"
+      ],
       "threshold": 0.85
     },
     {
@@ -97,7 +129,10 @@
       "maxIterations": 1,
       "while": "${verify-loop.score} < 0.85",
       "patience": 2,
-      "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+      "budget": {
+        "maxDurationMs": 120000,
+        "maxTokens": 0
+      },
       "body": [
         {
           "id": "revise",
@@ -116,11 +151,42 @@
           "kind": "verify",
           "title": "复核",
           "verifier": "observer-verifier",
-          "verifiers": ["topic-review-verifier", "topic-review-auditor"],
-          "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
+          "verifiers": [
+            "topic-review-verifier",
+            "topic-review-auditor"
+          ],
+          "verifierModels": {
+            "topic-review-verifier": "reasoning",
+            "topic-review-auditor": "fast"
+          },
+          "rubric": [
+            "创新性",
+            "可行性",
+            "规范性",
+            "证据支撑"
+          ],
           "threshold": 0.85
         }
       ]
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "draft": "${summary.output}",
+        "revised": "${revise.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "以评审汇总为基础；若提供修订稿，以修订稿为准，输出可提交的选题评审报告。必须包含小节：总体结论、必须修改项、建议修改项；至少引用两处知识库证据（使用 [1][2] 编号）；不少于 1200 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
     },
     {
       "id": "report",
@@ -128,7 +194,7 @@
       "title": "生成评审报告",
       "tool": "report.build",
       "args": {
-        "observer": "${revise.output}",
+        "observer": "${deliverable.output}",
         "score": "${verify-initial.score}",
         "title": "选题评审报告",
         "bodyLabel": "评审意见"
@@ -139,19 +205,68 @@
       "kind": "verify",
       "title": "报告终验",
       "verifier": "topic-review-verifier",
-      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
-      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
-      "required": ["结论"],
-      "minChars": 600,
+      "verifiers": [
+        "topic-review-verifier",
+        "topic-review-auditor"
+      ],
+      "verifierModels": {
+        "topic-review-verifier": "reasoning",
+        "topic-review-auditor": "fast"
+      },
+      "evidenceView": "split",
+      "rubric": [
+        "创新性",
+        "可行性",
+        "规范性",
+        "证据支撑"
+      ],
+      "required": [
+        "结论"
+      ],
+      "requiredSections": [
+        "总体结论",
+        "必须修改项",
+        "建议修改项",
+        "引用来源"
+      ],
+      "requireEvidence": true,
+      "minCitations": 2,
+      "minChars": 1200,
       "threshold": 0.85
     }
   ],
   "edges": [
-    { "from": "retrieve", "to": "reviews" },
-    { "from": "reviews", "to": "summary" },
-    { "from": "summary", "to": "verify-initial" },
-    { "from": "verify-initial", "to": "revise-loop" },
-    { "from": "revise-loop", "to": "report" },
-    { "from": "report", "to": "verify-report" }
+    {
+      "from": "retrieve",
+      "to": "reviews"
+    },
+    {
+      "from": "reviews",
+      "to": "summary"
+    },
+    {
+      "from": "summary",
+      "to": "verify-initial"
+    },
+    {
+      "from": "verify-initial",
+      "to": "revise-loop"
+    },
+    {
+      "from": "revise-loop",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    },
+    {
+      "from": "report",
+      "to": "verify-report"
+    }
   ]
 }

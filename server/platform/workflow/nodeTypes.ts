@@ -1,6 +1,12 @@
 import type { NodeKind } from "../types.js";
+import { getModelCatalog } from "../models/catalog.js";
 
 export const NODE_TYPE_CONTRACT_VERSION = 1;
+
+const MODEL_OPTIONS = getModelCatalog().map((profile) => profile.id);
+const MODEL_OPTION_LABELS = Object.fromEntries(
+  getModelCatalog().map((profile) => [profile.id, `${profile.label}（${profile.costTier}）`])
+);
 
 export type NodeFieldType = "text" | "textarea" | "number" | "boolean" | "json" | "list" | "select";
 
@@ -99,6 +105,60 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         help: "列出所选 Agent 的版本快照；留空跟随最新版。"
       },
       { key: "prompt", label: "附加提示词", type: "textarea", supportsRefs: true, placeholder: "围绕 ${input.topic} 生成任务初稿。" },
+      {
+        key: "model",
+        label: "节点模型覆盖",
+        type: "select",
+        options: MODEL_OPTIONS,
+        optionLabels: MODEL_OPTION_LABELS,
+        help: "优先级：节点模型 → Agent 记录的 model → 平台默认；仅 live 模式生效，解析结果写入步骤 trace。"
+      },
+      {
+        key: "outputFormat",
+        label: "输出格式",
+        type: "select",
+        defaultValue: "text",
+        options: ["text", "json"],
+        optionLabels: { text: "文本", json: "结构化 JSON" },
+        help: "JSON 模式会解析并校验 Agent 输出；下游可用 ${节点.output.字段} 直接引用。"
+      },
+      {
+        key: "outputContract",
+        label: "输出契约",
+        type: "json",
+        placeholder: "{\"required\":[\"rootCause\",\"action\"],\"enums\":{\"action\":[\"rewrite_agent\",\"swap_agent\",\"swap_model\"]}}",
+        help: "JSON 模式生效：required 为必填字段，enums 限定枚举取值；不合法会直接判定该步失败。"
+      },
+      {
+        key: "loopRole",
+        label: "循环角色",
+        type: "select",
+        options: ["diagnose", "revise"],
+        optionLabels: { diagnose: "诊断（不参与换 Agent）", revise: "修订（调度目标）" },
+        help: "仅循环体有意义：诊断 Agent 只分析问题，修订 Agent 才会被 Self-Loop 换 Agent 策略覆盖。"
+      },
+      {
+        key: "promoteToAgent",
+        label: "补丁晋升目标",
+        type: "text",
+        placeholder: "analysis-planner",
+        help: "诊断 Agent 专用：验证得分提升后，把模型生成的 promptPatch 写入该 Agent 的新版本；未提升则不写入。"
+      },
+      {
+        key: "capabilities",
+        label: "节点能力要求",
+        type: "list",
+        placeholder: "教学设计\n学情分析",
+        help: "每行一个能力标签；留空时继承所选 Agent 的能力标签。填写后调度按节点任务要求匹配候选 Agent。"
+      },
+      {
+        key: "toolCalling",
+        label: "工具调用",
+        type: "select",
+        options: ["true"],
+        optionLabels: { true: "开启" },
+        help: "留空为关闭；开启后 Agent 会在输出前自主调用其声明的知识库 / MCP 工具，最多 4 轮，工具参数由模型生成并记录到 trace。"
+      },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "键值对，值支持 ${节点.字段} 引用。" }
     ],
     blocks: []
@@ -249,6 +309,76 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
     blocks: []
   },
   {
+    kind: "clarify",
+    label: "意图澄清节点",
+    description:
+      "读取本次运行输入，先拆解任务类型、目标、约束与歧义；存在高影响歧义时可暂停人工澄清，再输出可执行的结构化 Prompt 与改写记录。",
+    shape: "node",
+    accent: "#d946ef",
+    fields: [
+      {
+        key: "prompt",
+        label: "领域提示",
+        type: "textarea",
+        supportsRefs: true,
+        placeholder: "这是经营分析任务，关注退款口径与区域归因。",
+        help: "可选的额外约束或领域背景，支持 ${input.x} 引用；留空时只依据本次运行输入。"
+      },
+      {
+        key: "model",
+        label: "分析模型",
+        type: "select",
+        options: MODEL_OPTIONS,
+        optionLabels: MODEL_OPTION_LABELS,
+        help: "留空使用平台默认模型；分析用的是轻量模型，不参与后续调度。"
+      },
+      {
+        key: "clarifyOn",
+        label: "暂停条件",
+        type: "select",
+        defaultValue: "high",
+        options: ["high", "any", "never"],
+        optionLabels: { high: "仅高影响歧义", any: "任何歧义", never: "不暂停" },
+        help: "演示建议 high：只有缺失信息会改变交付结果时才暂停，避免拖慢主线。"
+      },
+      {
+        key: "maxQuestions",
+        label: "澄清问题上限",
+        type: "number",
+        defaultValue: 2,
+        help: "1 到 3；超过上限的歧义只写入记录，不阻塞运行。"
+      },
+      {
+        key: "assignee",
+        label: "澄清人/角色",
+        type: "text",
+        placeholder: "需求提出人",
+        help: "仅作展示与记录，当前版本不做权限校验。"
+      },
+      {
+        key: "timeoutMs",
+        label: "澄清超时（毫秒）",
+        type: "number",
+        placeholder: "默认 1800000（30 分钟）",
+        help: "超时未补充则运行失败；范围 1000 到 86400000。"
+      },
+      {
+        key: "stubOutput",
+        label: "离线夹具",
+        type: "json",
+        help: "仅 stub 模式：可强制 needsClarification 或指定 rewrittenPrompt，用于离线演练澄清分支。"
+      },
+      {
+        key: "inputs",
+        label: "输入映射",
+        type: "json",
+        supportsRefs: true,
+        help: "留空时默认读取本次运行输入；可覆盖 request 字段或补充领域上下文。"
+      }
+    ],
+    blocks: []
+  },
+  {
     kind: "template",
     label: "文本模板节点",
     description: "用 ${节点.字段} 组装确定性文本，不调用模型；适合拼接报告、提示词或交付物。",
@@ -377,6 +507,14 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
     accent: "#ef4444",
     fields: [
       { key: "verifier", label: "主验证器 ID", type: "select", required: true, placeholder: "observer-verifier" },
+      {
+        key: "model",
+        label: "验证器模型",
+        type: "select",
+        options: MODEL_OPTIONS,
+        optionLabels: MODEL_OPTION_LABELS,
+        help: "留空时依次取验证 Agent 的 model、PLATFORM_VERIFY_MODEL、平台默认；建议指向独立模型以避免自评。"
+      },
       { key: "rubric", label: "评分维度", type: "list", placeholder: "目标达成 / 互动覆盖 / 证据支撑" },
       { key: "threshold", label: "通过阈值", type: "number", defaultValue: 0.8, help: "0 到 1。" },
       {
@@ -416,8 +554,8 @@ export const NODE_TYPE_SPECS: NodeTypeSpec[] = [
         key: "checks",
         label: "数值核对",
         type: "json",
-        placeholder: "[{\"type\":\"number_match\",\"tolerance\":0.01}]",
-        help: "规则层：产物中的每个数字都必须能在 reference 里找到；tolerance 为相对容差，0–1。"
+        placeholder: "[{\"type\":\"number_match\",\"tolerance\":0.01,\"anchors\":[\"毛利额\",\"毛利率\"]}]",
+        help: "规则层：tolerance 为相对容差（0–1）。配置 anchors 时只核对各指标标签后的首个数字，忽略序号与派生数字；不配置时产物中的每个数字都必须能在 reference 里找到。"
       },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "可不填 artifact，默认验证最近一个非验证节点的输出；checks 需要 reference。" }
     ],

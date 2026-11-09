@@ -1,23 +1,45 @@
 {
   "id": "business-analysis-v1",
-  "name": "经营数据分析流水线",
+  "name": "经营数据分析流水线（模型自愈）",
   "version": 1,
-  "description": "销售数据概况 → 区域与品类并行分析 → 毛利初稿 → 报告 → number_match 验证 → 净额口径重算 → 复核通过；首轮故意使用毛销售额，用于演示口径错误的拦截与修正。",
+  "description": "规划 Agent 按用户口径选择 revenueBasis → 区域/品类并行分析 → 报告 Agent 成稿 → 数值验证拦截 → 诊断 Agent 输出结构化根因与修正补丁 → 按模型选择的口径重算并由报告 Agent 重写 → 再验证；有效补丁晋升为规划 Agent 新版本。",
+  "knowledgeBaseIds": ["business-metrics-demo"],
   "inputs": [
-    { "name": "question", "type": "string", "required": false, "description": "本次经营问题，例如“本月各区域与品类的毛利表现如何？”" },
-    { "name": "source", "type": "string", "required": false, "description": "data/demo 下的销售明细路径，默认 data/demo/sales.csv" }
+    {
+      "name": "question",
+      "type": "string",
+      "required": false,
+      "description": "本次经营问题；演示建议：按订单销售额口径看一下本期区域与品类毛利，为什么下滑？"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "required": false,
+      "description": "data/demo 下的销售明细路径，默认 data/demo/sales.csv"
+    }
   ],
   "nodes": [
     {
       "id": "plan",
       "kind": "agent",
-      "title": "分析规划",
-      "agent": "analysis-planner",
+      "title": "分析规划（模型选择口径）",
+      "agent": "business-planner",
+      "outputFormat": "json",
+      "outputContract": {
+        "required": ["revenueBasis", "rationale", "dimensions", "acceptance"],
+        "enums": { "revenueBasis": ["gross", "net"] }
+      },
+      "stubOutput": {
+        "revenueBasis": "gross",
+        "rationale": "用户明确要求按订单销售额口径，故选择 gross。",
+        "dimensions": ["region", "product"],
+        "acceptance": "毛利额与毛利率可被数值验证复算。"
+      },
       "inputs": {
         "question": "${input.question}",
         "source": "${input.source}"
       },
-      "prompt": "围绕「${input.question}」制定分析计划：明确销售额口径、区域与品类两个分析维度，以及毛利额和毛利率的验收标准。"
+      "prompt": "围绕「${input.question}」制定分析计划。用户明确指定了口径时优先遵循；在 rationale 中说明选择依据。只输出 JSON，不要输出 Markdown。"
     },
     {
       "id": "profile",
@@ -57,35 +79,43 @@
         "region": "${region.output}",
         "product": "${product.output}"
       },
-      "prompt": "基于区域与品类汇总，指出增长来源、拖累项与异常波动；只引用工具返回的数字。"
+      "prompt": "基于区域与品类汇总，指出增长来源、拖累项与异常波动；只引用工具返回的数字，不要自行估算。"
+    },
+    {
+      "id": "data-pack",
+      "kind": "template",
+      "title": "报告数据包",
+      "template": "## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 归因分析\n${analysis.output}",
+      "inputs": {
+        "profile": "${profile.output}",
+        "region": "${region.output}",
+        "product": "${product.output}",
+        "analysis": "${analysis.output}"
+      }
     },
     {
       "id": "metrics",
       "kind": "tool",
-      "title": "毛利核算（初稿·毛额口径）",
+      "title": "毛利核算（按规划口径）",
       "tool": "mcp.data-analysis.metric_calc",
       "args": {
         "source": "${input.source}",
-        "revenueBasis": "gross"
+        "revenueBasis": "${plan.output.revenueBasis}"
       }
     },
     {
-      "id": "review",
-      "kind": "agent",
-      "title": "经营复核",
-      "agent": "business-reviewer",
-      "inputs": {
-        "profile": "${profile.output}",
-        "analysis": "${analysis.output}",
-        "metrics": "${metrics.output}"
-      },
-      "prompt": "核对毛利核算的销售额口径：退款必须从销售额中扣除。若发现毛销售额口径导致高估，请明确指出并给出重算要求。"
-    },
-    {
       "id": "report",
-      "kind": "template",
-      "title": "生成分析报告",
-      "template": "# 经营分析报告\n\n## 结论\n本期销售按净额口径核算：毛利额与毛利率以扣除退款后的净销售额为基准。\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 毛利核算\n${metrics.output}\n\n## 口径说明\n退款需从销售额中扣除，毛利额 = 净销售额 − 销货成本。"
+      "kind": "agent",
+      "title": "经营报告成稿",
+      "agent": "business-reporter",
+      "inputs": {
+        "question": "${input.question}",
+        "dataPack": "${data-pack.output}",
+        "profile": "${profile.output}",
+        "metrics": "${metrics.output}",
+        "plan": "${plan.output}"
+      },
+      "prompt": "基于输入撰写经营分析报告，包含：结论、数据概况、区域表现、品类表现、毛利核算、口径说明、行动建议。硬性要求：① 毛利核算部分必须逐字抄写 metrics 中的“销售额口径、销售额基准、销货成本、毛利额、毛利率”，不得改写数字或重新计算；② 数据概况部分逐字抄写 profile 中的订单数、销售额（毛额）、退款额、净销售额、销货成本、毛利额、毛利率；③ 区域与品类只引用 dataPack 中的数字；④ 不要使用 [1] 这类引用编号，引用规则时写来源名称；⑤ 不要写“三条建议”这类含数字的序号，使用项目符号或“建议一/建议二”；⑥ 不得自行计算或写入占比、环比、单项毛利率等派生数字，只逐字引用工具输出中的数字。"
     },
     {
       "id": "reference-metrics",
@@ -113,7 +143,13 @@
       "threshold": 0.7,
       "expectedKeywords": ["毛利额", "退款", "区域", "品类"],
       "minChars": 200,
-      "checks": [{ "type": "number_match", "tolerance": 0.01 }],
+      "checks": [
+        {
+          "type": "number_match",
+          "tolerance": 0.01,
+          "anchors": ["销售额基准", "销货成本", "毛利额", "毛利率", "净销售额", "退款额"]
+        }
+      ],
       "inputs": {
         "artifact": "${report.output}",
         "reference": "${reference-data.output}"
@@ -122,30 +158,80 @@
     {
       "id": "revise-loop",
       "kind": "loop",
-      "title": "毛利口径修正",
+      "title": "模型诊断与口径自愈",
       "maxIterations": 2,
       "while": "${verify-loop.score} < 0.7",
       "patience": 2,
       "budget": {
-        "maxDurationMs": 120000,
+        "maxDurationMs": 180000,
         "maxTokens": 0
       },
       "body": [
         {
+          "id": "retrieve-rule",
+          "kind": "knowledge",
+          "title": "检索口径规则",
+          "query": "销售额 退款 净销售额 毛利额 毛利率 计算口径",
+          "knowledgeBaseIds": ["business-metrics-demo"],
+          "topK": 3
+        },
+        {
+          "id": "diagnose",
+          "kind": "agent",
+          "title": "诊断根因与修正补丁",
+          "agent": "business-diagnostician",
+          "loopRole": "diagnose",
+          "promoteToAgent": "business-planner",
+          "toolCalling": true,
+          "outputFormat": "json",
+          "outputContract": {
+            "required": ["rootCause", "evidence", "action", "revenueBasis", "retrievalQuery", "promptPatch", "confidence"],
+            "enums": {
+              "action": ["rewrite_agent", "swap_agent", "swap_model", "retrieve"],
+              "revenueBasis": ["gross", "net"]
+            }
+          },
+          "stubOutput": {
+            "rootCause": "指标使用毛销售额口径，未扣除退款，导致毛利额与毛利率高估。",
+            "evidence": ["验证问题指出数值与净额口径基准不一致", "口径规则要求退款必须从销售额中扣除"],
+            "action": "rewrite_agent",
+            "revenueBasis": "net",
+            "retrievalQuery": "退款 净销售额 毛利额 计算口径",
+            "promptPatch": "当数据包含退款字段时，revenueBasis 必须选择 net：净销售额 = 毛销售额 − 退款，毛利额 = 净销售额 − 销货成本；即使用户要求按订单销售额口径，也应在报告中说明差异并采用净额口径。",
+            "confidence": 0.9
+          },
+          "inputs": {
+            "artifact": "${loop.artifact.output}",
+            "issues": "${loop.issues}",
+            "question": "${input.question}",
+            "analysis": "${analysis.output}"
+          },
+          "prompt": "先自主调用工具核实事实，再定位根因：① 调用 knowledge_search 检索退款、净销售额与毛利额的口径规则；② 调用 profile 获取订单数、毛销售额、退款额、净销售额、销货成本、毛利额与毛利率；③ 分别用 metric_calc 计算 gross 与 net 两种口径，比较毛利额与毛利率差异。验收口径以工具返回的口径规则和验证问题为准，不以用户原始问法为准：只要数据含退款字段，revenueBasis 就必须为 net，即使问题写着“按订单销售额口径”，也要在报告中说明用户口径与合规口径的差异并采用 net。evidence 必须引用工具返回的事实。不得猜测或引用未提供的参考答案。只输出 JSON：rootCause、evidence、action、revenueBasis、retrievalQuery、promptPatch、confidence。promptPatch 必须是一条可复用的口径规则，不得包含任何具体金额或答案数字。"
+        },
+        {
           "id": "recalc",
           "kind": "tool",
-          "title": "按净额口径重算毛利",
+          "title": "按模型选择的口径重算毛利",
           "tool": "mcp.data-analysis.metric_calc",
           "args": {
             "source": "${input.source}",
-            "revenueBasis": "net"
+            "revenueBasis": "${diagnose.output.revenueBasis}"
           }
         },
         {
-          "id": "rebuild",
-          "kind": "template",
-          "title": "按正确口径重建报告",
-          "template": "# 经营分析报告（修订版）\n\n## 结论\n本期销售按净额口径核算：毛利额与毛利率以扣除退款后的净销售额为基准。\n\n## 数据概况\n${profile.output}\n\n## 区域表现\n${region.output}\n\n## 品类表现\n${product.output}\n\n## 毛利核算\n${recalc.output}\n\n## 口径说明\n退款需从销售额中扣除，毛利额 = 净销售额 − 销货成本。"
+          "id": "report-fixed",
+          "kind": "agent",
+          "title": "按诊断补丁重写报告",
+          "agent": "business-reporter",
+          "inputs": {
+            "dataPack": "${data-pack.output}",
+            "profile": "${profile.output}",
+            "analysis": "${analysis.output}",
+            "metrics": "${recalc.output}",
+            "diagnosis": "${diagnose.output}",
+            "rule": "${retrieve-rule.output}"
+          },
+          "prompt": "按诊断结论重写经营分析报告。诊断根因：${diagnose.output.rootCause}。必须执行的口径补丁：${diagnose.output.promptPatch}。硬性要求：① 毛利核算部分逐字抄写 metrics 中的“销售额口径、销售额基准、销货成本、毛利额、毛利率”；② 数据概况逐字抄写 profile 中的订单数、销售额（毛额）、退款额、净销售额、销货成本、毛利额、毛利率；③ 区域与品类只引用 dataPack 中的数字；④ 不要把诊断 JSON 的 confidence、evidence 数字写进报告；⑤ 不要使用 [1] 引用编号或含数字的序号；⑥ 不得自行计算或写入占比、环比、单项毛利率等派生数字。"
         },
         {
           "id": "verify-loop",
@@ -157,7 +243,13 @@
           "threshold": 0.7,
           "expectedKeywords": ["毛利额", "退款", "区域", "品类"],
           "minChars": 200,
-          "checks": [{ "type": "number_match", "tolerance": 0.01 }],
+          "checks": [
+            {
+              "type": "number_match",
+              "tolerance": 0.01,
+              "anchors": ["销售额基准", "销货成本", "毛利额", "毛利率", "净销售额", "退款额"]
+            }
+          ],
           "inputs": {
             "reference": "${reference-data.output}"
           }
@@ -168,7 +260,7 @@
       "id": "report-final",
       "kind": "template",
       "title": "输出修订报告",
-      "template": "${rebuild.output}"
+      "template": "${report-fixed.output}"
     },
     {
       "id": "end",
@@ -181,9 +273,9 @@
     { "from": "plan", "to": "profile" },
     { "from": "profile", "to": "dimensions" },
     { "from": "dimensions", "to": "analysis" },
-    { "from": "analysis", "to": "metrics" },
-    { "from": "metrics", "to": "review" },
-    { "from": "review", "to": "report" },
+    { "from": "analysis", "to": "data-pack" },
+    { "from": "data-pack", "to": "metrics" },
+    { "from": "metrics", "to": "report" },
     { "from": "report", "to": "reference-metrics" },
     { "from": "reference-metrics", "to": "reference-data" },
     { "from": "reference-data", "to": "verify-initial" },

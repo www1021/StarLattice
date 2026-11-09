@@ -285,6 +285,15 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
       };
     case "agent":
       return { id, kind, title: "新 Agent 节点", agent, inputs: {} };
+    case "clarify":
+      return {
+        id,
+        kind,
+        title: "新意图澄清节点",
+        clarifyOn: "high",
+        maxQuestions: 2,
+        inputs: {}
+      };
     case "llm":
       return {
         id,
@@ -374,6 +383,9 @@ export function createLeafNode(kind: NodeKind, id: string): WorkflowNode {
       prompt: "分析 ${input.topic}，输出三条可执行建议。",
       thinking: true
     };
+  }
+  if (kind === "clarify") {
+    return { id, kind, title: "新意图澄清步骤", clarifyOn: "high", maxQuestions: 2 };
   }
   if (kind === "template") {
     return { id, kind, title: "新文本模板步骤", template: "${input.topic}" };
@@ -484,6 +496,7 @@ export function selfLoopActionLabel(action: string): string {
   const labels: Record<string, string> = {
     rewrite: "重写输出",
     swap_agent: "换 Agent",
+    swap_model: "换模型",
     retrieve: "补检索"
   };
   return labels[action] ?? action;

@@ -87,6 +87,10 @@
       "title": "初始验证",
       "verifier": "observer-verifier",
       "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+      "verifierModels": {
+        "topic-review-verifier": "reasoning",
+        "topic-review-auditor": "fast"
+      },
       "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
       "threshold": 0.85
     },
@@ -117,6 +121,10 @@
           "title": "复核",
           "verifier": "observer-verifier",
           "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+          "verifierModels": {
+            "topic-review-verifier": "reasoning",
+            "topic-review-auditor": "fast"
+          },
           "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
           "threshold": 0.85
         }
@@ -140,9 +148,17 @@
       "title": "报告终验",
       "verifier": "topic-review-verifier",
       "verifiers": ["topic-review-verifier", "topic-review-auditor"],
+      "verifierModels": {
+        "topic-review-verifier": "reasoning",
+        "topic-review-auditor": "fast"
+      },
+      "evidenceView": "split",
       "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
       "required": ["结论"],
-      "minChars": 600,
+      "requiredSections": ["总体结论", "必须修改项", "建议修改项", "引用来源"],
+      "requireEvidence": true,
+      "minCitations": 2,
+      "minChars": 1200,
       "threshold": 0.85
     }
   ],

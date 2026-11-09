@@ -15,7 +15,13 @@ if (files.length === 0) {
 
 const dataset = JSON.parse(readFileSync(path.join(root, "data", "eval", "tasks.json"), "utf8"));
 const expectedTaskIds = new Set(dataset.tasks.map((task) => task.id));
-const expectedLabels = new Set(["A-单Agent", "B-固定流水线", "C-完整平台"]);
+const expectedLabels = new Set([
+  "A0-历史单Agent",
+  "A1-公平单Agent",
+  "B-固定流水线",
+  "C-完整平台",
+  "C−loop-去自循环"
+]);
 const rows = [];
 const seen = new Set();
 
@@ -65,11 +71,14 @@ if (extraTasks.length > 0) {
 }
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const startedAt = Number(process.env.BENCH_SUITE_STARTED_AT || Date.now());
+// 合并分片不推算墙钟耗时：只有在显式提供起始时间时才写，否则报告显示“未记录”。
+const startedAt = Number(process.env.BENCH_SUITE_STARTED_AT || 0) || undefined;
 const meta = {
   startedAt,
+  finishedAt: Number(process.env.BENCH_SUITE_FINISHED_AT || 0) || undefined,
   baseUrl: (process.env.BENCH_BASE_URL || "http://127.0.0.1:8790").replace(/\/$/, ""),
-  external: process.env.BENCH_EXTERNAL === "1"
+  external: process.env.BENCH_EXTERNAL === "1",
+  concurrency: Number(process.env.BENCH_CONCURRENCY || 1)
 };
 const summary = summarize({ results: { results: rows } }, meta);
 mkdirSync(resultsDir, { recursive: true });

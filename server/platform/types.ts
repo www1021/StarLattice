@@ -3,6 +3,7 @@ export const NODE_KINDS = [
   "end",
   "agent",
   "llm",
+  "clarify",
   "knowledge",
   "tool",
   "http",
@@ -35,12 +36,35 @@ export type NodeBase = {
   inputs?: Record<string, unknown>;
 };
 
+export type AgentOutputFormat = "text" | "json";
+
+/** JSON 输出的最小契约：缺失字段或枚举越界时直接判定本次 Agent 输出无效。 */
+export type AgentOutputContract = {
+  required?: string[];
+  enums?: Record<string, string[]>;
+};
+
 export type AgentNode = NodeBase & {
   kind: "agent";
   agent: string;
   /** 指定 Agent 版本；留空时使用注册中心里的最新版本。 */
   agentVersion?: number;
+  /** 节点级能力要求；填写后调度按这些能力找候选，留空继承所选 Agent 的能力标签。 */
+  capabilities?: string[];
   prompt?: string;
+  /** json 模式下执行器会解析并校验 output，下游可用 ${节点.output.字段} 直接引用。 */
+  outputFormat?: AgentOutputFormat;
+  outputContract?: AgentOutputContract;
+  /** 循环体内的角色：诊断 Agent 不参与「换 Agent」覆盖，修订 Agent 才是调度目标。 */
+  loopRole?: "diagnose" | "revise";
+  /** 诊断 Agent 专用：验证提升后把模型生成的 promptPatch 持久化到该 Agent 的新版本。 */
+  promoteToAgent?: string;
+  /** 仅 stub 模式使用的离线契约夹具；live 模式始终以模型输出为准。 */
+  stubOutput?: Record<string, unknown>;
+  /** 开启后 Agent 可在输出前自主调用已声明的知识库 / MCP 工具，最多消耗有限轮次。 */
+  toolCalling?: boolean;
+  /** 节点级模型覆盖，优先级高于 Agent 注册记录里的 model；取模型目录中的逻辑 id。 */
+  model?: string;
 };
 
 /** 流程入口：把工作流输入原样作为产物，不覆盖最近一次真实产物。 */
@@ -91,6 +115,54 @@ export type LlmNode = NodeBase & {
   maxTokens?: number;
 };
 
+export type ClarifyImpact = "high" | "medium" | "low";
+
+export type ClarifyAmbiguity = {
+  slot: string;
+  question: string;
+  impact: ClarifyImpact;
+};
+
+/** 意图分析器的结构化产物；平台据此决定是否暂停澄清，并驱动 Prompt 重写。 */
+export type IntentAnalysis = {
+  taskType: string;
+  goal: string;
+  audience?: string;
+  deliverable: string;
+  constraints: string[];
+  ambiguities: ClarifyAmbiguity[];
+  assumptions: string[];
+  needsClarification: boolean;
+  confidence: number;
+};
+
+export type ClarifyAnswer = {
+  questions: string[];
+  answer: string;
+  actor?: string;
+  askedAt: string;
+};
+
+/**
+ * 意图澄清节点：先理解模糊需求，必要时暂停人工澄清，再输出可执行的结构化 Prompt。
+ * 与 llm 节点的区别是它带平台固定的分析/改写协议，不是任意一次模型思考。
+ */
+export type ClarifyNode = NodeBase & {
+  kind: "clarify";
+  /** 领域提示或额外约束，支持 ${input.x} 引用；留空时只依据本次运行输入。 */
+  prompt?: string;
+  model?: string;
+  /** high=存在高影响歧义才暂停；any=任何歧义都暂停；never=只改写不暂停。 */
+  clarifyOn?: "high" | "any" | "never";
+  /** 暂停时展示的问题上限，1–3，默认 2。 */
+  maxQuestions?: number;
+  assignee?: string;
+  /** 暂停等待超时；留空使用平台默认值。 */
+  timeoutMs?: number;
+  /** 仅 stub 模式使用的离线夹具；可强制 needsClarification 以便演练澄清分支。 */
+  stubOutput?: Record<string, unknown>;
+};
+
 /** 确定性文本模板，支持 ${节点.字段} 变量，不产生模型调用。 */
 export type TemplateNode = NodeBase & {
   kind: "template";
@@ -137,6 +209,11 @@ export type VerifyCheck = {
   type: "number_match";
   /** 相对容差，范围 0–1；留空表示精确匹配。 */
   tolerance?: number;
+  /**
+   * 指标锚点：只核对产物中「标签后第一个数字」是否与对照数据一致。
+   * 留空表示严格模式——产物里的每个数字都必须能在对照数据中找到。
+   */
+  anchors?: string[];
 };
 
 export type VerifyNode = NodeBase & {
@@ -149,7 +226,17 @@ export type VerifyNode = NodeBase & {
   minChars?: number;
   verifiers?: string[];
   requireEvidence?: boolean;
+  /** 规则层：正文至少要出现多少条正文引用；设置后引用缺失会成为硬性缺陷。 */
+  minCitations?: number;
+  /** 规则层：正文必须出现的小节标题（如“总体结论”“引用来源”）。 */
+  requiredSections?: string[];
+  /** 逐验证器模型覆盖，优先于节点 model；用于给不同验证器分配不同上游模型。 */
+  verifierModels?: Record<string, string>;
+  /** 证据视图：pool=完整检索池；cited=仅产物实际引用的证据；split=第一名看 pool、其余看 cited。 */
+  evidenceView?: "pool" | "cited" | "split";
   checks?: VerifyCheck[];
+  /** 验证器独立模型；留空时依次取验证 Agent 的 model、PLATFORM_VERIFY_MODEL、平台默认。 */
+  model?: string;
 };
 
 export type ApproveNode = NodeBase & {
@@ -213,6 +300,7 @@ export type WorkflowNode =
   | EndNode
   | AgentNode
   | LlmNode
+  | ClarifyNode
   | KnowledgeNode
   | ToolNode
   | HttpNode
@@ -230,6 +318,7 @@ export type LeafNode =
   | EndNode
   | AgentNode
   | LlmNode
+  | ClarifyNode
   | KnowledgeNode
   | ToolNode
   | HttpNode
@@ -259,6 +348,8 @@ export type WorkflowDefinition = {
   knowledgeBaseIds?: string[];
   /** 运行期调度池限定：设置后只在该团队的 Agent 中选择执行者。 */
   teamId?: string;
+  /** 运行前调度模式：planner 为默认打分指派；static 用于消融，直接使用 DSL 声明的 Agent。 */
+  schedulerMode?: "planner" | "static";
 };
 
 export type ComparisonOperator = "<" | "<=" | ">" | ">=" | "==" | "!=";
@@ -363,6 +454,143 @@ export type RunMode = "stub" | "live";
 
 export type StepStatus = "pending" | "running" | "waiting" | "succeeded" | "failed" | "skipped";
 
+/** 调度租约只记录真实在飞的任务，用于负载、心跳和超时回收，不阻塞执行。 */
+export type SchedulerLeaseStatus = "active" | "released" | "expired";
+
+export type SchedulerLease = {
+  id: string;
+  runId: string;
+  stepId?: string;
+  /** 队列任务 id；同一个任务同时只允许一条 active 租约。 */
+  taskId?: string;
+  taskPath: string;
+  agentId: string;
+  workerId: string;
+  status: SchedulerLeaseStatus;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  releasedAt?: string;
+  releaseReason?: string;
+};
+
+/** 顶层运行时就绪队列：记录优先级、排队时长与最终去向，供监控页解释调度决策。 */
+export type SchedulerQueueStatus =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled"
+  | "expired";
+
+export type SchedulerQueueEntry = {
+  id: string;
+  runId: string;
+  nodeId: string;
+  path: string;
+  /** 关键路径基础优先级，保留给旧监控页与兼容读取。 */
+  priority: number;
+  status: SchedulerQueueStatus;
+  enqueuedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  waitMs?: number;
+  reason?: string;
+  /** 执行所需能力，例如 model / io / stateful。 */
+  requiredCapability?: string;
+  /** 运行优先级分层。 */
+  priorityClass: number;
+  /** 运行时最终排序分（基础分 + 老化 + deadline）。 */
+  effectivePriority: number;
+  /** 任务画像快照。 */
+  profile?: Record<string, unknown>;
+  /** 指派到的 Agent。 */
+  agentId?: string;
+  /** 已领取该任务的 Worker。 */
+  claimedBy?: string;
+  /** 领取到期时间；到期未开工视为 Worker 失联。 */
+  claimExpiresAt?: string;
+  attempts: number;
+  maxAttempts: number;
+  deadlineAt?: string;
+};
+
+export type SchedulerWorkerStatus = "starting" | "idle" | "busy" | "draining" | "dead";
+
+export type SchedulerWorker = {
+  id: string;
+  host: string;
+  pid?: number;
+  slot?: number;
+  /** model / io / stateful / inline。 */
+  lane: string;
+  capabilities: string[];
+  capacity: number;
+  status: SchedulerWorkerStatus;
+  startedAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  stoppedAt?: string;
+  stopReason?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type SchedulerAttemptStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "worker_lost"
+  | "expired";
+
+export type SchedulerAttempt = {
+  id: string;
+  queueId: string;
+  attempt: number;
+  workerId?: string;
+  agentId?: string;
+  status: SchedulerAttemptStatus;
+  leaseId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  waitMs?: number;
+  error?: string;
+  trace?: Record<string, unknown>;
+};
+
+export type RunNodeStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+export type RunNodeRecord = {
+  runId: string;
+  nodeId: string;
+  path: string;
+  status: RunNodeStatus;
+  priority: number;
+  readyAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  attempts: number;
+  error?: string;
+};
+
+export type RunCheckpoint = {
+  id: string;
+  runId: string;
+  sequence: number;
+  state: Record<string, unknown>;
+  createdAt: string;
+};
+
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 
 export type ApprovalRecord = {
@@ -402,6 +630,22 @@ export type RunRecord = {
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
+  /** 本次运行使用的冻结发布；为空表示直接读取实时注册中心。 */
+  releaseId?: string;
+  /** 演化实验 id（门禁评测 / 金丝雀）。 */
+  experimentId?: string;
+  /** 实验分组：control 使用基线发布，treatment 使用候选发布。 */
+  arm?: string;
+  /** 调度优先级分层；0 为默认。 */
+  priorityClass?: number;
+  /** 截止时间；调度器据此计算 deadline 加成。 */
+  deadlineAt?: string;
+  /** 取消请求写入数据库，跨进程调度器都能看到。 */
+  cancelRequestedAt?: string;
+  /** 孤儿恢复次数。 */
+  resumeCount?: number;
+  /** 调度状态：queued / running / recovering 等。 */
+  schedulerState?: string;
 };
 
 export type StepRecord = {
@@ -605,6 +849,9 @@ export type LoopIterationRecord = {
   scoreBefore?: number;
   scoreAfter?: number;
   action: string;
+  /** Self-Loop 换模型时记录切换前后的逻辑模型 id。 */
+  modelBefore?: string;
+  modelAfter?: string;
   changes: string[];
   createdAt: string;
 };

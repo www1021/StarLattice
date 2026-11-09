@@ -1,0 +1,104 @@
+{
+  "id": "bench-single-agent-fair",
+  "name": "基线 A1 · 公平单 Agent",
+  "version": 1,
+  "description": "与 B/C 使用同一知识库检索、同一交付契约与同一最终整理 Agent；只保留一个执行 Agent，不含多角色演练、验证与自循环。",
+  "inputs": [
+    {
+      "name": "topic",
+      "type": "string",
+      "required": true,
+      "description": "训练课题"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "年级"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.topic} ${input.subject} ${input.grade}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "lesson-plan",
+      "kind": "agent",
+      "title": "教案生成",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "subject": "${input.subject}",
+        "grade": "${input.grade}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "围绕 ${input.topic}（${input.grade}${input.subject}）生成一份可直接试讲的教案，并标注知识库引用。必须包含小节：教学目标、活动流程、分层练习、引用来源；引用使用 [1][2] 编号；不少于 800 字。"
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "draft": "${lesson-plan.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "把教案初稿整理为最终可交付教案。必须包含小节：教学目标、活动流程、分层练习、课堂演练分析；引用知识库证据使用 [1][2] 编号；不少于 800 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成训练报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${deliverable.output}",
+        "title": "教学设计报告"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "retrieve",
+      "to": "lesson-plan"
+    },
+    {
+      "from": "lesson-plan",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    }
+  ]
+}

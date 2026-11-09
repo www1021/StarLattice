@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { PlatformError, type McpCallResult, type McpServerConfig, type McpServerView, type McpServerWrite, type McpToolInfo, type ToolRecord } from "../types.js";
 import type { PlatformStateStore } from "../runtime/stateStore.js";
 import { McpClient, McpProtocolError, type McpClientConfig, type McpConnectionInfo } from "./client.js";
+import { isWorkflowToolEndpoint } from "./workflowTools.js";
 
 export type McpConnection = Pick<McpClient, "listTools" | "callTool" | "close">;
 
@@ -52,6 +53,7 @@ export class McpManager {
   private readonly clients = new Map<string, Promise<{ client: McpConnection; info: McpConnectionInfo }>>();
   private readonly connect: McpConnect;
   private readonly timeoutMs: number;
+  private workflowRunner?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
 
   constructor(private readonly store: PlatformStateStore, options: McpManagerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? (Number(process.env.PLATFORM_MCP_TIMEOUT_MS) || 20_000);
@@ -168,7 +170,20 @@ export class McpManager {
     }
   }
 
+  /** 工作流工具由平台执行器内联运行，不走外部 MCP 连接池。 */
+  setWorkflowRunner(
+    runner: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>
+  ) {
+    this.workflowRunner = runner;
+  }
+
   callToolRecord(tool: ToolRecord, args: Record<string, unknown>): Promise<McpCallResult> {
+    if (isWorkflowToolEndpoint(tool.endpoint)) {
+      if (!this.workflowRunner) {
+        throw new PlatformError("工作流工具执行器尚未接入，无法执行该工具。", 500);
+      }
+      return this.workflowRunner(tool, args);
+    }
     const reference = parseMcpEndpoint(tool.endpoint);
     if (!reference) {
       throw new PlatformError(

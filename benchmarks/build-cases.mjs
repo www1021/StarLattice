@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { knowledgeDocumentNames } from "./knowledge-names.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -9,18 +10,32 @@ const tasksPath = path.join(root, "data", "eval", "tasks.json");
 const configPath = path.join(here, "promptfoo", "promptfooconfig.yaml");
 
 const dataset = JSON.parse(readFileSync(tasksPath, "utf8"));
-const tasks = Array.isArray(dataset.tasks) ? dataset.tasks : [];
-validate(tasks);
+const allTasks = Array.isArray(dataset.tasks) ? dataset.tasks : [];
+validate(allTasks);
+const tasks = filterTasks(allTasks);
+if (tasks.length === 0) {
+  throw new Error(`BENCH_TASK_IDS/BENCH_PATTERN 未匹配任何任务：${process.env.BENCH_TASK_IDS ?? process.env.BENCH_PATTERN}`);
+}
 
 const providers = [
   {
-    label: "A-单Agent",
+    key: "A0",
+    label: "A0-历史单Agent",
     workflows: {
       education: "bench-single-agent",
       topic: "bench-topic-single-agent"
     }
   },
   {
+    key: "A1",
+    label: "A1-公平单Agent",
+    workflows: {
+      education: "bench-single-agent-fair",
+      topic: "bench-topic-single-agent-fair"
+    }
+  },
+  {
+    key: "B",
     label: "B-固定流水线",
     workflows: {
       education: "bench-fixed-pipeline",
@@ -28,17 +43,62 @@ const providers = [
     }
   },
   {
+    key: "C",
     label: "C-完整平台",
     workflows: {
       education: "bench-full-platform",
       topic: "bench-topic-full-platform"
     }
+  },
+  {
+    key: "Cloop",
+    label: "C−loop-去自循环",
+    workflows: {
+      education: "bench-full-platform-noloop",
+      topic: "bench-topic-full-platform-noloop"
+    }
+  },
+  {
+    key: "Csingle",
+    label: "Csingle-单验证器",
+    workflows: {
+      education: "bench-full-platform-single-verifier",
+      topic: "bench-topic-full-platform-single-verifier"
+    }
+  },
+  {
+    key: "Cstatic",
+    label: "Cstatic-去调度",
+    workflows: {
+      education: "bench-full-platform-static",
+      topic: "bench-topic-full-platform-static"
+    }
+  },
+  {
+    key: "S",
+    label: "S-C-弱初稿自循环",
+    workflows: {
+      education: "bench-full-platform-stress",
+      topic: "bench-topic-full-platform-stress"
+    }
+  },
+  {
+    key: "SN",
+    label: "S-CN-弱初稿无循环",
+    workflows: {
+      education: "bench-full-platform-stress-noloop",
+      topic: "bench-topic-full-platform-stress-noloop"
+    }
   }
-];
+].filter((provider) => selectedArms().has(provider.key));
+
+if (providers.length === 0) {
+  throw new Error(`BENCH_ARMS 未匹配任何基线：${process.env.BENCH_ARMS}`);
+}
 
 const lines = [
   "# 由 benchmarks/build-cases.mjs 从 data/eval/tasks.json 生成，请勿手工编辑。",
-  `description: ${q("易师训 Agent 编排平台 · 单 Agent / 固定流水线 / 完整平台三基线对比（30 用例：教育 20 + 选题 10）")}`,
+  `description: ${q(`Agent 编排平台 · 主对照与消融臂（A0 / A1 / B / C / C−loop / Csingle / Cstatic），${tasks.length} 用例`)}`,
   "",
   "prompts:",
   `  - ${q("{{taskId}}")}`,
@@ -63,7 +123,7 @@ lines.push(
   "    - type: javascript",
   "      value: |",
   "        const result = JSON.parse(output);",
-  "        return result.success === true && result.verifyPassed !== false;",
+  "        return result.success === true && result.evalPassed === true;",
   "",
   "tests:"
 );
@@ -75,7 +135,12 @@ for (const task of tasks) {
   lines.push(`      difficulty: ${q(task.difficulty)}`);
   lines.push(`      category: ${q(task.category)}`);
   for (const [key, value] of Object.entries(task.vars)) {
-    lines.push(`      ${key}: ${q(value)}`);
+    if (Array.isArray(value)) {
+      // promptfoo 会把数组 vars 压成首元素，这里显式用 | 分隔，provider 再拆回数组。
+      lines.push(`      ${key}: ${q(value.join("|"))}`);
+    } else {
+      lines.push(`      ${key}: ${q(value)}`);
+    }
   }
 }
 
@@ -85,14 +150,57 @@ const byScenario = groupCount(tasks, (task) => task.scenario);
 const byDifficulty = groupCount(tasks, (task) => task.difficulty);
 const byCategory = groupCount(tasks, (task) => `${task.scenario}/${task.category}`);
 console.log(`评测集已生成：${tasks.length} 条 · ${configPath}`);
+console.log(`基线：${providers.map((provider) => provider.label).join(" · ")}`);
 console.log(`场景：${format(byScenario)}`);
 console.log(`难度：${format(byDifficulty)}`);
 console.log(`类型：${format(byCategory)}`);
+
+function filterTasks(list) {
+  const ids = (process.env.BENCH_TASK_IDS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (ids.length > 0) {
+    const selected = new Set(ids);
+    return list.filter((task) => selected.has(task.id));
+  }
+  if (process.env.BENCH_PATTERN) {
+    const pattern = new RegExp(process.env.BENCH_PATTERN);
+    return list.filter((task) => pattern.test(task.id));
+  }
+  return list;
+}
+
+function selectedArms() {  const raw = (process.env.BENCH_ARMS || "").trim();
+  if (!raw) {
+    return new Set(["A0", "A1", "B", "C", "Cloop"]);
+  }
+  return new Set(
+    raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const normalized = item.toLowerCase().replace(/[−-]/g, "");
+        if (normalized === "cloop" || normalized === "c-loop" || normalized === "noloop") return "Cloop";
+        if (normalized === "csingle" || normalized === "single") return "Csingle";
+        if (normalized === "cstatic" || normalized === "static") return "Cstatic";
+        if (normalized === "s" || normalized === "stress") return "S";
+        if (normalized === "sn" || normalized === "stressnoloop") return "SN";
+        return item;
+      })
+  );
+}
 
 function validate(list) {
   if (list.length === 0) {
     throw new Error("tasks.json 中没有任务");
   }
+  const knowledgeDir = path.join(here, "knowledge");
+  const knowledgeNames = new Set([
+    ...readdirSync(knowledgeDir).filter((file) => file.endsWith(".md")),
+    ...knowledgeDocumentNames.values()
+  ]);
   const ids = new Set();
   const scenarioCounts = new Map();
   const thresholds = new Set();
@@ -121,6 +229,14 @@ function validate(list) {
     }
     if (!task.vars || typeof task.vars !== "object") {
       throw new Error(`${task.id} 缺少 vars`);
+    }
+    if (!Array.isArray(task.vars.relevantDocs) || task.vars.relevantDocs.length === 0) {
+      throw new Error(`${task.id} 缺少 relevantDocs（证据相关性金标）`);
+    }
+    for (const doc of task.vars.relevantDocs) {
+      if (!knowledgeNames.has(doc)) {
+        throw new Error(`${task.id} 的 relevantDocs 指向不存在的知识库文档：${doc}`);
+      }
     }
     scenarioCounts.set(task.scenario, (scenarioCounts.get(task.scenario) ?? 0) + 1);
     thresholds.add(task.threshold);

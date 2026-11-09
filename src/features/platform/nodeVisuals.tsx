@@ -1,5 +1,6 @@
 import {
   Bot,
+  BrainCircuit,
   Database,
   FileText,
   GitBranch,
@@ -40,6 +41,7 @@ export const NODE_VISUALS: Record<NodeKind, NodeVisual> = {
   end: { icon: Square, category: "entry", tint: "#0f766e" },
   agent: { icon: Bot, category: "ai", tint: "#6366f1" },
   llm: { icon: Sparkles, category: "ai", tint: "#8b5cf6" },
+  clarify: { icon: BrainCircuit, category: "ai", tint: "#d946ef" },
   knowledge: { icon: Database, category: "ai", tint: "#0284c7" },
   condition: { icon: GitBranch, category: "logic", tint: "#f59e0b" },
   parallel: { icon: Split, category: "logic", tint: "#14b8a6" },

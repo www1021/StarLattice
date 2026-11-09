@@ -4,10 +4,30 @@
   "version": 2,
   "description": "检索 → 教案 → 初始验证 → 自循环修正 → 三角色并行演练 → 观察员 → 报告，开启三层验证与 Self-Loop。",
   "inputs": [
-    { "name": "topic", "type": "string", "required": true, "description": "训练课题" },
-    { "name": "subject", "type": "string", "required": true, "description": "学科" },
-    { "name": "grade", "type": "string", "required": true, "description": "年级" },
-    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+    {
+      "name": "topic",
+      "type": "string",
+      "required": true,
+      "description": "训练课题"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "年级"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
   ],
   "nodes": [
     {
@@ -16,7 +36,7 @@
       "title": "知识库检索",
       "tool": "knowledge.search",
       "args": {
-        "query": "${input.topic}",
+        "query": "${input.topic} ${input.subject} ${input.grade}",
         "knowledgeBaseIds": "${input.knowledgeBaseIds}",
         "topK": 5
       }
@@ -39,8 +59,15 @@
       "kind": "verify",
       "title": "初始验证",
       "verifier": "observer-verifier",
-      "verifiers": ["observer-verifier", "teaching-expert-agent"],
-      "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+      "verifiers": [
+        "observer-verifier",
+        "teaching-expert-agent"
+      ],
+      "rubric": [
+        "目标达成",
+        "互动覆盖",
+        "证据支撑"
+      ],
       "threshold": 0.85
     },
     {
@@ -50,7 +77,10 @@
       "maxIterations": 2,
       "while": "${verify-loop.score} < 0.85",
       "patience": 2,
-      "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+      "budget": {
+        "maxDurationMs": 120000,
+        "maxTokens": 0
+      },
       "body": [
         {
           "id": "search",
@@ -58,7 +88,7 @@
           "title": "补充检索",
           "tool": "knowledge.search",
           "args": {
-            "query": "${input.topic} ${loop.retrievalQuery}",
+            "query": "${input.topic} ${input.subject} ${loop.retrievalQuery}",
             "knowledgeBaseIds": "${input.knowledgeBaseIds}",
             "topK": 5
           }
@@ -80,8 +110,15 @@
           "kind": "verify",
           "title": "复核",
           "verifier": "observer-verifier",
-          "verifiers": ["observer-verifier", "teaching-expert-agent"],
-          "rubric": ["目标达成", "互动覆盖", "证据支撑"],
+          "verifiers": [
+            "observer-verifier",
+            "teaching-expert-agent"
+          ],
+          "rubric": [
+            "目标达成",
+            "互动覆盖",
+            "证据支撑"
+          ],
           "threshold": 0.85
         }
       ]
@@ -135,24 +172,69 @@
       }
     },
     {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "topic": "${input.topic}",
+        "draft": "${lesson-plan.output}",
+        "revised": "${revise.output}",
+        "observer": "${observer.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "以教案初稿为基础；若提供修订稿，以修订稿为准；吸收课堂演练记录中暴露的问题，输出最终可交付教案。必须包含小节：教学目标、活动流程、分层练习、课堂演练分析；引用知识库证据使用 [1][2] 编号；不少于 800 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
+    },
+    {
       "id": "report",
       "kind": "tool",
       "title": "生成训练报告",
       "tool": "report.build",
       "args": {
-        "observer": "${observer.output}",
-        "score": "${verify-loop.score}",
-        "initialScore": "${verify-initial.score}",
-        "iterations": 2
+        "observer": "${deliverable.output}",
+        "score": "${verify-initial.score}",
+        "title": "教学设计报告"
       }
     }
   ],
   "edges": [
-    { "from": "retrieve", "to": "lesson-plan" },
-    { "from": "lesson-plan", "to": "verify-initial" },
-    { "from": "verify-initial", "to": "revise-loop" },
-    { "from": "revise-loop", "to": "rehearse" },
-    { "from": "rehearse", "to": "observer" },
-    { "from": "observer", "to": "report" }
+    {
+      "from": "retrieve",
+      "to": "lesson-plan"
+    },
+    {
+      "from": "lesson-plan",
+      "to": "verify-initial"
+    },
+    {
+      "from": "verify-initial",
+      "to": "revise-loop"
+    },
+    {
+      "from": "revise-loop",
+      "to": "rehearse"
+    },
+    {
+      "from": "rehearse",
+      "to": "observer"
+    },
+    {
+      "from": "observer",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    }
   ]
 }

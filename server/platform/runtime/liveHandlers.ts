@@ -1,14 +1,28 @@
 import type {
   AgentNode,
   AgentRecord,
+  ClarifyNode,
   KnowledgeNode,
   LlmNode,
   McpCallResult,
   ToolNode,
   ToolRecord
 } from "../types.js";
-import { completeQwenChat, getPlatformLiveModel, isQwenConfigured } from "../../qwenOpenAiClient.js";
-import type { ExecutionContext, ExecutorHandlers } from "./executor.js";
+import {
+  completeQwenChat,
+  completeQwenToolChat,
+  type QwenToolCall,
+  type QwenToolDefinition,
+  type ToolChatMessage
+} from "../../qwenOpenAiClient.js";
+import {
+  getModelCatalog,
+  isAnyModelConfigured,
+  resolveAgentModel,
+  resolveModel,
+  type ModelResolution
+} from "../models/catalog.js";
+import type { ClarifyPhase, ExecutionContext, ExecutorHandlers } from "./executor.js";
 
 type KnowledgeCitation = {
   id?: unknown;
@@ -31,6 +45,9 @@ export type LiveHandlerOptions = {
   getTool?: (id: string) => ToolRecord | undefined;
   callMcpTool?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
   searchKnowledge?: KnowledgeSearch;
+  /** 测试或私有部署可替换的补全实现；默认按解析出的 provider 调用。 */
+  completeChat?: typeof completeQwenChat;
+  completeToolChat?: typeof completeQwenToolChat;
   maxTokens?: number;
   temperature?: number;
 };
@@ -39,10 +56,10 @@ const REF_PATTERN = /\$\{([^}\s]+)\}/g;
 
 /**
  * 真实 Agent 与内置工具的实现入口。默认关闭：只有显式设置 PLATFORM_LIVE_AGENTS=1
- * 且配置了 Qwen Key 时才创建 handler，否则执行器继续使用确定性 stub，避免误触发计费。
+ * 且至少一个模型目录项具备凭据时才创建 handler，否则执行器继续使用确定性 stub，避免误触发计费。
  */
 export function isPlatformLiveEnabled() {
-  return process.env.PLATFORM_LIVE_AGENTS === "1" && isQwenConfigured();
+  return process.env.PLATFORM_LIVE_AGENTS === "1" && isAnyModelConfigured();
 }
 
 export function createPlatformLiveHandlers(options: LiveHandlerOptions): ExecutorHandlers {
@@ -57,7 +74,9 @@ export function createPlatformLiveHandlers(options: LiveHandlerOptions): Executo
     agent: (node, input, context) =>
       runLiveAgent(node, input, context, { ...options, maxTokens, temperature }),
     llm: (node, input, context) =>
-      runLiveLlm(node, input, context, { maxTokens, temperature }),
+      runLiveLlm(node, input, context, { ...options, maxTokens, temperature }),
+    clarify: (node, input, context, phase) =>
+      runLiveClarify(node, input, context, phase, { ...options, maxTokens }),
     tool: (node, input, context) => runLiveTool(node, input, context, options)
   };
 }
@@ -70,15 +89,23 @@ async function runLiveLlm(
   node: LlmNode,
   rawInput: Record<string, unknown>,
   context: ExecutionContext,
-  defaults: { maxTokens: number; temperature: number }
+  defaults: {
+    maxTokens: number;
+    temperature: number;
+    completeChat?: typeof completeQwenChat;
+  }
 ) {
   const input = withoutSelfLoop(rawInput);
-  const model = node.model?.trim() || getPlatformLiveModel();
+  const resolution = resolveModel(node.model, {
+    source: "node",
+    budgetExceeded: budgetExceeded(context)
+  });
+  const model = resolution.model;
   const maxTokens = clampInt(node.maxTokens ?? defaults.maxTokens, 1, 32768);
   const temperature = node.temperature ?? defaults.temperature;
   let thinking = "";
 
-  const content = await completeQwenChat({
+  const content = await (defaults.completeChat ?? completeQwenChat)({
     system:
       node.system?.trim() ||
       "你是 Agent 编排平台中的通用模型节点。只输出可交付结果，不要复述任务，不要输出占位内容。",
@@ -98,6 +125,7 @@ async function runLiveLlm(
     maxTokens,
     temperature,
     enableThinking: node.thinking === true,
+    provider: providerConfig(resolution),
     onThinking: (value) => {
       thinking = value;
     }
@@ -106,10 +134,144 @@ async function runLiveLlm(
   return {
     mode: "live",
     kind: "llm",
-    model,
+    ...modelTrace(resolution),
     summary: summarize(content, 220),
     thinking: thinking || undefined,
     output: content,
+    inputs: input
+  };
+}
+
+const CLARIFY_ANALYZE_SYSTEM = [
+  "你是 Agent 编排平台的意图分析器。只依据用户原始需求与已给约束分析，不编造事实。",
+  "只输出一个 JSON 对象，字段：taskType、goal、audience、deliverable、constraints（字符串数组）、",
+  "ambiguities（数组，元素为 {slot, question, impact}，impact ∈ high/medium/low）、assumptions（字符串数组）、",
+  "needsClarification（布尔）、confidence（0-1）。",
+  "规则：歧义必须具体到可直接回答；只有缺失信息会改变交付结果时才标 high；已有信息不要重复提问。"
+].join("\n");
+
+const CLARIFY_REWRITE_SYSTEM = [
+  "你是平台的 Prompt 重写器。把原始模糊需求改写成可直接执行的结构化 Prompt。",
+  "必须包含：目标、已知条件、待确认假设、交付格式、验收标准、禁止事项，用 Markdown 分节。",
+  "规则：保留原始意图；不得引入原始需求、意图分析与人工澄清之外的事实或数字；",
+  "所有补充信息都要能追溯到上述来源。只输出 JSON：{\"rewrittenPrompt\": \"...\", \"changes\": [\"...\"]}。"
+].join("\n");
+
+/**
+ * 意图澄清节点的真实实现：分析阶段只输出意图结构；改写阶段把澄清结果并入结构化 Prompt。
+ * 数值守门：改写稿不得出现原文与澄清回答之外的数字，命中时带纠正指令重写一次。
+ */
+async function runLiveClarify(
+  node: ClarifyNode,
+  rawInput: Record<string, unknown>,
+  context: ExecutionContext,
+  phase: ClarifyPhase,
+  defaults: {
+    maxTokens: number;
+    completeChat?: typeof completeQwenChat;
+  }
+) {
+  const input = withoutSelfLoop(rawInput);
+  const resolution = resolveModel(node.model, {
+    source: "node",
+    budgetExceeded: budgetExceeded(context)
+  });
+  const model = resolution.model;
+  const maxTokens = clampInt(defaults.maxTokens, 1, 32768);
+  const temperature = 0.2;
+  const completeChat = defaults.completeChat ?? completeQwenChat;
+  const rawPrompt = requestOf(input);
+  const hint = stringValue(input.hint).trim();
+
+  if (phase.phase === "analyze") {
+    const content = await completeChat({
+      system: CLARIFY_ANALYZE_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: [
+            `## 原始需求\n${rawPrompt}`,
+            hint ? `## 领域提示\n${hint}` : "",
+            "## 输出\n只输出 JSON 对象。"
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        }
+      ],
+      model,
+      maxTokens,
+      temperature,
+      provider: providerConfig(resolution)
+    });
+    const parsed = parseJsonObjectFromText(content);
+    if (!parsed) {
+      throw new Error("意图分析未返回合法 JSON 对象。");
+    }
+    return {
+      mode: "live",
+      kind: "clarify",
+      ...modelTrace(resolution),
+      summary: summarize(content, 200),
+      output: parsed,
+      inputs: input
+    };
+  }
+
+  const analysis = phase.analysis;
+  const clarification = phase.clarification;
+  const callRewrite = async (correction?: string) => {
+    const content = await completeChat({
+      system: CLARIFY_REWRITE_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: [
+            `## 原始需求\n${rawPrompt}`,
+            `## 意图分析\n${JSON.stringify(analysis, null, 2)}`,
+            clarification?.answer ? `## 人工澄清\n${clarification.answer}` : "",
+            correction ? `## 纠正要求\n${correction}` : "",
+            "## 输出\n只输出 JSON 对象。"
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        }
+      ],
+      model,
+      maxTokens,
+      temperature,
+      provider: providerConfig(resolution)
+    });
+    const parsed = parseJsonObjectFromText(content);
+    const rewrittenPrompt = stringValue(parsed?.rewrittenPrompt).trim();
+    if (!parsed || rewrittenPrompt === "") {
+      throw new Error("Prompt 改写未返回 rewrittenPrompt 字段。");
+    }
+    return {
+      rewrittenPrompt,
+      changes: stringList(parsed.changes),
+      summary: summarize(content, 200)
+    };
+  };
+
+  const allowedNumbers = `${rawPrompt}\n${clarification?.answer ?? ""}`;
+  let rewrite = await callRewrite();
+  let unexpected = findNewNumbers(allowedNumbers, rewrite.rewrittenPrompt);
+  if (unexpected.length > 0) {
+    rewrite = await callRewrite(
+      `上一版改写在 Prompt 中引入了原文没有的数字：${unexpected.join("、")}。请移除这些数字或改为定性表述。`
+    );
+    unexpected = findNewNumbers(allowedNumbers, rewrite.rewrittenPrompt);
+  }
+
+  return {
+    mode: "live",
+    kind: "clarify",
+    ...modelTrace(resolution),
+    summary: rewrite.summary,
+    output: { rewrittenPrompt: rewrite.rewrittenPrompt, changes: rewrite.changes },
+    rewrittenPrompt: rewrite.rewrittenPrompt,
+    changes: rewrite.changes,
+    guardrail: { ok: unexpected.length === 0, unexpected },
     inputs: input
   };
 }
@@ -121,9 +283,10 @@ async function runLiveAgent(
   options: LiveHandlerOptions
 ) {
   const agent =
-    node.agentVersion === undefined
+    context.agentSnapshots?.get(node.agent) ??
+    (node.agentVersion === undefined
       ? options.getAgent(node.agent)
-      : options.getAgentVersion?.(node.agent, node.agentVersion);
+      : options.getAgentVersion?.(node.agent, node.agentVersion));
   if (!agent) {
     throw new Error(
       node.agentVersion === undefined
@@ -136,16 +299,57 @@ async function runLiveAgent(
   }
 
   const input = withoutSelfLoop(rawInput);
-  const system = buildAgentSystemPrompt(agent);
+  const system = buildAgentSystemPrompt(agent, node);
   const prompt = buildAgentUserPrompt(node, input, rawInput, context);
-
-  const content = await completeQwenChat({
-    system,
-    messages: [{ role: "user", content: prompt }],
-    model: getPlatformLiveModel(),
-    maxTokens: options.maxTokens ?? 2048,
-    temperature: options.temperature ?? 0.35
+  const resolution = resolveAgentModel({
+    nodeModel: node.model,
+    agentModel: agent.model,
+    budgetExceeded: budgetExceeded(context)
   });
+
+  if (node.toolCalling !== true) {
+    const content = await (options.completeChat ?? completeQwenChat)({
+      system,
+      messages: [{ role: "user", content: prompt }],
+      model: resolution.model,
+      maxTokens: options.maxTokens ?? 2048,
+      temperature: options.temperature ?? 0.35,
+      provider: providerConfig(resolution)
+    });
+
+    return {
+      mode: "live",
+      agent: agent.id,
+      agentName: agent.name,
+      agentVersion: agent.version,
+      role: agent.role,
+      ...modelTrace(resolution),
+      outputFormat: node.outputFormat ?? "text",
+      summary: summarize(content, 220),
+      output: content,
+      inputs: input,
+      tools: agent.tools,
+      memory: agent.memory
+    };
+  }
+
+  const catalog = buildAgentToolCatalog(agent, options);
+  if (catalog.length === 0) {
+    throw new Error(
+      `Agent「${agent.name}」开启工具调用，但声明的工具中没有可执行的 knowledge.search 或已启用的 MCP 工具。`
+    );
+  }
+
+  const result = await runAgentWithTools({
+    system,
+    prompt,
+    catalog,
+    options,
+    context,
+    input,
+    resolution
+  });
+  const citations = result.trace.flatMap((call) => call.citations ?? []);
 
   return {
     mode: "live",
@@ -153,36 +357,385 @@ async function runLiveAgent(
     agentName: agent.name,
     agentVersion: agent.version,
     role: agent.role,
-    model: getPlatformLiveModel(),
-    summary: summarize(content, 220),
-    output: content,
+    ...modelTrace(resolution),
+    outputFormat: node.outputFormat ?? "text",
+    toolCalling: "enabled",
+    toolRounds: result.rounds,
+    toolCalls: result.trace,
+    citations,
+    summary: `工具调用 ${result.trace.length} 次 · ${summarize(result.content, 180)}`,
+    output: result.content,
     inputs: input,
     tools: agent.tools,
     memory: agent.memory
   };
 }
 
+type AgentToolDescriptor = {
+  functionName: string;
+  toolId: string;
+  kind: "knowledge" | "mcp";
+  definition: QwenToolDefinition;
+  tool?: ToolRecord;
+};
+
+type ToolCallTrace = {
+  id: string;
+  name: string;
+  toolId: string;
+  arguments: Record<string, unknown> | string;
+  ok: boolean;
+  latencyMs: number;
+  summary: string;
+  citations?: Array<{ title: string; source: string }>;
+};
+
+/**
+ * 只暴露 Agent 自己声明且当前可执行的工具。工具 id 含点号，必须转成 OpenAI 允许的函数名，
+ * 再由这里反向映射回注册中心记录，避免模型直接拼 MCP 端点。
+ */
+function buildAgentToolCatalog(agent: AgentRecord, options: LiveHandlerOptions) {
+  const catalog: AgentToolDescriptor[] = [];
+  const usedNames = new Set<string>();
+
+  for (const toolId of agent.tools) {
+    if (toolId === "knowledge.search") {
+      if (!options.searchKnowledge) {
+        continue;
+      }
+      const functionName = uniqueFunctionName("knowledge_search", usedNames);
+      catalog.push({
+        functionName,
+        toolId,
+        kind: "knowledge",
+        definition: {
+          type: "function",
+          function: {
+            name: functionName,
+            description: "检索工作流绑定的知识库，返回可引用的口径规则或资料片段。（工具 ID：knowledge.search）",
+            parameters: {
+              type: "object",
+              properties: {
+                query: { type: "string", description: "检索问题或关键词，尽量具体。" },
+                topK: { type: "integer", minimum: 1, maximum: 10, description: "返回条数，默认 5。" }
+              },
+              required: ["query"]
+            }
+          }
+        }
+      });
+      continue;
+    }
+
+    const tool = options.getTool?.(toolId);
+    if (!tool || tool.type !== "mcp" || !tool.enabled || !options.callMcpTool) {
+      continue;
+    }
+    const functionName = uniqueFunctionName(lastSegment(toolId), usedNames);
+    catalog.push({
+      functionName,
+      toolId,
+      kind: "mcp",
+      tool,
+      definition: {
+        type: "function",
+        function: {
+          name: functionName,
+          description: `${tool.description}（工具 ID：${toolId}）`,
+          parameters: toObjectSchema(tool.schema)
+        }
+      }
+    });
+  }
+
+  return catalog;
+}
+
+async function runAgentWithTools(input: {
+  system: string;
+  prompt: string;
+  catalog: AgentToolDescriptor[];
+  options: LiveHandlerOptions;
+  context: ExecutionContext;
+  input: Record<string, unknown>;
+  resolution: ModelResolution;
+}) {
+  const { system, prompt, catalog, options, context, input: agentInput, resolution } = input;
+  const model = resolution.model;
+  const maxTokens = options.maxTokens ?? 2048;
+  const temperature = options.temperature ?? 0.35;
+  const maxRounds = clampInt(positiveInt(process.env.PLATFORM_AGENT_TOOL_ROUNDS, 4), 1, 8);
+  const complete = options.completeToolChat ?? completeQwenToolChat;
+  const provider = providerConfig(resolution);
+  const messages: ToolChatMessage[] = [{ role: "user", content: prompt }];
+  const trace: ToolCallTrace[] = [];
+  let content = "";
+  let rounds = 0;
+
+  for (let round = 1; round <= maxRounds; round += 1) {
+    rounds = round;
+    const response = await complete({
+      system,
+      messages,
+      model,
+      maxTokens,
+      temperature,
+      provider,
+      tools: catalog.map((item) => item.definition)
+    });
+
+    if (response.toolCalls.length === 0) {
+      content = response.content;
+      break;
+    }
+
+    messages.push({
+      role: "assistant",
+      content: response.content,
+      tool_calls: response.toolCalls
+    });
+
+    for (const call of response.toolCalls) {
+      const execution = await executeAgentToolCall({
+        call,
+        catalog,
+        options,
+        context,
+        agentInput
+      });
+      trace.push(execution.trace);
+      messages.push({
+        role: "tool",
+        tool_call_id: execution.trace.id,
+        content: execution.content
+      });
+    }
+  }
+
+  if (!content.trim()) {
+    // 达到轮次上限或模型只返回了 tool_calls：禁用工具再要一次最终答复，避免死循环。
+    const final = await complete({
+      system,
+      messages,
+      model,
+      maxTokens,
+      temperature,
+      provider,
+      tools: []
+    });
+    content = final.content;
+  }
+
+  if (!content.trim()) {
+    throw new Error(`Agent 在 ${rounds} 轮工具调用后仍未返回最终内容。`);
+  }
+
+  return { content, trace, rounds };
+}
+
+async function executeAgentToolCall(input: {
+  call: QwenToolCall;
+  catalog: AgentToolDescriptor[];
+  options: LiveHandlerOptions;
+  context: ExecutionContext;
+  agentInput: Record<string, unknown>;
+}): Promise<{ content: string; trace: ToolCallTrace }> {
+  const { call, catalog, options, context, agentInput } = input;
+  const descriptor = catalog.find((item) => item.functionName === call.function.name);
+  const startedAt = Date.now();
+
+  if (!descriptor) {
+    const message = `模型请求了未声明的工具「${call.function.name}」。`;
+    return toolError(call, "", message, startedAt);
+  }
+
+  const parsed = parseToolArguments(call.function.arguments);
+  if (!parsed.ok) {
+    return toolError(call, descriptor.toolId, `工具参数不是合法 JSON 对象：${parsed.error}`, startedAt);
+  }
+
+  if (descriptor.kind === "knowledge") {
+    const query = stringValue(parsed.value.query).trim();
+    if (!query) {
+      return toolError(call, descriptor.toolId, "knowledge.search 缺少非空 query。", startedAt);
+    }
+    const knowledgeBaseIds =
+      context.knowledgeBaseIds && context.knowledgeBaseIds.length > 0
+        ? context.knowledgeBaseIds
+        : stringList(agentInput.knowledgeBaseIds);
+    if (knowledgeBaseIds.length === 0) {
+      return toolError(call, descriptor.toolId, "当前工作流未绑定知识库，无法检索。", startedAt);
+    }
+    if (!options.searchKnowledge) {
+      return toolError(call, descriptor.toolId, "知识库检索服务未接入。", startedAt);
+    }
+
+    try {
+      const topK = clampInt(numberValue(parsed.value.topK) ?? 5, 1, 10);
+      const citations = await options.searchKnowledge({ query, knowledgeBaseIds, topK });
+      const mapped = citations.map((citation, index) => ({
+        title: stringValue(citation.documentName) || `引用 ${index + 1}`,
+        documentName: stringValue(citation.documentName),
+        knowledgeBaseName: stringValue(citation.knowledgeBaseName),
+        snippet: stringValue(citation.snippet),
+        source: stringValue(citation.source) || "local",
+        score: numberValue(citation.score) ?? 0
+      }));
+      const content = truncate(JSON.stringify({ query, citations: mapped }, null, 2), 6000);
+      return {
+        content,
+        trace: {
+          id: call.id,
+          name: call.function.name,
+          toolId: descriptor.toolId,
+          arguments: parsed.value,
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          summary: `知识库检索「${query}」命中 ${mapped.length} 条`,
+          citations: mapped.map((item) => ({ title: item.title, source: item.source }))
+        }
+      };
+    } catch (error) {
+      return toolError(call, descriptor.toolId, describe(error), startedAt);
+    }
+  }
+
+  const tool = descriptor.tool;
+  if (!tool || !options.callMcpTool) {
+    return toolError(call, descriptor.toolId, "MCP 工具不可执行。", startedAt);
+  }
+
+  const args = {
+    ...defaultToolArgs({ ...context.scope.input, ...agentInput }),
+    ...parsed.value
+  };
+
+  try {
+    const result = await options.callMcpTool(tool, args);
+    const text = truncate(result.text.trim() || "（MCP 工具未返回文本内容）", 6000);
+    return {
+      content: text,
+      trace: {
+        id: call.id,
+        name: call.function.name,
+        toolId: descriptor.toolId,
+        arguments: args,
+        ok: !result.isError,
+        latencyMs: result.latencyMs,
+        summary: `${result.serverName} · ${result.tool}（${result.latencyMs} ms）`
+      }
+    };
+  } catch (error) {
+    return toolError(call, descriptor.toolId, describe(error), startedAt, args);
+  }
+}
+
+function toolError(
+  call: QwenToolCall,
+  toolId: string,
+  message: string,
+  startedAt: number,
+  args: Record<string, unknown> | string = call.function.arguments
+): { content: string; trace: ToolCallTrace } {
+  return {
+    content: JSON.stringify({ error: message }),
+    trace: {
+      id: call.id,
+      name: call.function.name,
+      toolId,
+      arguments: args,
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      summary: `工具调用失败：${truncate(message, 160)}`
+    }
+  };
+}
+
+function parseToolArguments(raw: string) {
+  const text = raw.trim();
+  if (!text) {
+    return { ok: true as const, value: {} as Record<string, unknown> };
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ok: true as const, value: parsed as Record<string, unknown> };
+    }
+    return { ok: false as const, error: "必须是 JSON 对象" };
+  } catch (error) {
+    return { ok: false as const, error: describe(error) };
+  }
+}
+
+function uniqueFunctionName(preferred: string, used: Set<string>) {
+  const base = preferred.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "tool";
+  let name = base;
+  let index = 2;
+  while (used.has(name)) {
+    name = `${base.slice(0, 56)}_${index}`;
+    index += 1;
+  }
+  used.add(name);
+  return name;
+}
+
+function lastSegment(toolId: string) {
+  const segments = toolId.split(".").filter(Boolean);
+  return segments[segments.length - 1] || toolId;
+}
+
+function toObjectSchema(schema: Record<string, unknown>) {
+  return schema.type === "object" ? schema : { type: "object", properties: {} };
+}
+
+function defaultToolArgs(input: Record<string, unknown>) {
+  const source = stringValue(input.source).trim();
+  return source ? { source } : {};
+}
+
 /** 注册中心的工具集与记忆配置必须在运行期真正进入提示词，不能只做展示。 */
-export function buildAgentSystemPrompt(agent: AgentRecord) {
+export function buildAgentSystemPrompt(agent: AgentRecord, node?: AgentNode) {
   const capabilities = agent.capabilities
     .map((capability) => `${capability.tag}(${capability.weight})`)
     .join("、");
   const tools = agent.tools.length > 0 ? `可用工具：${agent.tools.join("、")}。需要证据时优先调用知识库检索工具。` : "";
+  const toolProtocol =
+    node?.toolCalling === true
+      ? "工具调用协议：你可以自主调用已声明的工具补充事实，平台会执行并把结果回填；先调用工具再下结论，工具结果是外部事实的唯一来源，不要编造工具参数或返回值。完成必要调用后，必须给出符合输出契约的最终答复。"
+      : "";
   const memory =
     Object.keys(agent.memory).length > 0
       ? `记忆配置（跨轮次保留）：${JSON.stringify(agent.memory)}。`
       : "";
-  const jsonOnly = /JSON/i.test(agent.prompt);
+  const jsonOnly = node?.outputFormat === "json" || /JSON/i.test(agent.prompt);
+  const contract = node?.outputContract;
+  // 诊断角色可以建议换模型，但只能从目录里选，避免写出执行层无法解析的 id。
+  const modelDirectory =
+    node?.loopRole === "diagnose"
+      ? `可选模型目录：${getModelCatalog()
+          .map((profile) => `${profile.id}（${profile.label}，${profile.costTier}）`)
+          .join("、")}。`
+      : "";
 
   return [
     `你是「${agent.name}」，在 Agent 编排平台的工作流节点中承担「${agent.role}」职责。`,
     agent.prompt,
     capabilities ? `能力标签：${capabilities}。` : "",
     tools,
+    toolProtocol,
     memory,
+    modelDirectory,
     jsonOnly
-      ? "输出要求：只输出合法 JSON，不要使用 Markdown 代码块，不要添加解释性前后缀。"
-      : "输出要求：直接给出可交付的成稿，用 Markdown 组织；不要复述任务，不要输出 TODO、待补充、示例占位等占位内容；引用知识库证据时使用 [1][2] 编号，并在结尾列出“引用来源”。"
+      ? "输出要求：只输出一个合法 JSON 对象，不要使用 Markdown 代码块，不要添加解释性前后缀。"
+      : "输出要求：直接给出可交付的成稿，用 Markdown 组织；不要复述任务，不要输出 TODO、待补充、示例占位等占位内容；引用知识库证据时使用 [1][2] 编号，并在结尾列出“引用来源”。",
+    jsonOnly && contract?.required?.length
+      ? `JSON 必填字段：${contract.required.join("、")}。`
+      : "",
+    jsonOnly && contract?.enums
+      ? `JSON 枚举约束：${Object.entries(contract.enums)
+          .map(([key, values]) => `${key} ∈ {${values.join(", ")}}`)
+          .join("；")}。`
+      : ""
   ]
     .filter(Boolean)
     .join("\n");
@@ -243,9 +796,18 @@ function formatSelfLoopDirective(directive: Record<string, unknown>) {
   if (retrievalQuery) {
     lines.push(`- 建议补充检索：${retrievalQuery}`);
   }
+  const promptPatch = stringValue(directive.promptPatch);
+  if (promptPatch) {
+    lines.push(`- 已采纳的提示词补丁：${promptPatch}`);
+  }
   const agentId = stringValue(directive.agentId);
   if (agentId) {
     lines.push(`- 本轮执行 Agent：${agentId}`);
+  }
+  const modelId = stringValue(directive.modelId);
+  if (modelId) {
+    const fromModel = stringValue(directive.previousModelId);
+    lines.push(`- 本轮执行模型：${modelId}${fromModel ? `（上一轮 ${fromModel}）` : ""}`);
   }
   return lines.join("\n") || "- 依据验证问题定向修订，无需重写已达标部分。";
 }
@@ -550,6 +1112,52 @@ function stringList(value: unknown): string[] {
     : [];
 }
 
+/** 与执行器保持同一优先级：request / topic / question / text / query。 */
+function requestOf(input: Record<string, unknown>): string {
+  for (const key of ["request", "topic", "question", "text", "query"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  const strings = Object.entries(input)
+    .filter(([key, value]) => key !== "hint" && key !== "selfLoop" && typeof value === "string" && value.trim() !== "")
+    .map(([, value]) => (value as string).trim());
+  return strings.length > 0 ? strings.join("\n") : "（运行输入未提供可读的任务描述）";
+}
+
+/** 模型常把 JSON 包在代码块或解释文字里；这里取第一个可解析的对象。 */
+function parseJsonObjectFromText(text: string): Record<string, unknown> | undefined {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+  const direct = tryJsonObject(trimmed);
+  if (direct) {
+    return direct;
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return tryJsonObject(trimmed.slice(start, end + 1));
+  }
+  return undefined;
+}
+
+function tryJsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    return asRecord(JSON.parse(text) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+/** 改写稿里出现原文与澄清回答之外的数字，说明模型可能把答案写进了 Prompt。 */
+function findNewNumbers(source: string, rewritten: string): string[] {
+  const allowed = new Set(source.match(/\d+(?:[.,]\d+)?%?/g) ?? []);
+  const unexpected = (rewritten.match(/\d+(?:[.,]\d+)?%?/g) ?? []).filter(
+    (token) => !allowed.has(token)
+  );
+  return [...new Set(unexpected)].slice(0, 8);
+}
+
 function numberValue(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -567,4 +1175,35 @@ function fraction(value: unknown, fallback: number) {
 
 function clampInt(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function describe(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function budgetExceeded(context: ExecutionContext) {
+  const budget = context.tokenBudget ?? 0;
+  return budget > 0 && (context.tokensUsed ?? 0) >= budget;
+}
+
+function providerConfig(resolution: ModelResolution) {
+  return {
+    baseUrl: resolution.baseUrl,
+    apiKey: resolution.apiKey,
+    label: resolution.provider
+  };
+}
+
+/** trace 同时记录请求值与解析值，避免“配置了模型却看不出是否生效”。 */
+function modelTrace(resolution: ModelResolution) {
+  return {
+    model: resolution.model,
+    requestedModel: resolution.requestedModel,
+    resolvedModel: resolution.model,
+    modelProfile: resolution.id,
+    modelProvider: resolution.provider,
+    modelSource: resolution.source,
+    ...(resolution.fallback ? { modelFallback: resolution.fallback } : {}),
+    ...(resolution.downgraded ? { modelDowngraded: resolution.downgraded } : {})
+  };
 }

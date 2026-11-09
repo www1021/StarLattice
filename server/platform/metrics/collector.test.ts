@@ -103,3 +103,56 @@ test("aggregates success, pass, score, latency, steps, loops, tokens and cost", 
     }
   }
 });
+
+test("flags failure spikes, latency spikes and score drift", () => {
+  const runs = [
+    // 最新 5 次里 3 次失败 → failure_spike
+    run({ id: "f5", workflowId: "wf-fail", status: "failed" }),
+    run({ id: "f4", workflowId: "wf-fail", status: "failed" }),
+    run({ id: "f3", workflowId: "wf-fail", status: "failed" }),
+    run({ id: "f2", workflowId: "wf-fail" }),
+    run({ id: "f1", workflowId: "wf-fail" }),
+    // 最近一次 20s，历史中位数 1s → latency_spike
+    run({ id: "l4", workflowId: "wf-slow", durationMs: 20_000 }),
+    run({ id: "l3", workflowId: "wf-slow", durationMs: 1_000 }),
+    run({ id: "l2", workflowId: "wf-slow", durationMs: 1_000 }),
+    run({ id: "l1", workflowId: "wf-slow", durationMs: 1_000 }),
+    // 最近 5 次 0.60，此前 10 次 0.90 → score_drift
+    ...Array.from({ length: 5 }, (_, index) =>
+      run({
+        id: `s-recent-${index}`,
+        workflowId: "wf-drift",
+        output: { verify: { score: 0.6, passed: false } }
+      })
+    ),
+    ...Array.from({ length: 10 }, (_, index) =>
+      run({
+        id: `s-old-${index}`,
+        workflowId: "wf-drift",
+        output: { verify: { score: 0.9, passed: true } }
+      })
+    )
+  ];
+
+  const report = collectMetrics(source(runs));
+  const kinds = new Map(report.alerts.map((alert) => [alert.workflowId, alert.kind]));
+  assert.equal(kinds.get("wf-fail"), "failure_spike");
+  assert.equal(kinds.get("wf-slow"), "latency_spike");
+  assert.equal(kinds.get("wf-drift"), "score_drift");
+  const drift = report.alerts.find((alert) => alert.workflowId === "wf-drift");
+  assert.equal(drift?.severity, "critical");
+  assert.ok((drift?.value ?? 0) >= 0.2);
+});
+
+test("keeps the alert list empty when recent runs are healthy", () => {
+  const runs = Array.from({ length: 8 }, (_, index) =>
+    run({
+      id: `ok-${index}`,
+      workflowId: "wf-ok",
+      durationMs: 1_000,
+      output: { verify: { score: 0.9, passed: true } }
+    })
+  );
+  const report = collectMetrics(source(runs));
+  assert.deepEqual(report.alerts, []);
+});

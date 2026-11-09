@@ -50,6 +50,13 @@ test("compiles classroom-v1 with topological order and flattened paths", () => {
   assert.equal(plan.steps.find((step) => step.nodeId === "verify-loop")?.path, "revise-loop/verify-loop");
 });
 
+test("rejects an unknown scheduler mode", () => {
+  const workflow = classroomWorkflow();
+  (workflow as unknown as { schedulerMode: string }).schedulerMode = "round-robin";
+  const error = compileError(workflow);
+  assert.ok(error.issues.some((issue) => issue.code === "invalid-scheduler-mode"));
+});
+
 test("rejects a workflow with a cycle and names the cycle path", () => {
   const workflow = classroomWorkflow();
   workflow.edges.push({ from: "report", to: "retrieve" });
@@ -168,8 +175,30 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
   const acceptedFields: Record<NodeKind, string[]> = {
     start: [],
     end: ["inputs"],
-    agent: ["agent", "agentVersion", "prompt", "inputs"],
+    agent: [
+      "agent",
+      "agentVersion",
+      "prompt",
+      "outputFormat",
+      "outputContract",
+      "loopRole",
+      "promoteToAgent",
+      "toolCalling",
+      "model",
+      "capabilities",
+      "inputs"
+    ],
     llm: ["prompt", "system", "model", "thinking", "temperature", "maxTokens", "inputs"],
+    clarify: [
+      "prompt",
+      "model",
+      "clarifyOn",
+      "maxQuestions",
+      "assignee",
+      "timeoutMs",
+      "stubOutput",
+      "inputs"
+    ],
     knowledge: ["query", "knowledgeBaseIds", "topK", "inputs"],
     tool: ["tool", "args"],
     http: ["method", "url", "headers", "requestBody", "timeoutMs", "inputs"],
@@ -190,6 +219,7 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
       "verifiers",
       "requireEvidence",
       "checks",
+      "model",
       "inputs"
     ]
   };
@@ -238,6 +268,49 @@ test("validates verify number_match checks and tolerance at compile time", () =>
     kind: "verify",
     verifier: "verifier-a",
     checks: [{ type: "number_match", tolerance: 0.01 }]
+  });
+  assert.doesNotThrow(() => compileWorkflow(ok));
+});
+
+test("validates verify citation, section and per-verifier model settings", () => {
+  const badCitations = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    minCitations: 51
+  });
+  assert.ok(
+    compileError(badCitations).issues.some((issue) => issue.code === "invalid-verify-min-citations")
+  );
+
+  const badSections = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    requiredSections: [" "]
+  });
+  assert.ok(
+    compileError(badSections).issues.some((issue) => issue.code === "invalid-verify-sections")
+  );
+
+  const badModels = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    verifierModels: {}
+  });
+  assert.ok(
+    compileError(badModels).issues.some((issue) => issue.code === "invalid-verify-models")
+  );
+
+  const ok = singleNodeWorkflow({
+    id: "check",
+    kind: "verify",
+    verifier: "verifier-a",
+    minCitations: 2,
+    requiredSections: ["结论"],
+    verifierModels: { "verifier-a": "reasoning", "verifier-b": "fast" },
+    evidenceView: "split"
   });
   assert.doesNotThrow(() => compileWorkflow(ok));
 });

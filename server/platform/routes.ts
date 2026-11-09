@@ -19,9 +19,15 @@ import {
 import { PlatformStateStore } from "./runtime/stateStore.js";
 import { WorkflowExecutor } from "./runtime/executor.js";
 import { BUILTIN_AGENTS, parseAgentWrite } from "./registry/agents.js";
+import {
+  describeAgentModel,
+  getModelCatalog,
+  toModelView
+} from "./models/catalog.js";
 import { BUILTIN_TOOLS, parseToolWrite } from "./registry/tools.js";
 import { parseTeamWrite } from "./registry/teams.js";
 import { DATA_ANALYSIS_MCP_SERVER, DEMO_MCP_SERVER, McpManager } from "./mcp/mcpManager.js";
+import { isWorkflowToolEndpoint, syncWorkflowTools } from "./mcp/workflowTools.js";
 import {
   bindTeamKnowledge,
   bindWorkflowKnowledge,
@@ -44,24 +50,43 @@ import {
   SELF_LOOP_STOP_REASON_SPECS
 } from "./selfLoop/controller.js";
 import {
+  compareReplayPolicies,
+  isReplayPolicy,
+  parseReplayTasks,
+  replaySchedule,
+  replayTasksFromQueue,
+  type ReplayPolicy
+} from "./scheduler/whatif.js";
+import type { SchedulerReclaimer } from "./scheduler/reclaimer.js";
+import {
   VERIFY_CONTRACT,
   VERIFY_DEFAULTS,
   VERIFY_FORMULA,
   VERIFY_LAYERS
 } from "./verify/verifier.js";
 import { collectMetrics } from "./metrics/collector.js";
+import type { EvolutionService, RunReleasePick } from "./evolution/service.js";
+import { randomUUID } from "node:crypto";
+import { registerEvolutionRoutes } from "./evolution/routes.js";
 
 type PlatformOptions = {
   store?: PlatformStateStore;
   executor?: WorkflowExecutor;
   knowledge?: KnowledgeProviderPort;
   mcp?: McpManager;
+  evolution?: EvolutionService;
+  reclaimer?: SchedulerReclaimer;
 };
 
 export function registerPlatform(app: Express, options: PlatformOptions = {}) {
   const store = options.store ?? new PlatformStateStore();
   const executor = options.executor ?? new WorkflowExecutor(store);
   const mcp = options.mcp ?? new McpManager(store);
+  const evolution = options.evolution;
+  const reclaimer = options.reclaimer;
+  if (evolution) {
+    registerEvolutionRoutes(app, evolution);
+  }
   const builtinWorkflows = seedBuiltinWorkflows(store);
   const seededRegistry = seedRegistry(store);
 
@@ -84,8 +109,14 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
         pending: store.listApprovals({ status: "pending" }).length,
         defaultTimeoutMs: executor.runtimeConfig().approvalTimeoutMs
       },
+      evolution: evolution?.overview(),
       seededRegistry
     });
+  });
+
+  app.get("/api/platform/models", (_request, response) => {
+    const models = getModelCatalog().map(toModelView);
+    response.json({ models, total: models.length });
   });
 
   app.get("/api/platform/agents", (_request, response) => {
@@ -153,6 +184,7 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
     const counts = store.agentCallCounts();
     const agents = store.listAgents().map((agent) => ({
       ...agent,
+      modelProfile: describeAgentModel(agent.model),
       callCount: counts[agent.id] ?? 0,
       teamIds: teams.filter((team) => team.agentIds.includes(agent.id)).map((team) => team.id)
     }));
@@ -422,12 +454,128 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
     const capabilities = [
       ...new Set(agents.flatMap((agent) => agent.capabilities.map((item) => item.tag)))
     ].sort((left, right) => left.localeCompare(right, "zh-CN"));
+    const runtime = executor.runtimeConfig();
     response.json({
       formula: SCHEDULER_FORMULA,
       weights: DEFAULT_SCHEDULER_WEIGHTS,
       agentCount: agents.length,
-      capabilities
+      capabilities,
+      activeLoads: store.activeLeaseLoads(),
+      runtime: {
+        workerId: runtime.workerId,
+        leaseTtlMs: runtime.leaseTtlMs,
+        agentCapacity: runtime.agentCapacity,
+        schedulerCapacity: runtime.schedulerCapacity,
+        schedulerPolicy: runtime.schedulerPolicy,
+        workerPoolSize: runtime.workerPoolSize
+      },
+      leadership: store.getSchedulerLeadership(),
+      reclaimer: reclaimer?.status(),
+      // 跨运行全局队列：容量与排序由 SchedulerService 统一裁决，监控台直接读取。
+      globalQueue: executor.schedulerSnapshot()
     });
+  });
+
+  app.get("/api/platform/scheduler/leadership", (_request, response) => {
+    response.json({
+      leadership: store.getSchedulerLeadership(),
+      reclaimer: reclaimer?.status()
+    });
+  });
+
+  app.post("/api/platform/scheduler/reclaim", async (request, response) => {
+    try {
+      const body = isRecord(request.body) ? request.body : {};
+      if (reclaimer) {
+        response.json(await reclaimer.tick({ force: body.force === true }));
+        return;
+      }
+      response.json(await executor.requeueOrphanedRuns());
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  app.post("/api/platform/scheduler/whatif", (request, response) => {
+    try {
+      const body = isRecord(request.body) ? request.body : {};
+      const capacity = Number(body.capacity ?? executor.runtimeConfig().schedulerCapacity);
+      if (!Number.isFinite(capacity) || capacity < 1) {
+        throw new PlatformError("capacity 必须是不小于 1 的数字。", 400);
+      }
+      const policies = Array.isArray(body.policies)
+        ? (body.policies.filter(isReplayPolicy) as ReplayPolicy[])
+        : undefined;
+      let tasks;
+      let source: Record<string, unknown>;
+      if (typeof body.runId === "string" && body.runId.trim() !== "") {
+        const run = store.getRun(body.runId);
+        if (!run) {
+          throw new PlatformError("运行记录不存在。", 404);
+        }
+        tasks = replayTasksFromQueue(store.listSchedulerQueue(body.runId));
+        source = { kind: "trace", runId: body.runId };
+      } else {
+        tasks = parseReplayTasks(body.tasks);
+        source = { kind: "sandbox" };
+      }
+      if (tasks.length === 0) {
+        throw new PlatformError("没有已完成的调度任务可供回放。", 409);
+      }
+      const roundedCapacity = Math.max(1, Math.trunc(capacity));
+      response.json({
+        source,
+        capacity: roundedCapacity,
+        taskCount: tasks.length,
+        recorded: replaySchedule(tasks, { capacity: roundedCapacity, policy: "recorded" }),
+        policies: compareReplayPolicies(tasks, {
+          capacity: roundedCapacity,
+          policies
+        })
+      });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  app.get("/api/platform/scheduler/leases", (request, response) => {
+    const active = request.query.active !== "false";
+    const runId = typeof request.query.runId === "string" ? request.query.runId : undefined;
+    const agentId = typeof request.query.agentId === "string" ? request.query.agentId : undefined;
+    const limit = typeof request.query.limit === "string" ? Number(request.query.limit) : undefined;
+    const runtime = executor.runtimeConfig();
+    response.json({
+      leases: store.listSchedulerLeases({
+        active,
+        runId,
+        agentId,
+        limit: Number.isFinite(limit) ? limit : undefined
+      }),
+      activeLoads: store.activeLeaseLoads(),
+      runtime: {
+        workerId: runtime.workerId,
+        leaseTtlMs: runtime.leaseTtlMs,
+        agentCapacity: runtime.agentCapacity
+      }
+    });
+  });
+
+  app.get("/api/platform/scheduler/workers", (_request, response) => {
+    response.json({
+      workers: executor.listWorkers(),
+      // Worker 进程池与调度台账分开呈现：前者是可操作的活进程，后者含历史与 dead 记录。
+      processes: store.listSchedulerWorkers({ lane: "process", limit: 50 }),
+      workerId: executor.runtimeConfig().workerId
+    });
+  });
+
+  app.post("/api/platform/scheduler/workers/:id/kill", (request, response) => {
+    try {
+      const result = executor.killWorker(request.params.id);
+      response.status(result.killed ? 200 : 404).json(result);
+    } catch (error) {
+      fail(response, error);
+    }
   });
 
   app.post("/api/platform/schedule", (request, response) => {
@@ -472,7 +620,12 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       nodeTypes: withRegistryOptions(NODE_TYPE_SPECS, {
         workflows: workflows.map((workflow) => ({ id: workflow.id, label: workflow.name })),
         agents: agents.map((agent) => ({ id: agent.id, label: agent.name })),
-        tools: tools.map((tool) => ({ id: tool.id, label: `${tool.name}（${tool.type}）` })),
+        tools: tools.map((tool) => ({
+          id: tool.id,
+          label: isWorkflowToolEndpoint(tool.endpoint)
+            ? `${tool.name}（工作流工具）`
+            : `${tool.name}（${tool.type}）`
+        })),
         verifiers: agents
           .filter((agent) => agent.tools.includes("verify.rubric"))
           .map((agent) => ({ id: agent.id, label: agent.name }))
@@ -491,6 +644,7 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       const definition = version === parsed.version ? parsed : { ...parsed, version };
       const plan = compileWorkflow(definition, { resolveWorkflow: storeWorkflowResolver(store) });
       store.saveWorkflow(definition);
+      syncWorkflowTools(store);
       response.status(201).json({
         workflow: store.getWorkflow(definition.id, definition.version),
         plan: plan.stats,
@@ -587,12 +741,39 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       if (stopAfter === "") {
         throw new PlatformError("stopAfter 不能为空字符串。", 400);
       }
+      const priorityClass =
+        body.priorityClass === undefined ? undefined : Number(body.priorityClass);
+      if (
+        priorityClass !== undefined &&
+        (!Number.isInteger(priorityClass) || priorityClass < 0 || priorityClass > 5)
+      ) {
+        throw new PlatformError("priorityClass 必须是 0 到 5 之间的整数。", 400);
+      }
+      const deadlineAt = typeof body.deadlineAt === "string" ? body.deadlineAt.trim() : undefined;
+      if (deadlineAt !== undefined && Number.isNaN(Date.parse(deadlineAt))) {
+        throw new PlatformError("deadlineAt 必须是可解析的时间。", 400);
+      }
+      const release = resolveRunRelease(body, workflowId, evolution);
+      const runOptions = {
+        stopAfter,
+        ...(priorityClass !== undefined ? { priorityClass } : {}),
+        ...(deadlineAt ? { deadlineAt } : {}),
+        ...(release
+          ? {
+              releaseId: release.releaseId,
+              experimentId: release.experimentId,
+              arm: release.arm,
+              onCreated: (created: { id: string }) =>
+                evolution?.recordAssignment(created.id, release, workflowId)
+            }
+          : {})
+      };
       if (body.async === true) {
-        const run = executor.start(stored.definition, input, { stopAfter });
+        const run = executor.start(stored.definition, input, runOptions);
         response.status(202).json({ run });
         return;
       }
-      const result = await executor.run(stored.definition, input, { stopAfter });
+      const result = await executor.run(stored.definition, input, runOptions);
       response.status(201).json(result);
     } catch (error) {
       fail(response, error);
@@ -610,7 +791,26 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       if (!definition) {
         throw new PlatformError("运行对应的工作流版本不存在。", 404);
       }
-      const next = executor.start(definition, run.input);
+      // 重跑沿用原发布的冻结快照，避免人工重跑悄悄换到新版本。
+      const release = run.releaseId
+        ? {
+            releaseId: run.releaseId,
+            experimentId: run.experimentId,
+            arm: (run.arm === "control" ? "control" : "treatment") as "control" | "treatment",
+            assignmentKey: `retry:${run.id}:${randomUUID()}`
+          }
+        : resolveRunRelease({ releaseId: null }, run.workflowId, evolution);
+      const next = executor.start(definition, run.input, {
+        ...(release
+          ? {
+              releaseId: release.releaseId,
+              experimentId: release.experimentId,
+              arm: release.arm,
+              onCreated: (created: { id: string }) =>
+                evolution?.recordAssignment(created.id, release, run.workflowId)
+            }
+          : {})
+      });
       response.status(202).json({ run: next, retryOf: run.id });
     } catch (error) {
       fail(response, error);
@@ -621,6 +821,17 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
     try {
       const run = executor.cancelRun(request.params.id);
       response.status(202).json({ run });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  app.post("/api/platform/runs/:id/resume", (request, response) => {
+    try {
+      const body = isRecord(request.body) ? request.body : {};
+      const stopAfter = typeof body.stopAfter === "string" ? body.stopAfter.trim() : undefined;
+      const run = executor.startResume(request.params.id, { stopAfter });
+      response.status(202).json({ run, resumedFrom: request.params.id });
     } catch (error) {
       fail(response, error);
     }
@@ -747,7 +958,20 @@ function traceOf(store: PlatformStateStore, runId: string) {
     verifyResults: store.listVerifyResults(runId),
     loopIterations: store.listLoopIterations(runId),
     approvals: store.listApprovals({ runId }),
-    interactions: store.listInteractions({ runId })
+    interactions: store.listInteractions({ runId }),
+    queue: store.listSchedulerQueue(runId),
+    runNodes: store.listRunNodes(runId),
+    // 检查点状态可能包含大量产物，trace 只给出序号与已完成节点数。
+    checkpoints: store.listRunCheckpoints(runId, 10).map((checkpoint) => ({
+      id: checkpoint.id,
+      runId: checkpoint.runId,
+      sequence: checkpoint.sequence,
+      createdAt: checkpoint.createdAt,
+      nodeCount:
+        checkpoint.state.nodes && typeof checkpoint.state.nodes === "object"
+          ? Object.keys(checkpoint.state.nodes as Record<string, unknown>).length
+          : 0
+    }))
   };
 }
 
@@ -907,4 +1131,44 @@ function fail(response: Response, error: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 运行分流：
+ * - releaseId=null 显式绕过演化控制面；
+ * - 指定 releaseId 时只允许 active/canary 发布；
+ * - 未指定时按活跃金丝雀 / 当前生效发布自动选择；没有发布则保持旧行为。
+ */
+function resolveRunRelease(
+  body: Record<string, unknown>,
+  workflowId: string,
+  evolution?: EvolutionService
+): RunReleasePick | undefined {
+  if (!evolution?.enabled()) {
+    if (body.releaseId !== undefined && body.releaseId !== null) {
+      throw new PlatformError("演化控制面未启用，不能指定 releaseId。", 400);
+    }
+    return undefined;
+  }
+  if (body.releaseId === null) {
+    return undefined;
+  }
+  if (typeof body.releaseId === "string" && body.releaseId.trim() !== "") {
+    const manifest = evolution.getRelease(body.releaseId.trim());
+    if (manifest.workflowId !== workflowId) {
+      throw new PlatformError("releaseId 与 workflowId 不匹配。", 400);
+    }
+    if (manifest.status !== "active" && manifest.status !== "canary") {
+      throw new PlatformError(`发布「${manifest.id}」状态为 ${manifest.status}，不能承接运行。`, 409);
+    }
+    return {
+      releaseId: manifest.id,
+      arm: "treatment",
+      assignmentKey: `explicit:${manifest.id}:${randomUUID()}`
+    };
+  }
+  return evolution.pickRelease(
+    workflowId,
+    typeof body.assignmentKey === "string" ? body.assignmentKey : undefined
+  );
 }

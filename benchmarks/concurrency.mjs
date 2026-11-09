@@ -152,7 +152,16 @@ function statsOf(runs) {
     .map((item) => Math.max(0, Date.parse(item.run.startedAt) - item.submittedAt))
     .sort((left, right) => left - right);
   const durations = runs
-    .map((item) => Number(item.run?.durationMs ?? 0))
+    .map((item) => {
+      const reported = Number(item.run?.durationMs ?? 0);
+      if (reported > 0) {
+        return reported;
+      }
+      if (item.run?.startedAt && item.finishedAt) {
+        return Math.max(0, item.finishedAt - Date.parse(item.run.startedAt));
+      }
+      return 0;
+    })
     .filter((value) => value > 0)
     .sort((left, right) => left - right);
   const tokens = runs.map((item) => Number(item.run?.output?.tokensUsed ?? 0));
@@ -241,7 +250,11 @@ function render({ mode, batches, baseUrl }) {
   }
   lines.push(
     "",
-    "说明：调度计划在每次运行开始时生成，负载按本次运行内的 Agent 占用计算；跨运行的 in-flight 负载尚未纳入调度，因此并发升高时同能力 Agent 会被重复选中，这是当前实现的已知边界。"
+    `说明：${
+      mode === "stub"
+        ? "本报告为 stub：模型延迟由 PLATFORM_STUB_DELAY_MS 控制，数字只反映平台调度与排队开销，不能代表 live 并发。"
+        : "本报告为 live：端到端延迟包含真实模型请求；失败或超时的运行会进入错误样本，不参与成功率与分位数。"
+    }调度计划在运行开始时生成，并读取活跃运行的真实租约（activeLeaseLoads）作为在飞负载；租约只影响评分，不阻塞执行。`
   );
   return {
     markdown: lines.join("\n") + "\n",

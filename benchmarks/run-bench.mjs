@@ -5,12 +5,15 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { summarize } from "./summary.mjs";
+import { assertWorkflowDag } from "./workflow-dag.mjs";
+import { knowledgeDocumentNames } from "./knowledge-names.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const port = Number(process.env.BENCH_PORT || 8790);
 const baseUrl = (process.env.BENCH_BASE_URL || `http://127.0.0.1:${port}`).replace(/\/$/, "");
 const external = process.env.BENCH_EXTERNAL === "1";
+const concurrency = Math.max(1, Math.trunc(Number(process.env.BENCH_CONCURRENCY || 1)));
 const resultsDir = path.join(here, "results");
 const tmpDir = path.join(here, ".tmp");
 // 带端口后缀：并行分块若在同一毫秒启动，纯时间戳会撞车并互相覆盖结果与隔离库。
@@ -18,16 +21,13 @@ const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-p${port}`;
 const jsonPath = path.join(resultsDir, `bench-${stamp}.json`);
 const mdPath = path.join(resultsDir, `bench-${stamp}.md`);
 const csvPath = path.join(resultsDir, `bench-${stamp}.csv`);
-const knowledgeDocumentNames = new Map([
-  ["分数的意义.md", "g5-math-fractions.md"],
-  ["光合作用.md", "g7-bio-photosynthesis.md"],
-  ["静夜思.md", "g2-chinese-jingyesi.md"],
-  ["牛顿第一定律.md", "g8-physics-newton-first-law.md"],
-  ["现在进行时.md", "g7-english-present-continuous.md"],
-  ["辛亥革命.md", "g8-history-xinhai-revolution.md"],
-  ["化学方程式.md", "g9-chemistry-equations.md"],
-  ["细胞结构.md", "g7-bio-cell-structure.md"]
-]);
+const artifactDir = path.join(resultsDir, `artifacts-${stamp}`);
+const partialRun =
+  Boolean(process.env.BENCH_LIMIT) ||
+  Boolean(process.env.BENCH_RANGE) ||
+  Boolean(process.env.BENCH_TASK_IDS) ||
+  Boolean(process.env.BENCH_PATTERN) ||
+  Boolean(process.env.BENCH_ARMS);
 
 mkdirSync(resultsDir, { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -48,16 +48,25 @@ try {
   await seedWorkflows(baseUrl);
   knowledgeBaseIds = await seedKnowledge(baseUrl);
   await runPromptfoo();
-  const summary = summarize(readJson(jsonPath), { startedAt, baseUrl, external });
+  const finishedAt = Date.now();
+  const summary = summarize(readJson(jsonPath), {
+    startedAt,
+    finishedAt,
+    baseUrl,
+    external,
+    concurrency,
+    artifactDir
+  });
   writeFileSync(mdPath, summary.markdown);
   writeFileSync(csvPath, summary.csv);
-  if (process.env.BENCH_SKIP_LATEST !== "1") {
+  if (process.env.BENCH_SKIP_LATEST !== "1" && !partialRun) {
     writeFileSync(path.join(resultsDir, "latest.md"), summary.markdown);
     writeFileSync(path.join(resultsDir, "latest.csv"), summary.csv);
   }
   console.log(`\n${summary.markdown}`);
   console.log(`报告：${mdPath}`);
   console.log(`CSV：${csvPath}`);
+  console.log(`产物文本：${artifactDir}`);
 } catch (error) {
   if (serverLog && server?.exitCode !== null) {
     console.error("\n--- server log ---\n" + serverLog.slice(-4000));
@@ -158,6 +167,7 @@ async function seedWorkflows(url) {
   const files = readdirSync(workflowDir).filter((file) => file.endsWith(".json")).sort();
   for (const file of files) {
     const dsl = JSON.parse(readFileSync(path.join(workflowDir, file), "utf8"));
+    const chain = assertWorkflowDag(dsl, file);
     const response = await fetch(`${url}/api/platform/workflows`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -168,7 +178,7 @@ async function seedWorkflows(url) {
       throw new Error(`写入基准工作流 ${dsl.id} 失败：HTTP ${response.status} ${JSON.stringify(payload)}`);
     }
     console.log(
-      `已写入 ${dsl.id} · ${payload.plan?.rootNodes ?? "?"} 顶层 / ${payload.plan?.stepCount ?? "?"} 步骤`
+      `已写入 ${dsl.id} · ${payload.plan?.rootNodes ?? "?"} 顶层 / ${payload.plan?.stepCount ?? "?"} 步骤 · ${chain.length} 节点链`
     );
   }
 }
@@ -222,7 +232,7 @@ async function runPromptfoo() {
     "--output",
     jsonPath,
     "--max-concurrency",
-    "1"
+    String(concurrency)
   ];
   const limit = Number(process.env.BENCH_LIMIT || 0);
   if (Number.isFinite(limit) && limit > 0) {
@@ -230,9 +240,6 @@ async function runPromptfoo() {
   }
   if (process.env.BENCH_RANGE) {
     args.push("--filter-range", process.env.BENCH_RANGE);
-  }
-  if (process.env.BENCH_PATTERN) {
-    args.push("--filter-pattern", process.env.BENCH_PATTERN);
   }
   console.log(`\n运行 promptfoo：${bin} ${args.join(" ")}\n`);
   const code = await new Promise((resolve) => {
@@ -242,6 +249,7 @@ async function runPromptfoo() {
         ...process.env,
         BENCH_BASE_URL: baseUrl,
         BENCH_KNOWLEDGE_BASE_IDS: knowledgeBaseIds.join(","),
+        BENCH_ARTIFACT_DIR: artifactDir,
         PROMPTFOO_DISABLE_TELEMETRY: "1",
         PROMPTFOO_DISABLE_UPDATE: "1"
       },

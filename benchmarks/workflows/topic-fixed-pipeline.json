@@ -1,13 +1,33 @@
 {
   "id": "bench-topic-fixed-pipeline",
   "name": "选题基线 B · 固定评审流水线",
-  "version": 1,
-  "description": "检索 → 创新性/可行性/规范性三评审并行 → 汇总 → 单次验证 → 评审报告，流程固定，不含修正回路。",
+  "version": 2,
+  "description": "检索 → 创新性/可行性/规范性三评审并行 → 汇总 → 最终整理 → 评审报告。流程固定，不含验证与修正回路。",
   "inputs": [
-    { "name": "title", "type": "string", "required": true, "description": "论文选题名称" },
-    { "name": "field", "type": "string", "required": true, "description": "学科或研究领域" },
-    { "name": "background", "type": "string", "required": false, "description": "研究背景与已有基础" },
-    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+    {
+      "name": "title",
+      "type": "string",
+      "required": true,
+      "description": "论文选题名称"
+    },
+    {
+      "name": "field",
+      "type": "string",
+      "required": true,
+      "description": "学科或研究领域"
+    },
+    {
+      "name": "background",
+      "type": "string",
+      "required": false,
+      "description": "研究背景与已有基础"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
   ],
   "nodes": [
     {
@@ -82,31 +102,55 @@
       "prompt": "整合三份评审意见，输出总体结论、必须修改项、建议修改项与是否建议开题的判断。"
     },
     {
-      "id": "verify",
-      "kind": "verify",
-      "title": "单次验证",
-      "verifier": "observer-verifier",
-      "verifiers": ["topic-review-verifier", "topic-review-auditor"],
-      "rubric": ["创新性", "可行性", "规范性", "证据支撑"],
-      "threshold": 0.85
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "draft": "${summary.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "把评审汇总整理为可提交的选题评审报告。必须包含小节：总体结论、必须修改项、建议修改项；至少引用两处知识库证据（使用 [1][2] 编号）；不少于 1200 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
     },
     {
       "id": "report",
-      "kind": "agent",
+      "kind": "tool",
       "title": "生成评审报告",
-      "agent": "topic-review-agent",
-      "inputs": {
-        "review": "${summary.output}",
-        "score": "${verify.score}",
-        "iterations": 0
-      },
-      "prompt": "把评审意见整理成可提交的选题评审报告：总体结论、三方面评审摘要、必须修改项、验证分与证据引用。"
+      "tool": "report.build",
+      "args": {
+        "observer": "${deliverable.output}",
+        "title": "选题评审报告",
+        "bodyLabel": "评审意见"
+      }
     }
   ],
   "edges": [
-    { "from": "retrieve", "to": "reviews" },
-    { "from": "reviews", "to": "summary" },
-    { "from": "summary", "to": "verify" },
-    { "from": "verify", "to": "report" }
+    {
+      "from": "retrieve",
+      "to": "reviews"
+    },
+    {
+      "from": "reviews",
+      "to": "summary"
+    },
+    {
+      "from": "summary",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    }
   ]
 }

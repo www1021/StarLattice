@@ -3,6 +3,7 @@ export type NodeKind =
   | "end"
   | "agent"
   | "llm"
+  | "clarify"
   | "knowledge"
   | "tool"
   | "http"
@@ -22,7 +23,17 @@ export type WorkflowNode = {
   description?: string;
   agent?: string;
   agentVersion?: number;
+  capabilities?: string[];
   prompt?: string;
+  clarifyOn?: "high" | "any" | "never";
+  maxQuestions?: number;
+  outputFormat?: "text" | "json";
+  outputContract?: { required?: string[]; enums?: Record<string, string[]> };
+  loopRole?: "diagnose" | "revise";
+  promoteToAgent?: string;
+  stubOutput?: Record<string, unknown>;
+  toolCalling?: boolean;
+  expectedKeywords?: string[];
   inputs?: Record<string, unknown>;
   tool?: string;
   args?: Record<string, unknown>;
@@ -47,7 +58,7 @@ export type WorkflowNode = {
   rubric?: string[];
   threshold?: number;
   minChars?: number;
-  checks?: Array<{ type: "number_match"; tolerance?: number }>;
+  checks?: Array<{ type: "number_match"; tolerance?: number; anchors?: string[] }>;
   instructions?: string;
   assignee?: string;
   timeoutMs?: number;
@@ -262,7 +273,16 @@ export type ScheduleDecisionView = {  taskId: string;
   agentName: string;
   dependsOn: string[];
   score: number;
-  breakdown: { capability: number; availability: number; priority: number };
+  breakdown: { capability: number; availability: number; priority: number; model?: number };
+  load?: { inFlight: number; capacity: number; ratio: number };
+  model?: {
+    id: string;
+    provider: string;
+    model: string;
+    tags: string[];
+    costTier: "low" | "medium" | "high";
+    fit: number;
+  };
   reason: string;
   alternatives: Array<{ agentId: string; agentName: string; score: number; capability: number }>;
 };
@@ -291,6 +311,14 @@ export type RunRecord = {
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
+  releaseId?: string;
+  experimentId?: string;
+  arm?: string;
+  priorityClass?: number;
+  deadlineAt?: string;
+  cancelRequestedAt?: string;
+  resumeCount?: number;
+  schedulerState?: string;
 };
 
 export type StepRecord = {
@@ -321,6 +349,8 @@ export type VerifyRuleCheck = {
   label: string;
   passed: boolean;
   detail?: string;
+  informational?: boolean;
+  critical?: boolean;
 };
 
 export type VerifyAgentScore = {
@@ -328,6 +358,32 @@ export type VerifyAgentScore = {
   agentName: string;
   score: number;
   dimensions?: VerifyDimension[];
+  model?: string;
+  resolvedModel?: string;
+  modelProvider?: string;
+  requestedModel?: string;
+  modelSource?: string;
+  evidenceView?: "pool" | "cited";
+  fallback?: boolean;
+};
+
+export type VerifyCitationSummary = {
+  total: number;
+  distinct: number;
+  valid: number;
+  missing: number;
+  pool: number;
+  markers: string[];
+};
+
+export type VerifyIndependence = {
+  level: "prompt" | "evidence" | "model" | "cross-provider";
+  modelDistinct: boolean;
+  providerDistinct: boolean;
+  evidenceDistinct: boolean;
+  heuristicFallback: boolean;
+  models: string[];
+  providers: string[];
 };
 
 export type VerifyLayers = {
@@ -348,6 +404,8 @@ export type VerifyResult = {
   detail?: {
     layers?: VerifyLayers;
     verifiers?: VerifyAgentScore[];
+    citations?: VerifyCitationSummary;
+    independence?: VerifyIndependence;
     artifactNodeId?: string;
   };
   createdAt: string;
@@ -360,6 +418,8 @@ export type LoopIteration = {
   scoreBefore?: number;
   scoreAfter?: number;
   action: string;
+  modelBefore?: string;
+  modelAfter?: string;
   changes?: string[];
 };
 
@@ -422,9 +482,22 @@ export type SaveTeamResponse = {
   created: boolean;
 };
 
+export type ModelProfileView = {
+  id: string;
+  label: string;
+  description: string;
+  provider: string;
+  model: string;
+  tags: string[];
+  costTier: "low" | "medium" | "high";
+  configured: boolean;
+  custom: boolean;
+};
+
 export type RegistryAgentView = AgentRecord & {
   callCount: number;
   teamIds: string[];
+  modelProfile?: ModelProfileView;
 };
 
 export type RegistryOverview = {
@@ -582,6 +655,137 @@ export type McpCallResponse = {
   result: McpCallResult;
 };
 
+export type SchedulerWorkerView = {
+  id: string;
+  killed: boolean;
+  activeTasks: string[];
+  /** 接进程池后补充的字段；模拟 Worker 不返回。 */
+  pid?: number;
+  slot?: number;
+  status?: string;
+};
+
+/** Worker 子进程台账记录；与内存里的执行槽分开呈现。 */
+export type SchedulerProcessView = {
+  id: string;
+  host: string;
+  pid?: number;
+  slot?: number;
+  lane: string;
+  capabilities: string[];
+  capacity: number;
+  status: "starting" | "idle" | "busy" | "draining" | "dead";
+  startedAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  stoppedAt?: string;
+  stopReason?: string;
+};
+
+export type SchedulerLeadershipView = {
+  holder: string;
+  heartbeatAt: string;
+  expiresAt: string;
+};
+
+export type ReclaimerStatusView = {
+  holder: string;
+  leader: boolean;
+  intervalMs: number;
+  autoResume: boolean;
+  graceMs: number;
+  lastTickAt?: string;
+  lastReport?: {
+    at: string;
+    leader: boolean;
+    expiredWorkers: number;
+    expiredLeases: number;
+    requeuedTasks: string[];
+    expiredTasks: string[];
+    resumed: Array<{ previousRunId: string; runId: string; reason: string }>;
+    skipped: Array<{ runId: string; reason: string }>;
+  };
+};
+
+export type RunCheckpointView = {
+  id: string;
+  runId: string;
+  sequence: number;
+  createdAt: string;
+  /** trace 只返回摘要；完整状态留在服务端。 */
+  nodeCount?: number;
+  state?: Record<string, unknown>;
+};
+
+export type ReplayPolicy = "dynamic" | "static" | "critical-path" | "fifo" | "recorded";
+
+export type ReplayMetricsView = {
+  policy: ReplayPolicy;
+  capacity: number;
+  tasks: number;
+  makespanMs: number;
+  waitP50Ms: number;
+  waitP95Ms: number;
+  waitMaxMs: number;
+  avgWaitMs: number;
+  deadlineMisses: number;
+  priorityInversions: number;
+  utilization: number;
+};
+
+export type WhatIfResponse = {
+  source: { kind: "trace"; runId: string } | { kind: "sandbox" };
+  capacity: number;
+  taskCount: number;
+  recorded: ReplayMetricsView;
+  policies: ReplayMetricsView[];
+};
+
+export type SchedulerQueueEntry = {
+  id: string;
+  runId: string;
+  nodeId: string;
+  path: string;
+  priority: number;
+  status:
+    | "queued"
+    | "claimed"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "skipped"
+    | "cancelled"
+    | "expired";
+  enqueuedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  waitMs?: number;
+  reason?: string;
+  requiredCapability?: string;
+  priorityClass?: number;
+  effectivePriority?: number;
+  profile?: Record<string, unknown>;
+  agentId?: string;
+  claimedBy?: string;
+  claimExpiresAt?: string;
+  attempts?: number;
+  maxAttempts?: number;
+  deadlineAt?: string;
+};
+
+export type RunNodeView = {
+  runId: string;
+  nodeId: string;
+  path: string;
+  status: "pending" | "ready" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+  priority: number;
+  attempts: number;
+  error?: string;
+  readyAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 export type TraceResponse = {
   run: RunRecord;
   steps: StepRecord[];
@@ -589,6 +793,9 @@ export type TraceResponse = {
   loopIterations: LoopIteration[];
   approvals: ApprovalRecord[];
   interactions: InteractionRecord[];
+  queue?: SchedulerQueueEntry[];
+  runNodes?: RunNodeView[];
+  checkpoints?: RunCheckpointView[];
 };
 
 export type RunMetrics = {
@@ -614,4 +821,234 @@ export type MetricsReport = {
   costRatePer1kTokens: number;
   overall: RunMetrics;
   workflows: Array<{ workflowId: string } & RunMetrics>;
+  alerts: AnomalyAlert[];
+};
+
+export type AnomalyAlert = {
+  workflowId: string;
+  kind: "failure_spike" | "latency_spike" | "score_drift";
+  severity: "warning" | "critical";
+  message: string;
+  value: number;
+  threshold: number;
+  sampleSize: number;
+};
+
+export type EvolutionRelease = {
+  id: string;
+  workflowId: string;
+  version: number;
+  label: string;
+  status: "draft" | "active" | "canary" | "rolled_back" | "archived";
+  origin: string;
+  parentReleaseId?: string;
+  candidateId?: string;
+  artifactHash: string;
+  changeSummary: string;
+  createdBy: string;
+  createdAt: string;
+  activatedAt?: string;
+  retiredAt?: string;
+  artifact?: {
+    workflow: { id: string; version: number };
+    workflows: Array<{ id: string; version: number }>;
+    agents: AgentRecord[];
+  };
+};
+
+export type EvolutionChange = {
+  id: string;
+  kind: "prompt_patch" | "model_route" | "tool_policy" | "agent_swap" | "workflow_path";
+  target: string;
+  before: string;
+  after: string;
+  rationale?: string;
+};
+
+export type EvolutionSecurityFinding = {
+  id: string;
+  severity: "critical" | "high" | "medium" | "low";
+  rule: string;
+  target: string;
+  message: string;
+  evidence: string;
+};
+
+export type EvolutionGateCase = {
+  caseId: string;
+  title: string;
+  baseScore?: number;
+  candidateScore?: number;
+  delta?: number;
+  baseStatus: string;
+  candidateStatus: string;
+  baseTokens: number;
+  candidateTokens: number;
+  threshold: number;
+  target: boolean;
+};
+
+export type EvolutionGateDecision = {
+  passed: boolean;
+  reasons: string[];
+  policy: Record<string, unknown>;
+  stats: {
+    caseCount: number;
+    pairedCount: number;
+    baseMean: number;
+    candidateMean: number;
+    meanDelta: number;
+    ciLow: number;
+    ciHigh: number;
+    win: number;
+    loss: number;
+    tie: number;
+    targetDelta?: number;
+    baseTokens: number;
+    candidateTokens: number;
+    costIncreasePct: number;
+  };
+  perCase: EvolutionGateCase[];
+  mode: "stub" | "live";
+  evaluatedAt: string;
+};
+
+export type EvolutionCandidate = {
+  id: string;
+  workflowId: string;
+  baseReleaseId: string;
+  draftReleaseId?: string;
+  promotedReleaseId?: string;
+  source: "self_loop" | "manual" | "diagnose" | "rollback";
+  title: string;
+  summary: string;
+  changes: EvolutionChange[];
+  proposedBy: string;
+  status:
+    | "draft"
+    | "gating"
+    | "gate_passed"
+    | "gate_failed"
+    | "approved"
+    | "rejected"
+    | "promoted"
+    | "withdrawn";
+  security?: {
+    passed: boolean;
+    findings: EvolutionSecurityFinding[];
+    scannedAt: string;
+  };
+  gate?: EvolutionGateDecision;
+  decisionComment?: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type EvolutionEvaluation = {
+  id: string;
+  candidateId: string;
+  datasetId: string;
+  baseReleaseId: string;
+  candidateReleaseId: string;
+  mode: "stub" | "live";
+  status: "running" | "passed" | "failed" | "error";
+  decision?: EvolutionGateDecision;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+};
+
+export type EvolutionRollout = {
+  id: string;
+  workflowId: string;
+  releaseId: string;
+  baseReleaseId: string;
+  percent: number;
+  status: "canary" | "promoted" | "rolled_back" | "stopped";
+  minSamplesPerArm: number;
+  maxErrorRateDelta: number;
+  maxScoreDrop: number;
+  rollbackReason?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+};
+
+export type EvolutionObservation = {
+  id: string;
+  rolloutId: string;
+  runId: string;
+  arm: "control" | "treatment";
+  workflowId: string;
+  releaseId: string;
+  status: string;
+  passed: boolean;
+  score?: number;
+  durationMs?: number;
+  tokens: number;
+  createdAt: string;
+};
+
+export type EvolutionAlert = {
+  id: string;
+  severity: "critical" | "high" | "medium" | "low";
+  kind: "guardrail" | "gate" | "security" | "system";
+  entityType: string;
+  entityId: string;
+  title: string;
+  detail: string;
+  acknowledged: boolean;
+  createdAt: string;
+};
+
+export type EvolutionLedgerEvent = {
+  seq: number;
+  type: string;
+  entityType: string;
+  entityId: string;
+  payload: Record<string, unknown>;
+  prevHash: string;
+  hash: string;
+  createdAt: string;
+};
+
+export type EvolutionLedger = {
+  events: EvolutionLedgerEvent[];
+  integrity: { valid: boolean; events: number; brokenAt?: number };
+};
+
+export type EvolutionOverview = {
+  enabled: boolean;
+  releases: {
+    total: number;
+    active: number;
+    canary: number;
+    byWorkflow: Record<string, number>;
+  };
+  candidates: { total: number; byStatus: Record<string, number> };
+  rollouts: { total: number; canary: number; rolledBack: number };
+  alerts: { open: number };
+  ledger: { valid: boolean; events: number; brokenAt?: number };
+};
+
+export type EvolutionDataset = {
+  id: string;
+  workflowId: string;
+  name: string;
+  version: number;
+  description: string;
+  createdAt: string;
+  cases: Array<{
+    id: string;
+    datasetId: string;
+    title: string;
+    input: Record<string, unknown>;
+    expected: Record<string, unknown>;
+    rubric: string[];
+    threshold: number;
+    tags: string[];
+  }>;
 };

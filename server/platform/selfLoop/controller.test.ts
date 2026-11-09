@@ -176,6 +176,74 @@ test("respects time and token budgets", () => {
   assert.equal(tokenStop.stopReason, "budget_tokens");
 });
 
+test("uses the model diagnosis before heuristic keyword matching", () => {
+  const loop = controller({ threshold: 0.9, maxIterations: 3 });
+  const decision = loop.evaluate({
+    iteration: 1,
+    score: 0.7,
+    previousScore: 0.62,
+    issues: ["引用来源缺失"],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 100,
+    modelDecision: {
+      rootCause: "使用了毛销售额口径，未扣除退款。",
+      action: "rewrite_agent",
+      promptPatch: "当数据包含退款字段时，revenueBasis 必须选择 net。",
+      confidence: 0.9
+    }
+  });
+
+  // 验证问题命中了检索关键词，但模型诊断仍然优先。
+  assert.equal(decision.action, "rewrite");
+  assert.equal(decision.decisionSource, "model");
+  assert.equal(decision.promptPatch, "当数据包含退款字段时，revenueBasis 必须选择 net。");
+  assert.match(decision.reason, /模型诊断：使用了毛销售额口径/);
+  assert.ok(decision.changes.some((change) => change.includes("决策来源：模型诊断")));
+  assert.ok(decision.changes.some((change) => change.includes("提示词补丁")));
+});
+
+test("falls back to the heuristic when the model action is unknown", () => {
+  const loop = controller({ threshold: 0.9, maxIterations: 3 });
+  const decision = loop.evaluate({
+    iteration: 1,
+    score: 0.7,
+    previousScore: 0.62,
+    issues: ["需要补检索知识库规则"],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 100,
+    modelDecision: { action: "restart_everything", rootCause: "无法识别的动作" }
+  });
+
+  assert.equal(decision.continue, true);
+  assert.equal(decision.action, "retrieve");
+  assert.equal(decision.decisionSource, "heuristic");
+  assert.match(decision.reason, /补充检索/);
+});
+
+test("records the diagnosis source even when the round passes", () => {
+  const loop = controller({ threshold: 0.7, maxIterations: 3 });
+  const decision = loop.evaluate({
+    iteration: 1,
+    score: 0.9,
+    previousScore: 0.6,
+    issues: [],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 100,
+    modelDecision: {
+      action: "rewrite_agent",
+      promptPatch: "当数据包含退款字段时，revenueBasis 必须选择 net。"
+    }
+  });
+
+  assert.equal(decision.continue, false);
+  assert.equal(decision.stopReason, "passed");
+  assert.equal(decision.decisionSource, "model");
+  assert.ok(decision.changes.some((change) => change.includes("决策来源：模型诊断（补丁已应用）")));
+});
+
 test("stops when the while condition no longer holds", () => {
   const loop = controller({ threshold: 0.95, maxIterations: 5 });
   const decision = loop.evaluate({
@@ -190,3 +258,176 @@ test("stops when the while condition no longer holds", () => {
   assert.equal(decision.continue, false);
   assert.equal(decision.stopReason, "while_false");
 });
+
+test("model diagnosis can swap to a stronger model from the catalog", () => {
+  const loop = controller({ threshold: 0.9, maxIterations: 5 });
+  const decision = loop.evaluate({
+    iteration: 1,
+    score: 0.62,
+    previousScore: 0.6,
+    issues: ["口径解释不完整"],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 100,
+    currentModelId: "fast",
+    modelDecision: {
+      action: "swap_model",
+      nextModelId: "reasoning",
+      rootCause: "快速模型没有识别退款口径",
+      promptPatch: "当数据含退款时按净销售额核算。",
+      confidence: 0.9
+    }
+  });
+
+  assert.equal(decision.continue, true);
+  assert.equal(decision.action, "swap_model");
+  assert.equal(decision.nextModelId, "reasoning");
+  assert.equal(decision.nextModelLabel, "推理模型");
+  assert.equal(decision.decisionSource, "model");
+  assert.equal(decision.promptPatch, "当数据含退款时按净销售额核算。");
+  assert.ok(decision.changes.some((change) => change.includes("执行模型 fast → reasoning")));
+});
+
+test("model diagnosis with an unknown or unchanged target falls back to rewrite", () => {
+  const unknown = controller({}).evaluate({
+    iteration: 1,
+    score: 0.6,
+    previousScore: 0.55,
+    issues: ["目标表述不可测"],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 10,
+    currentModelId: "fast",
+    modelDecision: { action: "swap_model", nextModelId: "not-registered" }
+  });
+  assert.equal(unknown.action, "rewrite");
+  assert.equal(unknown.decisionSource, "model");
+  assert.match(unknown.reason, /没有给出可用的目标模型/);
+
+  const unchanged = controller({}).evaluate({
+    iteration: 1,
+    score: 0.6,
+    previousScore: 0.55,
+    issues: ["目标表述不可测"],
+    whilePassed: true,
+    elapsedMs: 10,
+    tokensUsed: 10,
+    currentModelId: "fast",
+    modelDecision: { action: "swap_model", nextModelId: "fast" }
+  });
+  assert.equal(unchanged.action, "rewrite");
+});
+
+test("model action aliases normalize to swap_model", () => {
+  for (const alias of ["upgrade_model", "switch_model", "change_model"]) {
+    const decision = controller({ threshold: 0.9, maxIterations: 5 }).evaluate({
+      iteration: 1,
+      score: 0.6,
+      previousScore: 0.55,
+      issues: ["需要更强推理"],
+      whilePassed: true,
+      elapsedMs: 10,
+      tokensUsed: 10,
+      currentModelId: "fast",
+      modelDecision: { action: alias, nextModelId: "reasoning" }
+    });
+    assert.equal(decision.action, "swap_model", alias);
+    assert.equal(decision.nextModelId, "reasoning", alias);
+  }
+});
+
+test("heuristic upgrades the model after a stall when profiles resolve to different upstream models", () => {
+  const restore = withEnv({
+    PLATFORM_MODEL_FAST: "fast-model",
+    PLATFORM_MODEL_REASONING: "strong-model"
+  });
+  try {
+    const loop = controller({ threshold: 0.9, maxIterations: 5 });
+    loop.evaluate({
+      iteration: 1,
+      score: 0.6,
+      previousScore: 0.6,
+      issues: ["目标表述不可测"],
+      whilePassed: true,
+      elapsedMs: 10,
+      tokensUsed: 100,
+      currentModelId: "fast"
+    });
+    const second = loop.evaluate({
+      iteration: 2,
+      score: 0.6,
+      previousScore: 0.6,
+      issues: ["目标表述不可测"],
+      whilePassed: true,
+      elapsedMs: 20,
+      tokensUsed: 200,
+      currentModelId: "fast"
+    });
+
+    assert.equal(second.action, "swap_model");
+    assert.equal(second.nextModelId, "reasoning");
+    assert.match(second.reason, /连续 1 轮没有提升/);
+  } finally {
+    restore();
+  }
+});
+
+test("heuristic keeps agent swap when model profiles share the same upstream model", () => {
+  const restore = withEnv({
+    PLATFORM_MODEL_FAST: "same-model",
+    PLATFORM_MODEL_REASONING: "same-model"
+  });
+  try {
+    const weak = agent("weak-agent", "普通教案 Agent", [{ tag: "教案设计", weight: 0.7 }]);
+    const strong = agent("strong-agent", "资深教案 Agent", [{ tag: "教案设计", weight: 0.92 }]);
+    const loop = controller({ threshold: 0.9, maxIterations: 5, agents: [weak, strong] });
+    loop.evaluate({
+      iteration: 1,
+      score: 0.6,
+      previousScore: 0.6,
+      issues: ["目标表述不可测"],
+      whilePassed: true,
+      elapsedMs: 10,
+      tokensUsed: 100,
+      currentAgentId: weak.id,
+      currentModelId: "fast"
+    });
+    const second = loop.evaluate({
+      iteration: 2,
+      score: 0.6,
+      previousScore: 0.6,
+      issues: ["目标表述不可测"],
+      whilePassed: true,
+      elapsedMs: 20,
+      tokensUsed: 200,
+      currentAgentId: weak.id,
+      currentModelId: "fast"
+    });
+
+    assert.equal(second.action, "swap_agent");
+    assert.equal(second.nextAgentId, "strong-agent");
+  } finally {
+    restore();
+  }
+});
+
+function withEnv(values: Record<string, string | undefined>) {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  };
+}

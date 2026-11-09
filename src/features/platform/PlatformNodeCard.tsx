@@ -142,6 +142,10 @@ function summarize(node: WorkflowNode): string {
       return `调用 ${node.agent || "未配置 Agent"}`;
     case "llm":
       return `${node.model || "默认模型"}${node.thinking === false ? "" : " · 思考摘要"}`;
+    case "clarify":
+      return `意图理解 → Prompt 改写 · ${
+        node.clarifyOn === "never" ? "不暂停" : node.clarifyOn === "any" ? "有歧义即澄清" : "高影响歧义澄清"
+      }`;
     case "knowledge":
       return `检索 ${node.query || "未设置查询"}`;
     case "tool":

@@ -1,19 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { PlatformError, type AgentRecord } from "../types.js";
+import {
+  costTierRank,
+  resolveModel,
+  type ModelCostTier
+} from "../models/catalog.js";
 
 export type SchedulerWeights = {
   capability: number;
   availability: number;
   priority: number;
+  /** 任务声明 modelTags 时参与打分；未声明时该项权重为 0，保持旧公式结果不变。 */
+  model: number;
 };
 
 export const DEFAULT_SCHEDULER_WEIGHTS: SchedulerWeights = {
   capability: 0.5,
   availability: 0.3,
-  priority: 0.2
+  priority: 0.2,
+  model: 0.15
 };
 
-export const SCHEDULER_FORMULA = "0.5 × 能力匹配 + 0.3 × 可用度 + 0.2 × 优先级";
+export const SCHEDULER_FORMULA =
+  "0.5 × 能力匹配 + 0.3 × 可用度 + 0.2 × 优先级（任务声明模型要求时追加 0.15 × 模型匹配并归一化）";
 
 export type ScheduleTask = {
   id: string;
@@ -22,6 +31,19 @@ export type ScheduleTask = {
   priority?: number;
   dependsOn?: string[];
   allowedAgentIds?: string[];
+  /** 模型能力要求（如 reasoning / verifier / fast）；候选 Agent 的模型标签需至少命中一个。 */
+  modelTags?: string[];
+  /** 成本上限；超过该档的模型优先排除，若全部超限则保留最低成本候选并记录降级。 */
+  maxCostTier?: ModelCostTier;
+};
+
+export type ScheduleModelInfo = {
+  id: string;
+  provider: string;
+  model: string;
+  tags: string[];
+  costTier: ModelCostTier;
+  fit: number;
 };
 
 export type AgentLoadInput = {
@@ -34,6 +56,8 @@ export type SchedulerOptions = {
   loads?: Record<string, AgentLoadInput>;
   weights?: Partial<SchedulerWeights>;
   reserve?: boolean;
+  /** 运行中重调度：排除已经失败的 Agent，避免把同一个任务反复派给同一方。 */
+  excludeAgentIds?: string[];
 };
 
 export type CapabilityMatch = {
@@ -53,7 +77,10 @@ export type ScheduleDecision = {
     capability: number;
     availability: number;
     priority: number;
+    model: number;
   };
+  /** 执行该任务的 Agent 默认模型及与任务模型要求的匹配度。 */
+  model: ScheduleModelInfo;
   matchedCapabilities: CapabilityMatch[];
   missingCapabilities: string[];
   load: {
@@ -112,6 +139,9 @@ type Candidate = {
   availability: number;
   priority: number;
   score: number;
+  model: ScheduleModelInfo;
+  /** 候选模型超过任务成本上限时为 true；只有在全部候选都超限时仍可被选中。 */
+  costCapped: boolean;
   load: {
     inFlight: number;
     capacity: number;
@@ -149,6 +179,7 @@ export function createSchedule(
   }
 
   const scheduled = new Set(completed);
+  const excluded = new Set(options.excludeAgentIds ?? []);
   const decisions: ScheduleDecision[] = [];
   const unassigned: UnassignedTask[] = [];
   const pending = [...tasks];
@@ -164,10 +195,20 @@ export function createSchedule(
         continue;
       }
 
-      const candidates = evaluateCandidates(task, agents, loads, weights);
-      const eligible = candidates.filter(
-        (candidate) => task.capabilities.length === 0 || candidate.capability > 0
+      const candidates = evaluateCandidates(task, agents, loads, weights, excluded);
+      const capable = candidates.filter(
+        (candidate) =>
+          (task.capabilities.length === 0 || candidate.capability > 0) &&
+          (task.modelTags === undefined ||
+            task.modelTags.length === 0 ||
+            candidate.model.fit > 0)
       );
+      const withinCost =
+        task.maxCostTier === undefined
+          ? capable
+          : capable.filter((candidate) => !candidate.costCapped);
+      // 全部候选都超过成本上限时保留最低成本候选，并在原因里标记降级，避免任务直接卡死。
+      const eligible = withinCost.length > 0 ? withinCost : capable;
       if (eligible.length === 0) {
         unassigned.push(buildUnassigned(task, candidates));
       } else {
@@ -188,12 +229,14 @@ export function createSchedule(
           breakdown: {
             capability: best.capability,
             availability: best.availability,
-            priority: best.priority
+            priority: best.priority,
+            model: best.model.fit
           },
+          model: best.model,
           matchedCapabilities: best.matched,
           missingCapabilities: best.missing,
           load: best.load,
-          reason: buildReason(best, eligible.slice(1)),
+          reason: buildReason(best, eligible.slice(1), task),
           alternatives
         });
         scheduled.add(task.id);
@@ -239,7 +282,8 @@ function evaluateCandidates(
   task: ScheduleTask,
   agents: AgentRecord[],
   loads: Map<string, AgentLoad>,
-  weights: SchedulerWeights
+  weights: SchedulerWeights,
+  excluded: Set<string>
 ): Candidate[] {
   const allowed =
     task.allowedAgentIds && task.allowedAgentIds.length > 0
@@ -249,18 +293,27 @@ function evaluateCandidates(
   const candidates: Candidate[] = [];
 
   for (const agent of agents) {
-    if (!agent.enabled || (allowed && !allowed.has(agent.id))) {
+    if (!agent.enabled || excluded.has(agent.id) || (allowed && !allowed.has(agent.id))) {
       continue;
     }
     const match = matchCapabilities(agent, task.capabilities);
     const load = loads.get(agent.id) ?? { inFlight: 0, capacity: 1 };
     const ratio = Math.min(1, load.inFlight / load.capacity);
     const availability = round4(1 - ratio);
+    const model = modelInfoFor(agent, task.modelTags ?? []);
+    const modelWeight = task.modelTags && task.modelTags.length > 0 ? weights.model : 0;
+    const totalWeight =
+      weights.capability + weights.availability + weights.priority + modelWeight;
     const score = round4(
-      weights.capability * match.capability +
+      (weights.capability * match.capability +
         weights.availability * availability +
-        weights.priority * priority
+        weights.priority * priority +
+        modelWeight * model.fit) /
+        (totalWeight || 1)
     );
+    const costCapped =
+      task.maxCostTier !== undefined &&
+      costTierRank(model.costTier) > costTierRank(task.maxCostTier);
     candidates.push({
       agent,
       capability: match.capability,
@@ -269,6 +322,8 @@ function evaluateCandidates(
       availability,
       priority,
       score,
+      model,
+      costCapped,
       load: { ...load, ratio: round4(ratio) }
     });
   }
@@ -309,7 +364,25 @@ function overlaps(capabilityTag: string, requested: string) {
   return left === right || left.includes(right) || right.includes(left);
 }
 
-function buildReason(best: Candidate, alternatives: Candidate[]) {
+function modelInfoFor(agent: AgentRecord, requiredTags: string[]): ScheduleModelInfo {
+  const profile = resolveModel(agent.model, { source: "agent" });
+  const tags = profile.tags.length > 0 ? profile.tags : [profile.id];
+  const matched = requiredTags.filter(
+    (tag) =>
+      profile.id === tag ||
+      tags.some((candidate) => candidate.toLowerCase() === tag.toLowerCase())
+  ).length;
+  return {
+    id: profile.id,
+    provider: profile.provider,
+    model: profile.model,
+    tags,
+    costTier: profile.costTier,
+    fit: requiredTags.length === 0 ? 1 : round4(matched / requiredTags.length)
+  };
+}
+
+function buildReason(best: Candidate, alternatives: Candidate[], task: ScheduleTask) {
   const capabilityText =
     best.matched.length > 0
       ? best.matched.map((item) => `${item.tag} ${item.weight.toFixed(2)}`).join("、")
@@ -321,7 +394,12 @@ function buildReason(best: Candidate, alternatives: Candidate[]) {
           .map((item) => `${item.agent.name}（${item.score.toFixed(2)}）`)
           .join("、")}`
       : "；无其他候选";
-  return `选择 ${best.agent.name}：能力匹配 ${best.capability.toFixed(2)}（${capabilityText}），可用度 ${best.availability.toFixed(2)}（负载 ${best.load.inFlight}/${best.load.capacity}），优先级 ${best.priority.toFixed(2)}，综合得分 ${best.score.toFixed(2)}${alternativeText}。`;
+  const modelText =
+    task.modelTags && task.modelTags.length > 0
+      ? `，模型 ${best.model.id}（${best.model.model}，${best.model.costTier}，匹配 ${best.model.fit.toFixed(2)}）`
+      : `，模型 ${best.model.id}`;
+  const costText = best.costCapped ? "，已超过任务成本上限，按最低成本候选降级" : "";
+  return `选择 ${best.agent.name}：能力匹配 ${best.capability.toFixed(2)}（${capabilityText}），可用度 ${best.availability.toFixed(2)}（负载 ${best.load.inFlight}/${best.load.capacity}），优先级 ${best.priority.toFixed(2)}${modelText}${costText}，综合得分 ${best.score.toFixed(2)}${alternativeText}。`;
 }
 
 function buildUnassigned(task: ScheduleTask, candidates: Candidate[]): UnassignedTask {
@@ -329,10 +407,14 @@ function buildUnassigned(task: ScheduleTask, candidates: Candidate[]): Unassigne
     task.capabilities.length > 0
       ? `「${task.capabilities.join("、")}」`
       : "任务所需";
+  const modelText =
+    task.modelTags && task.modelTags.length > 0
+      ? `、模型标签「${task.modelTags.join("、")}」`
+      : "";
   return {
     taskId: task.id,
     taskTitle: task.title ?? task.id,
-    reason: `没有具备 ${capabilityText} 能力且启用的 Agent，未分配。`,
+    reason: `没有具备 ${capabilityText} 能力${modelText}且启用的 Agent，未分配。`,
     candidates: candidates.slice(0, 3).map((candidate) => ({
       agentId: candidate.agent.id,
       agentName: candidate.agent.name,
@@ -358,7 +440,8 @@ function resolveWeights(weights?: Partial<SchedulerWeights>): SchedulerWeights {
       0,
       1
     ),
-    priority: clampNumber(weights?.priority ?? DEFAULT_SCHEDULER_WEIGHTS.priority, 0, 1)
+    priority: clampNumber(weights?.priority ?? DEFAULT_SCHEDULER_WEIGHTS.priority, 0, 1),
+    model: clampNumber(weights?.model ?? DEFAULT_SCHEDULER_WEIGHTS.model, 0, 1)
   };
 }
 
@@ -405,7 +488,8 @@ export function parseScheduleRequest(body: unknown): {
           : {
               capability: parseWeight(record.weights, "capability"),
               availability: parseWeight(record.weights, "availability"),
-              priority: parseWeight(record.weights, "priority")
+              priority: parseWeight(record.weights, "priority"),
+              model: parseWeight(record.weights, "model")
             }
     }
   };
@@ -434,13 +518,27 @@ function parseTask(value: unknown, index: number): ScheduleTask {
       throw new PlatformError(`tasks[${index}].priority 必须是 0 到 1 之间的数字。`, 400);
     }
   }
+  const maxCostTier = record.maxCostTier;
+  if (
+    maxCostTier !== undefined &&
+    maxCostTier !== "low" &&
+    maxCostTier !== "medium" &&
+    maxCostTier !== "high"
+  ) {
+    throw new PlatformError(
+      `tasks[${index}].maxCostTier 只能是 low / medium / high。`,
+      400
+    );
+  }
   return {
     id,
     title: typeof record.title === "string" ? record.title : undefined,
     capabilities,
     priority: record.priority as number | undefined,
     dependsOn: parseStringArray(record.dependsOn, `tasks[${index}].dependsOn`),
-    allowedAgentIds: parseStringArray(record.allowedAgentIds, `tasks[${index}].allowedAgentIds`)
+    allowedAgentIds: parseStringArray(record.allowedAgentIds, `tasks[${index}].allowedAgentIds`),
+    modelTags: parseStringArray(record.modelTags, `tasks[${index}].modelTags`),
+    maxCostTier: maxCostTier as ModelCostTier | undefined
   };
 }
 

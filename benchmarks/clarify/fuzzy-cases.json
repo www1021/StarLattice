@@ -1,0 +1,285 @@
+{
+  "description": "意图澄清 A/B 用例：raw 为模糊原始需求；answer 为脚本注入的模拟用户补充（非真人）；slots 为预期规格槽位，用于确定性覆盖检查。",
+  "cases": [
+    {
+      "id": "fz-01",
+      "prompt": "帮我准备一节课",
+      "answer": "五年级数学《分数的意义》，40 分钟，用小组动手操作的方式。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["分数"] },
+        { "id": "subject", "label": "学科", "keywords": ["数学"] },
+        { "id": "grade", "label": "年级", "keywords": ["五年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["动手操作", "操作活动"] }
+      ],
+      "expectedPoints": ["围绕五年级数学分数的意义设计 40 分钟教案", "安排小组动手操作活动"],
+      "relevantDocs": ["g5-math-fractions.md"]
+    },
+    {
+      "id": "fz-02",
+      "prompt": "光合作用怎么讲",
+      "answer": "七年级生物，45 分钟，用实验演示引出结论。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["光合作用"] },
+        { "id": "subject", "label": "学科", "keywords": ["生物"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["实验演示", "演示实验"] }
+      ],
+      "expectedPoints": ["围绕七年级生物光合作用设计 45 分钟教案", "通过实验演示说明光合作用条件"],
+      "relevantDocs": ["g7-bio-photosynthesis.md"]
+    },
+    {
+      "id": "fz-03",
+      "prompt": "古诗教学怎么设计",
+      "answer": "二年级语文《静夜思》，30 分钟，用角色扮演体会诗人情感。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["静夜思"] },
+        { "id": "subject", "label": "学科", "keywords": ["语文"] },
+        { "id": "grade", "label": "年级", "keywords": ["二年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["30 分钟", "30分钟", "三十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["角色扮演"] }
+      ],
+      "expectedPoints": ["围绕二年级语文静夜思设计 30 分钟教案", "用角色扮演体会思乡情感"],
+      "relevantDocs": ["g2-chinese-jingyesi.md"]
+    },
+    {
+      "id": "fz-04",
+      "prompt": "牛顿第一定律这节课",
+      "answer": "八年级物理，45 分钟，用演示实验帮助学生建立惯性概念。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["牛顿第一定律"] },
+        { "id": "subject", "label": "学科", "keywords": ["物理"] },
+        { "id": "grade", "label": "年级", "keywords": ["八年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["演示实验", "实验演示"] }
+      ],
+      "expectedPoints": ["围绕八年级物理牛顿第一定律设计 45 分钟教案", "用演示实验建立惯性概念"],
+      "relevantDocs": ["g8-physics-newton-first-law.md"]
+    },
+    {
+      "id": "fz-05",
+      "prompt": "现在进行时语法课",
+      "answer": "七年级英语，40 分钟，用情景对话练习句型。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["现在进行时"] },
+        { "id": "subject", "label": "学科", "keywords": ["英语"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["情景对话"] }
+      ],
+      "expectedPoints": ["围绕七年级英语现在进行时设计 40 分钟教案", "用情景对话练习现在进行时句型"],
+      "relevantDocs": ["g7-english-present-continuous.md"]
+    },
+    {
+      "id": "fz-06",
+      "prompt": "辛亥革命怎么设计",
+      "answer": "八年级历史，45 分钟，用史料分析引导学生归纳影响。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["辛亥革命"] },
+        { "id": "subject", "label": "学科", "keywords": ["历史"] },
+        { "id": "grade", "label": "年级", "keywords": ["八年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["史料分析", "史料"] }
+      ],
+      "expectedPoints": ["围绕八年级历史辛亥革命设计 45 分钟教案", "用史料分析归纳辛亥革命影响"],
+      "relevantDocs": ["g8-history-xinhai-revolution.md"]
+    },
+    {
+      "id": "fz-07",
+      "prompt": "化学方程式配平",
+      "answer": "九年级化学，45 分钟，用小组竞赛巩固配平方法。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["化学方程式"] },
+        { "id": "subject", "label": "学科", "keywords": ["化学"] },
+        { "id": "grade", "label": "年级", "keywords": ["九年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["竞赛"] }
+      ],
+      "expectedPoints": ["围绕九年级化学方程式配平设计 45 分钟教案", "用小组竞赛巩固配平方法"],
+      "relevantDocs": ["g9-chemistry-equations.md"]
+    },
+    {
+      "id": "fz-08",
+      "prompt": "细胞结构",
+      "answer": "七年级生物，40 分钟，用模型制作帮助学生记住结构。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["细胞结构", "细胞"] },
+        { "id": "subject", "label": "学科", "keywords": ["生物"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["模型制作", "制作模型"] }
+      ],
+      "expectedPoints": ["围绕七年级生物细胞结构设计 40 分钟教案", "用模型制作巩固细胞结构"],
+      "relevantDocs": ["g7-bio-cell-structure.md"]
+    },
+    {
+      "id": "fz-09",
+      "prompt": "我想让学生理解分数",
+      "answer": "五年级数学《分数的意义》，40 分钟，重点讲分数单位，用动手操作。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["分数"] },
+        { "id": "subject", "label": "学科", "keywords": ["数学"] },
+        { "id": "grade", "label": "年级", "keywords": ["五年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["动手操作", "操作活动"] }
+      ],
+      "expectedPoints": ["围绕五年级数学分数的意义设计 40 分钟教案", "讲清分数单位并安排操作活动"],
+      "relevantDocs": ["g5-math-fractions.md"]
+    },
+    {
+      "id": "fz-10",
+      "prompt": "光合作用需要设计实验吗",
+      "answer": "七年级生物，45 分钟，需要实验演示，引导学生自己得出结论。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["光合作用"] },
+        { "id": "subject", "label": "学科", "keywords": ["生物"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["实验演示", "演示实验"] }
+      ],
+      "expectedPoints": ["围绕七年级生物光合作用设计 45 分钟教案", "用实验演示引导学生归纳结论"],
+      "relevantDocs": ["g7-bio-photosynthesis.md"]
+    },
+    {
+      "id": "fz-11",
+      "prompt": "静夜思适合二年级吗",
+      "answer": "二年级语文，30 分钟，用角色扮演体会诗人情感。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["静夜思"] },
+        { "id": "subject", "label": "学科", "keywords": ["语文"] },
+        { "id": "grade", "label": "年级", "keywords": ["二年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["30 分钟", "30分钟", "三十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["角色扮演"] }
+      ],
+      "expectedPoints": ["围绕二年级语文静夜思设计 30 分钟教案", "用角色扮演体会思乡情感"],
+      "relevantDocs": ["g2-chinese-jingyesi.md"]
+    },
+    {
+      "id": "fz-12",
+      "prompt": "牛顿第一定律学生总搞混",
+      "answer": "八年级物理，45 分钟，用错题诊断区分惯性和力。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["牛顿第一定律"] },
+        { "id": "subject", "label": "学科", "keywords": ["物理"] },
+        { "id": "grade", "label": "年级", "keywords": ["八年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["错题诊断", "错题"] }
+      ],
+      "expectedPoints": ["围绕八年级物理牛顿第一定律设计 45 分钟教案", "用错题诊断区分惯性与力"],
+      "relevantDocs": ["g8-physics-newton-first-law.md"]
+    },
+    {
+      "id": "fz-13",
+      "prompt": "现在进行时怎么练",
+      "answer": "七年级英语，40 分钟，用情景对话反复操练。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["现在进行时"] },
+        { "id": "subject", "label": "学科", "keywords": ["英语"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["情景对话"] }
+      ],
+      "expectedPoints": ["围绕七年级英语现在进行时设计 40 分钟教案", "用情景对话操练句型"],
+      "relevantDocs": ["g7-english-present-continuous.md"]
+    },
+    {
+      "id": "fz-14",
+      "prompt": "辛亥革命背不下来",
+      "answer": "八年级历史，45 分钟，用时间轴梳理事件脉络。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["辛亥革命"] },
+        { "id": "subject", "label": "学科", "keywords": ["历史"] },
+        { "id": "grade", "label": "年级", "keywords": ["八年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["时间轴"] }
+      ],
+      "expectedPoints": ["围绕八年级历史辛亥革命设计 45 分钟教案", "用时间轴梳理事件脉络"],
+      "relevantDocs": ["g8-history-xinhai-revolution.md"]
+    },
+    {
+      "id": "fz-15",
+      "prompt": "化学方程式总配不平",
+      "answer": "九年级化学，45 分钟，用小组竞赛巩固配平。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["化学方程式"] },
+        { "id": "subject", "label": "学科", "keywords": ["化学"] },
+        { "id": "grade", "label": "年级", "keywords": ["九年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["竞赛"] }
+      ],
+      "expectedPoints": ["围绕九年级化学方程式设计 45 分钟教案", "用小组竞赛巩固配平方法"],
+      "relevantDocs": ["g9-chemistry-equations.md"]
+    },
+    {
+      "id": "fz-16",
+      "prompt": "细胞结构太抽象",
+      "answer": "七年级生物，40 分钟，用模型制作把结构具体化。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["细胞结构", "细胞"] },
+        { "id": "subject", "label": "学科", "keywords": ["生物"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["模型制作", "制作模型"] }
+      ],
+      "expectedPoints": ["围绕七年级生物细胞结构设计 40 分钟教案", "用模型制作把结构具体化"],
+      "relevantDocs": ["g7-bio-cell-structure.md"]
+    },
+    {
+      "id": "fz-17",
+      "prompt": "五年级数学，讲分数",
+      "answer": "40 分钟，用小组动手操作，重点讲分数单位。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["分数"] },
+        { "id": "subject", "label": "学科", "keywords": ["数学"] },
+        { "id": "grade", "label": "年级", "keywords": ["五年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["40 分钟", "40分钟", "四十分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["动手操作", "操作活动"] }
+      ],
+      "expectedPoints": ["围绕五年级数学分数的意义设计 40 分钟教案", "讲清分数单位并安排操作活动"],
+      "relevantDocs": ["g5-math-fractions.md"]
+    },
+    {
+      "id": "fz-18",
+      "prompt": "七年级生物，光合作用",
+      "answer": "45 分钟，用实验演示引导学生归纳条件。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["光合作用"] },
+        { "id": "subject", "label": "学科", "keywords": ["生物"] },
+        { "id": "grade", "label": "年级", "keywords": ["七年级"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["实验演示", "演示实验"] }
+      ],
+      "expectedPoints": ["围绕七年级生物光合作用设计 45 分钟教案", "用实验演示归纳光合作用条件"],
+      "relevantDocs": ["g7-bio-photosynthesis.md"]
+    },
+    {
+      "id": "fz-19",
+      "prompt": "初二物理牛顿第一定律，45 分钟",
+      "answer": "用演示实验讲惯性，配合分层练习。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["牛顿第一定律"] },
+        { "id": "subject", "label": "学科", "keywords": ["物理"] },
+        { "id": "grade", "label": "年级", "keywords": ["八年级", "初二"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["演示实验", "实验演示"] }
+      ],
+      "expectedPoints": ["围绕八年级物理牛顿第一定律设计 45 分钟教案", "用演示实验讲惯性并配分层练习"],
+      "relevantDocs": ["g8-physics-newton-first-law.md"]
+    },
+    {
+      "id": "fz-20",
+      "prompt": "九年级化学方程式，要小组竞赛",
+      "answer": "45 分钟，重点练配平，竞赛后做错题复盘。",
+      "slots": [
+        { "id": "topic", "label": "课题", "keywords": ["化学方程式"] },
+        { "id": "subject", "label": "学科", "keywords": ["化学"] },
+        { "id": "grade", "label": "年级", "keywords": ["九年级", "初三"] },
+        { "id": "duration", "label": "课时", "keywords": ["45 分钟", "45分钟", "四十五分钟"] },
+        { "id": "method", "label": "活动形式", "keywords": ["竞赛"] }
+      ],
+      "expectedPoints": ["围绕九年级化学方程式设计 45 分钟教案", "用小组竞赛巩固配平并复盘错题"],
+      "relevantDocs": ["g9-chemistry-equations.md"]
+    }
+  ]
+}

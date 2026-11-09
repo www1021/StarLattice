@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { completeQwenChat, getPlatformLiveModel, isQwenConfigured } from "../../qwenOpenAiClient.js";
+import { completeQwenChat } from "../../qwenOpenAiClient.js";
+import { isAnyModelConfigured, resolveVerificationModel } from "../models/catalog.js";
 import {
   heuristicDimensionScorer,
   type DimensionScorer,
@@ -12,8 +13,8 @@ const MAX_CACHE_ENTRIES = 200;
 export function isLlmVerifyEnabled() {
   return (
     process.env.PLATFORM_LIVE_AGENTS === "1" &&
-    process.env.PLATFORM_LIVE_VERIFY !== "0" &&
-    isQwenConfigured()
+    process.env.PLATFORM_LIVE_VERIFY === "1" &&
+    isAnyModelConfigured()
   );
 }
 
@@ -22,7 +23,12 @@ export function isLlmVerifyEnabled() {
  * 同一验证器对同一份产物只发起一次模型调用（按维度缓存），解析失败时回退启发式分数，
  * 保证验证阶段不会因为单次模型异常拖垮整个运行。
  */
-export function createLlmDimensionScorer(): DimensionScorer {
+export type LlmScorerOptions = {
+  /** 基准实验用：模型调用失败直接抛错，避免静默回退启发式后误以为测的是模型。 */
+  strict?: boolean;
+};
+
+export function createLlmDimensionScorer(options: LlmScorerOptions = {}): DimensionScorer {
   const cache = new Map<string, Promise<Record<string, number>>>();
 
   return async (context) => {
@@ -40,10 +46,13 @@ export function createLlmDimensionScorer(): DimensionScorer {
     }
 
     const scores = await pending.catch((error) => {
+      if (options.strict) {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      context.diagnostics?.push({ key: "llm-fallback", detail });
       console.warn(
-        `[platform] 验证器「${context.agent.id}」模型打分失败，回退启发式打分：${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `[platform] 验证器「${context.agent.id}」模型打分失败，回退启发式打分：${detail}`
       );
       return undefined;
     });
@@ -55,6 +64,11 @@ export function createLlmDimensionScorer(): DimensionScorer {
 }
 
 async function requestDimensionScores(context: ScorerContext) {
+  const resolution = resolveVerificationModel({
+    nodeModel: context.agentModel ?? context.nodeModel,
+    agentModel: context.agent.model,
+    budgetExceeded: context.budgetExceeded
+  });
   const system = [
     "你是独立验证器。按给定 rubric 给候选产物逐维度打分。",
     context.agent.prompt,
@@ -64,24 +78,34 @@ async function requestDimensionScores(context: ScorerContext) {
     .filter(Boolean)
     .join("\n");
 
+  const evidenceLabel =
+    context.evidenceView === "cited" ? "产物实际引用的证据" : "可用证据列表";
   const user = [
     `## 评分维度\n${context.rubric.join("、")}`,
     `## 验证器\n${context.agent.name}（${context.agent.role}）`,
-    `## 证据列表\n${
+    `## ${evidenceLabel}\n${
       context.evidence.length > 0
         ? context.evidence.map((item, index) => `[${index + 1}] ${item}`).join("\n")
         : "（没有可引用的知识库证据）"
     }`,
     `## 产物正文\n${truncate(context.artifactText, MAX_ARTIFACT_CHARS)}`,
+    context.evidenceView === "cited"
+      ? "注意：你只看到产物实际引用的证据；正文没有引用却给出“证据充分”判断时应扣分。"
+      : "注意：证据列表可用不代表产物已经引用；请检查正文是否真的给出引用或来源。",
     `请为以下每个维度打分：${context.rubric.map((name) => `"${name}"`).join("、")}。`
   ].join("\n\n");
 
   const content = await completeQwenChat({
     system,
     messages: [{ role: "user", content: user }],
-    model: getPlatformLiveModel(),
+    model: resolution.model,
     maxTokens: 512,
-    temperature: 0
+    temperature: 0,
+    provider: {
+      baseUrl: resolution.baseUrl,
+      apiKey: resolution.apiKey,
+      label: resolution.provider
+    }
   });
 
   return parseScores(content);
@@ -118,8 +142,19 @@ function extractJson(content: string) {
 }
 
 function cacheKey(context: ScorerContext) {
+  const resolution = resolveVerificationModel({
+    nodeModel: context.agentModel ?? context.nodeModel,
+    agentModel: context.agent.model,
+    budgetExceeded: context.budgetExceeded
+  });
   const digest = createHash("sha1")
     .update(context.agent.id)
+    .update("|")
+    .update(resolution.id)
+    .update("|")
+    .update(resolution.model)
+    .update("|")
+    .update(context.evidenceView ?? "pool")
     .update("|")
     .update(context.rubric.join(","))
     .update("|")

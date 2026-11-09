@@ -1,0 +1,105 @@
+{
+  "id": "bench-topic-single-agent-fair",
+  "name": "选题基线 A1 · 公平单 Agent",
+  "version": 1,
+  "description": "与 B/C 使用同一知识库检索、同一交付契约与同一最终整理 Agent；只保留一个评审 Agent，不含三评审并行、验证与自循环。",
+  "inputs": [
+    {
+      "name": "title",
+      "type": "string",
+      "required": true,
+      "description": "论文选题名称"
+    },
+    {
+      "name": "field",
+      "type": "string",
+      "required": true,
+      "description": "学科或研究领域"
+    },
+    {
+      "name": "background",
+      "type": "string",
+      "required": false,
+      "description": "研究背景与已有基础"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "知识库 id 列表"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.title} ${input.field}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "title": "选题评审",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "field": "${input.field}",
+        "background": "${input.background}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "评审选题「${input.title}」：给出总体结论、必须修改项、建议修改项，并引用知识库证据。必须包含小节：总体结论、必须修改项、建议修改项、引用来源；至少两处引用；不少于 1200 字。"
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "topic-review-agent",
+      "inputs": {
+        "title": "${input.title}",
+        "draft": "${review.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "把评审意见整理为可提交的选题评审报告。必须包含小节：总体结论、必须修改项、建议修改项；至少引用两处知识库证据（使用 [1][2] 编号）；不少于 1200 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成评审报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${deliverable.output}",
+        "title": "选题评审报告",
+        "bodyLabel": "评审意见"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "retrieve",
+      "to": "review"
+    },
+    {
+      "from": "review",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "deliverable"
+    },
+    {
+      "from": "deliverable",
+      "to": "report"
+    }
+  ]
+}

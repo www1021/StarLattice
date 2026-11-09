@@ -117,6 +117,9 @@ class Compiler {
     if (this.workflow.nodes.length > MAX_ROOT_NODES) {
       this.error("too-many-nodes", "nodes", `顶层节点不能超过 ${MAX_ROOT_NODES} 个`);
     }
+    if (this.workflow.schedulerMode !== undefined && this.workflow.schedulerMode !== "planner" && this.workflow.schedulerMode !== "static") {
+      this.error("invalid-scheduler-mode", "schedulerMode", "schedulerMode 只能是 planner 或 static");
+    }
     const seen = new Set<string>();
     this.workflow.inputs.forEach((variable, index) => {
       if (!ID_PATTERN.test(variable.name)) {
@@ -166,7 +169,22 @@ class Compiler {
             this.error("anchor-in-container", location, "开始 / 结束节点只能放在工作流顶层，不能嵌套在容器里");
           }
           break;
-        case "agent":
+        case "agent": {
+          const capabilities = node.capabilities ?? [];
+          if (capabilities.length > 12) {
+            this.error("invalid-agent-capabilities", `${location}.capabilities`, "agent.capabilities 最多 12 项");
+          }
+          for (const [index, capability] of capabilities.entries()) {
+            if (capability.trim() === "") {
+              this.error(
+                "invalid-agent-capabilities",
+                `${location}.capabilities[${index}]`,
+                "能力标签不能为空"
+              );
+            }
+          }
+          break;
+        }
         case "tool":
         case "template":
           break;
@@ -201,6 +219,21 @@ class Compiler {
             (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 120_000)
           ) {
             this.error("invalid-http-timeout", location, "http.timeoutMs 必须在 1000 到 120000 之间");
+          }
+          break;
+        }
+        case "clarify": {
+          if (
+            node.maxQuestions !== undefined &&
+            (!Number.isInteger(node.maxQuestions) || node.maxQuestions < 1 || node.maxQuestions > 3)
+          ) {
+            this.error("invalid-clarify-questions", location, "clarify.maxQuestions 必须在 1 到 3 之间");
+          }
+          if (
+            node.timeoutMs !== undefined &&
+            (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 86_400_000)
+          ) {
+            this.error("invalid-clarify-timeout", location, "clarify.timeoutMs 必须在 1000 到 86400000 之间");
           }
           break;
         }
@@ -349,6 +382,49 @@ class Compiler {
           ) {
             this.error("invalid-verify-min-chars", location, "verify.minChars 必须在 0 到 20000 之间");
           }
+          if (
+            node.minCitations !== undefined &&
+            (!Number.isInteger(node.minCitations) ||
+              node.minCitations < 0 ||
+              node.minCitations > 50)
+          ) {
+            this.error(
+              "invalid-verify-min-citations",
+              location,
+              "verify.minCitations 必须在 0 到 50 之间"
+            );
+          }
+          if (node.requiredSections !== undefined) {
+            if (node.requiredSections.length === 0 || node.requiredSections.length > 12) {
+              this.error(
+                "invalid-verify-sections",
+                location,
+                "verify.requiredSections 需要 1 到 12 个小节名称"
+              );
+            } else if (node.requiredSections.some((section) => section.trim() === "")) {
+              this.error(
+                "invalid-verify-sections",
+                location,
+                "verify.requiredSections 不能包含空小节名称"
+              );
+            }
+          }
+          if (node.verifierModels !== undefined) {
+            const entries = Object.entries(node.verifierModels);
+            if (entries.length === 0 || entries.length > 8) {
+              this.error(
+                "invalid-verify-models",
+                location,
+                "verify.verifierModels 需要 1 到 8 个 Agent id 到模型 id 的映射"
+              );
+            } else if (entries.some(([id, model]) => id.trim() === "" || model.trim() === "")) {
+              this.error(
+                "invalid-verify-models",
+                location,
+                "verify.verifierModels 的 Agent id 与模型 id 都不能为空"
+              );
+            }
+          }
           if (node.verifiers !== undefined && (node.verifiers.length === 0 || node.verifiers.length > 5)) {
             this.error("invalid-verify-verifiers", location, "verify.verifiers 需要 1 到 5 个 Agent id");
           }
@@ -370,6 +446,21 @@ class Compiler {
                 `${location}.checks[${index}].tolerance`,
                 "verify.checks.tolerance 必须在 0 到 1 之间"
               );
+            }
+            if (check.anchors !== undefined) {
+              if (check.anchors.length === 0 || check.anchors.length > 12) {
+                this.error(
+                  "invalid-verify-anchors",
+                  `${location}.checks[${index}].anchors`,
+                  "verify.checks.anchors 需要 1 到 12 个指标标签"
+                );
+              } else if (check.anchors.some((anchor) => anchor.trim() === "")) {
+                this.error(
+                  "invalid-verify-anchors",
+                  `${location}.checks[${index}].anchors`,
+                  "verify.checks.anchors 不能包含空标签"
+                );
+              }
             }
           });
           break;
@@ -610,6 +701,7 @@ class Compiler {
       node.kind === "end" ||
       node.kind === "agent" ||
       node.kind === "llm" ||
+      node.kind === "clarify" ||
       node.kind === "knowledge" ||
       node.kind === "tool" ||
       node.kind === "http" ||
@@ -867,6 +959,9 @@ function collectNodeRefs(node: LeafNode): string[] {
   }
   if (node.kind === "llm") {
     values.push(node.prompt, node.system);
+  }
+  if (node.kind === "clarify") {
+    values.push(node.prompt);
   }
   if (node.kind === "knowledge") {
     values.push(node.query, node.knowledgeBaseIds);

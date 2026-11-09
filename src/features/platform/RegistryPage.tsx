@@ -560,6 +560,14 @@ function AgentCard({ agent, onVersions }: AgentCardProps) {
         </div>
         <div className="registry-agent-badges">
           <span className="registry-badge">v{agent.version}</span>
+          {agent.modelProfile && (
+            <span
+              className="registry-badge"
+              title={`${agent.modelProfile.model} · ${agent.modelProfile.provider} · ${agent.modelProfile.costTier}`}
+            >
+              {agent.modelProfile.label}
+            </span>
+          )}
           <span className={`registry-badge ${agent.enabled ? "is-on" : "is-off"}`}>
             {agent.enabled ? "启用" : "停用"}
           </span>

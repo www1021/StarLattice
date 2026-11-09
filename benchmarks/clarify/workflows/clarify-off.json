@@ -1,0 +1,67 @@
+{
+  "id": "bench-clarify-off",
+  "name": "澄清实验 · 直接执行（不问）",
+  "version": 1,
+  "description": "模糊需求直接进入与实验组相同的检索 / 生成 / 整理链路，不做意图澄清。只用于澄清 A/B 对照。",
+  "inputs": [
+    { "name": "request", "type": "string", "required": true, "description": "用户原始需求（可能缺失学科、年级、课时、活动形式）" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+  ],
+  "nodes": [
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "知识库检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.request}",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "lesson-plan",
+      "kind": "agent",
+      "title": "教案生成",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "request": "${input.request}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "围绕以下需求生成一份可直接试讲的教案：\n${input.request}\n\n必须包含小节：教学目标、活动流程、分层练习；引用知识库证据使用 [1][2] 编号；不少于 800 字；需求里没有说明的信息按你的最佳判断补齐，并在正文中写明采用的年级、课时与活动形式。"
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "交付物整理",
+      "agent": "lesson-plan-agent",
+      "inputs": {
+        "draft": "${lesson-plan.output}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "把教案初稿整理为最终可交付教案。必须包含小节：教学目标、活动流程、分层练习、课堂演练分析；引用知识库证据使用 [1][2] 编号；不少于 800 字；不要输出占位内容。正文引用使用 [1][2] 编号，编号对应平台末尾追加的检索来源；不要自行输出引用来源小节（平台会在末尾追加），也不要编造参考文献。"
+    },
+    {
+      "id": "deliverable",
+      "kind": "template",
+      "title": "追加检索来源",
+      "template": "${finalize.output}\n\n## 引用来源\n${retrieve.output}"
+    },
+    {
+      "id": "report",
+      "kind": "tool",
+      "title": "生成训练报告",
+      "tool": "report.build",
+      "args": {
+        "observer": "${deliverable.output}",
+        "title": "教学设计报告"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "retrieve", "to": "lesson-plan" },
+    { "from": "lesson-plan", "to": "finalize" },
+    { "from": "finalize", "to": "deliverable" },
+    { "from": "deliverable", "to": "report" }
+  ]
+}

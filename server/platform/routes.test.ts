@@ -46,6 +46,12 @@ test("exposes registry agents and tools as node dropdown options", async () => {
     assert.ok(verifierField.options?.includes("observer-verifier"));
 
     assert.equal(field("agent", "agentVersion").type, "select");
+
+    const modelField = field("agent", "model");
+    assert.equal(modelField.type, "select");
+    assert.ok(modelField.options?.includes("reasoning"));
+    assert.ok(modelField.options?.includes("verifier"));
+    assert.match(modelField.optionLabels?.reasoning ?? "", /推理/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
@@ -255,3 +261,118 @@ async function waitForPendingInteraction(
   }
   throw new Error("等待待输入交互超时");
 }
+
+test("exposes the logical model catalog without leaking credentials", async () => {
+  const previousKey = process.env.QWEN_API_KEY;
+  process.env.QWEN_API_KEY = "test-key";
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  const app = express();
+  app.use(express.json());
+  registerPlatform(app, { store });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, () => resolve(listening));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
+
+  try {
+    const payload = (await fetch(`${base}/models`).then((response) => response.json())) as {
+      models: Array<Record<string, unknown>>;
+      total: number;
+    };
+    assert.ok(payload.total >= 6);
+    const ids = payload.models.map((model) => model.id);
+    for (const id of ["platform-default", "fast", "reasoning", "verifier", "vision", "minimax"]) {
+      assert.ok(ids.includes(id), id);
+    }
+    const fast = payload.models.find((model) => model.id === "fast");
+    assert.equal(fast?.configured, true);
+    assert.equal(fast?.costTier, "low");
+    assert.equal("apiKey" in (fast ?? {}), false);
+    assert.equal("baseUrl" in (fast ?? {}), false);
+
+    const agents = (await fetch(`${base}/registry`).then((response) => response.json())) as {
+      agents: Array<{ id: string; model?: string; modelProfile?: { id: string; label: string } }>;
+    };
+    const diagnostician = agents.agents.find((agent) => agent.id === "business-diagnostician");
+    assert.equal(diagnostician?.model, "reasoning");
+    assert.equal(diagnostician?.modelProfile?.id, "reasoning");
+    assert.match(diagnostician?.modelProfile?.label ?? "", /推理/);
+
+    const rejected = await fetch(`${base}/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "model-probe", name: "模型探针", model: "not-registered" })
+    });
+    assert.equal(rejected.status, 422);
+    const error = (await rejected.json()) as { message?: string };
+    assert.match(error.message ?? "", /可用逻辑模型/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+    if (previousKey === undefined) {
+      delete process.env.QWEN_API_KEY;
+    } else {
+      process.env.QWEN_API_KEY = previousKey;
+    }
+  }
+});
+
+test("exposes real scheduler leases and active agent loads", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  const app = express();
+  app.use(express.json());
+  registerPlatform(app, { store });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, () => resolve(listening));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
+
+  try {
+    const run = store.createRun({
+      workflowId: "lease-route-probe",
+      workflowVersion: 1,
+      workflowInput: {},
+      mode: "stub",
+      status: "running"
+    });
+    const lease = store.acquireSchedulerLease({
+      runId: run.id,
+      taskPath: "review",
+      agentId: "topic-innovation-agent",
+      workerId: "worker-route-test",
+      ttlMs: 60000
+    });
+
+    const summary = (await fetch(`${base}/scheduler`).then((response) => response.json())) as {
+      activeLoads: Record<string, { inFlight: number }>;
+      runtime: { workerId: string; leaseTtlMs: number };
+    };
+    assert.deepEqual(summary.activeLoads, { "topic-innovation-agent": { inFlight: 1 } });
+    assert.equal(typeof summary.runtime.workerId, "string");
+    assert.ok(summary.runtime.leaseTtlMs > 0);
+
+    const active = (await fetch(`${base}/scheduler/leases?agentId=topic-innovation-agent`).then((response) =>
+      response.json()
+    )) as { leases: Array<{ id: string; status: string; releaseReason?: string }> };
+    assert.equal(active.leases[0]?.id, lease.id);
+    assert.equal(active.leases[0]?.status, "active");
+
+    store.releaseSchedulerLease(lease.id, "completed");
+    const all = (await fetch(`${base}/scheduler/leases?active=false&agentId=topic-innovation-agent`).then(
+      (response) => response.json()
+    )) as { leases: Array<{ status: string; releaseReason?: string }> };
+    assert.equal(all.leases[0]?.status, "released");
+    assert.equal(all.leases[0]?.releaseReason, "completed");
+    const afterRelease = (await fetch(`${base}/scheduler`).then((response) => response.json())) as {
+      activeLoads: Record<string, { inFlight: number }>;
+    };
+    assert.deepEqual(afterRelease.activeLoads, {});
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

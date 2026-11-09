@@ -51,7 +51,7 @@ function knowledgeHandlers(documentName = "义务教育数学课程标准（2022
   };
 }
 
-test("runs classroom-v1 end to end and records the 0.62 → 0.86 loop", async () => {
+test("runs classroom-v1 end to end without inflating stub scores by round", async () => {
   const { store, dispose } = createStore();
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "classroom-v1");
   assert.ok(workflow);
@@ -69,7 +69,9 @@ test("runs classroom-v1 end to end and records the 0.62 → 0.86 loop", async ()
     assert.ok(steps.every((step) => step.status === "succeeded"));
 
     const scores = store.listVerifyResults(run.id).map((result) => result.score);
-    assert.deepEqual(scores, [0.62, 0.74, 0.86]);
+    // stub 产物内容几乎不变，分数也必须保持稳定：不允许按尝试次数抬分。
+    assert.deepEqual(scores, [0.6663, 0.6633, 0.6633]);
+    assert.ok(scores.every((score) => score < 0.85));
 
     const verifications = store.listVerifyResults(run.id);
     for (const verification of verifications) {
@@ -80,13 +82,16 @@ test("runs classroom-v1 end to end and records the 0.62 → 0.86 loop", async ()
       assert.ok(layers.rule.score > 0.8);
       assert.equal(layers.baseline.coverage, 1);
       assert.equal(layers.crossCheck.verifiers.length, 2);
+      assert.ok(verification.confidence <= 0.5, "stub 验证置信度应封顶");
+      assert.match(verification.issues.join(" "), /stub 演练/);
     }
 
     const iterations = store.listLoopIterations(run.id);
     assert.equal(iterations.length, 2);
-    assert.equal(iterations[0]?.scoreBefore, 0.62);
-    assert.equal(iterations[1]?.scoreAfter, 0.86);
-    assert.equal(store.getRun(run.id)?.output?.score, 0.86);
+    assert.equal(iterations[0]?.scoreBefore, 0.6663);
+    assert.equal(iterations[1]?.scoreAfter, 0.6633);
+    // 没有更优轮次时保留初始产物，而不是把最后一轮当作结果。
+    assert.equal(store.getRun(run.id)?.output?.score, 0.6663);
   } finally {
     dispose();
   }
@@ -132,16 +137,17 @@ test("runs classroom-map-v1 through the parallel rehearsal, gate and revision lo
     });
 
     assert.equal(run.status, "succeeded");
-    // 教学设计子流程 1 次验证 + 演练验证 + 修订复核 + 学情报告验证。
+    // 教学设计子流程 1 次验证 + 演练验证 + 2 轮修订复核 + 学情报告验证。
     assert.deepEqual(
       store.listVerifyResults(run.id).map((result) => result.score),
-      [0.62, 0.74, 0.86, 0.98]
+      [0.6641, 0.6591, 0.6605, 0.6605, 0.6885]
     );
 
     const loops = store.listLoopIterations(run.id);
-    assert.equal(loops.length, 1);
-    assert.equal(loops[0]?.scoreBefore, 0.74);
-    assert.equal(loops[0]?.scoreAfter, 0.86);
+    assert.equal(loops.length, 2);
+    assert.equal(loops[0]?.scoreBefore, 0.6591);
+    assert.equal(loops[0]?.scoreAfter, 0.6605);
+    assert.equal(loops[1]?.scoreAfter, 0.6605);
 
     const executed = new Set(steps.filter((step) => step.status === "succeeded").map((step) => step.nodeId));
     for (const nodeId of [
@@ -198,7 +204,7 @@ test("runs business-map-v1 fan-out, calibration loop and final verification", as
   }
 });
 
-test("counts sub-workflow verifications toward the run attempt curve", async () => {
+test("keeps sub-workflow verification scores content-based instead of attempt-based", async () => {
   const { store, dispose } = createStore();
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "teaching-pipeline-v1");
   assert.ok(workflow);
@@ -214,22 +220,23 @@ test("counts sub-workflow verifications toward the run attempt curve", async () 
     assert.equal(run.status, "succeeded");
 
     const verifications = store.listVerifyResults(run.id);
-    // 子流程里的验证也计入整条运行的轮次，因此四层验证依次拿到 0.62 / 0.74 / 0.86 / 0.98。
+    // 四处验证的分数由各自产物内容决定，不随运行内验证次数累加。
     assert.deepEqual(
       verifications.map((result) => {
         const layers = result.detail?.layers as { crossCheck: { score: number } } | undefined;
         return layers?.crossCheck.score;
       }),
-      [0.62, 0.74, 0.86, 0.98]
+      [0.6641, 0.6663, 0.6633, 0.6885]
     );
 
     const overallStep = steps.find((step) => step.nodeId === "verify-overall");
     assert.ok(overallStep);
     const overall = verifications.find((result) => result.stepId === overallStep.id);
     assert.ok(overall);
-    assert.equal(overall.score, 0.86);
+    assert.equal(overall.score, 0.6633);
     assert.ok(overall.evidence.length > 0);
-    assert.equal((run.output?.verify as { passed?: boolean } | undefined)?.passed, true);
+    // stub 产物没有达到 0.85 时如实报告未通过，不能靠轮次凑到达标。
+    assert.equal((run.output?.verify as { passed?: boolean } | undefined)?.passed, false);
 
     // 子流程内的验证不能因为作用域切换而丢掉父流程检索到的证据。
     assert.equal(verifications.length, 4);
@@ -737,6 +744,409 @@ test("recovers when a retry succeeds and records the attempt count", async () =>
   }
 });
 
+test("reschedules an agent step to the next candidate after an invocation failure", async () => {
+  const { store, dispose } = createStore();
+  const capability = "调度重排探针技能";
+  store.saveAgent({
+    id: "primary-agent",
+    name: "主 Agent",
+    version: 1,
+    role: "报告写作",
+    prompt: "",
+    tools: [],
+    model: "classroom-llm",
+    capabilities: [{ tag: capability, weight: 0.9 }],
+    memory: {},
+    enabled: true
+  });
+  store.saveAgent({
+    id: "backup-agent",
+    name: "备用 Agent",
+    version: 1,
+    role: "报告写作",
+    prompt: "",
+    tools: [],
+    model: "classroom-llm",
+    capabilities: [{ tag: capability, weight: 0.6 }],
+    memory: {},
+    enabled: true
+  });
+  const workflow: WorkflowDefinition = {
+    id: "reschedule-probe",
+    name: "运行中重调度探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "write", kind: "agent", agent: "primary-agent" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const seen: string[] = [];
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: (node) => {
+          seen.push(node.agent);
+          // 租约代表真实执行中的步骤，失败或换 Agent 前都应处于在飞状态。
+          assert.equal(store.activeLeaseLoads()[node.agent]?.inFlight, 1);
+          if (node.agent === "primary-agent") {
+            throw new Error("主 Agent 超时");
+          }
+          return { mode: "live", output: "备用 Agent 完成" };
+        }
+      },
+      { maxAttempts: 3, retryBaseDelayMs: 1, timeoutMs: 1000 }
+    );
+    const { run, steps } = await executor.run(workflow);
+    assert.equal(run.status, "succeeded");
+    assert.deepEqual(seen, ["primary-agent", "backup-agent"]);
+    assert.equal(steps[0]?.attempts, 2);
+    const input = steps[0]?.input as Record<string, unknown>;
+    const reschedule = input.reschedule as Record<string, unknown>;
+    assert.equal(reschedule.from, "primary-agent");
+    assert.equal(reschedule.to, "backup-agent");
+    assert.match(String(reschedule.reason), /运行中重调度/);
+
+    const leases = store
+      .listSchedulerLeases({ runId: run.id })
+      .map((lease) => [lease.agentId, lease.status, lease.releaseReason])
+      .sort();
+    assert.deepEqual(leases, [
+      ["backup-agent", "released", "completed"],
+      ["primary-agent", "released", "rescheduled"]
+    ]);
+    assert.deepEqual(store.activeLeaseLoads(), {});
+  } finally {
+    dispose();
+  }
+});
+
+test("orders the ready queue by critical-path priority and records queue waits", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "priority-queue-probe",
+    name: "优先级队列探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "short", kind: "agent", agent: "topic-innovation-agent" },
+      { id: "long", kind: "agent", agent: "lesson-plan-agent" },
+      { id: "tail", kind: "agent", agent: "student-silent-agent" }
+    ],
+    edges: [{ from: "long", to: "tail" }]
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const seen: string[] = [];
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: async (node) => {
+          seen.push(node.id);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return { mode: "live", output: `${node.id} 完成` };
+        }
+      },
+      { maxConcurrency: 1, maxAttempts: 1, retryBaseDelayMs: 1, timeoutMs: 0 }
+    );
+    const { run } = await executor.run(workflow);
+    assert.equal(run.status, "succeeded");
+    // long 的关键路径更深，先于 short 出队；tail 与 short 同级时按声明顺序。
+    assert.deepEqual(seen, ["long", "short", "tail"]);
+
+    const queue = store.listSchedulerQueue(run.id);
+    assert.deepEqual([...queue.map((entry) => entry.path)].sort(), ["long", "short", "tail"]);
+    assert.ok(queue.every((entry) => entry.status === "succeeded"));
+    const short = queue.find((entry) => entry.path === "short");
+    assert.ok((short?.waitMs ?? 0) >= 15);
+  } finally {
+    dispose();
+  }
+});
+
+test("reassigns a step after its simulated worker is killed", async () => {
+  const { store, dispose } = createStore();
+  const capability = "Worker 终止重派技能";
+  store.saveAgent({
+    id: "primary-agent",
+    name: "主 Agent",
+    version: 1,
+    role: "报告写作",
+    prompt: "",
+    tools: [],
+    model: "classroom-llm",
+    capabilities: [{ tag: capability, weight: 0.9 }],
+    memory: {},
+    enabled: true
+  });
+  store.saveAgent({
+    id: "backup-agent",
+    name: "备用 Agent",
+    version: 1,
+    role: "报告写作",
+    prompt: "",
+    tools: [],
+    model: "classroom-llm",
+    capabilities: [{ tag: capability, weight: 0.6 }],
+    memory: {},
+    enabled: true
+  });
+  const workflow: WorkflowDefinition = {
+    id: "worker-kill-probe",
+    name: "Worker 终止探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "write", kind: "agent", agent: "primary-agent", capabilities: [capability] }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    let signalPrimary!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => {
+      signalPrimary = resolve;
+    });
+    const seen: string[] = [];
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: async (node) => {
+          seen.push(node.agent);
+          if (node.agent === "primary-agent") {
+            signalPrimary();
+            await new Promise<never>(() => {});
+          }
+          return { mode: "live", output: "备用 Agent 完成" };
+        }
+      },
+      { maxAttempts: 3, retryBaseDelayMs: 1, timeoutMs: 0 }
+    );
+    const pending = executor.run(workflow);
+    await primaryStarted;
+    const worker = executor.listWorkers().find((item) => !item.killed && item.activeTasks.length > 0);
+    assert.ok(worker);
+    const killed = executor.killWorker(worker!.id);
+    assert.equal(killed.aborted, 1);
+
+    const { run, steps } = await pending;
+    assert.equal(run.status, "succeeded");
+    assert.deepEqual(seen, ["primary-agent", "backup-agent"]);
+    const leases = store.listSchedulerLeases({ runId: run.id });
+    assert.equal(
+      leases.find((lease) => lease.agentId === "primary-agent")?.releaseReason,
+      "worker_lost"
+    );
+    assert.equal(
+      leases.find((lease) => lease.agentId === "backup-agent")?.releaseReason,
+      "completed"
+    );
+    const reschedule = (steps[0]?.input as { reschedule?: { reason?: string } }).reschedule;
+    assert.match(String(reschedule?.reason), /运行中重调度|Worker/);
+  } finally {
+    dispose();
+  }
+});
+
+test("requeues a run whose worker lease expired", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "orphan-probe",
+    name: "孤儿回收探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "write", kind: "agent", agent: "topic-innovation-agent" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const old = store.createRun({
+      workflowId: workflow.id,
+      workflowVersion: 1,
+      workflowInput: {},
+      mode: "stub",
+      status: "running",
+      definition: workflow
+    });
+    store.acquireSchedulerLease({
+      runId: old.id,
+      taskPath: "write",
+      agentId: "topic-innovation-agent",
+      workerId: "dead-worker",
+      ttlMs: 1000
+    });
+    store.expireSchedulerLeases(Date.now() + 5000);
+
+    const result = await new WorkflowExecutor(store).requeueOrphanedRuns();
+    assert.equal(result.requeued.length, 1);
+    assert.equal(store.getRun(old.id)?.status, "failed");
+    assert.match(store.getRun(old.id)?.error ?? "", /Worker 失联/);
+    const requeued = store.getRun(result.requeued[0]!.runId);
+    assert.equal(requeued?.status, "succeeded");
+  } finally {
+    dispose();
+  }
+});
+
+test("resumes from the latest checkpoint without re-running completed nodes", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "resume-probe",
+    name: "检查点续跑探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "first", kind: "agent", agent: "topic-innovation-agent" },
+      {
+        id: "second",
+        kind: "agent",
+        agent: "topic-innovation-agent",
+        inputs: { draft: "${first.output}" }
+      }
+    ],
+    edges: [{ from: "first", to: "second" }]
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const seen: string[] = [];
+    let failSecond = true;
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: async (node) => {
+          seen.push(node.id);
+          if (node.id === "second" && failSecond) {
+            failSecond = false;
+            throw new Error("模拟节点崩溃");
+          }
+          return { mode: "stub", output: `${node.id}:ok` };
+        }
+      },
+      { maxAttempts: 1 }
+    );
+    const first = await executor.run(workflow, {});
+    assert.equal(first.run.status, "failed");
+
+    const checkpoint = store.latestRunCheckpoint(first.run.id);
+    assert.ok(checkpoint, "已完成部分节点后应写入检查点");
+    const savedNodes = checkpoint.state.nodes as Record<string, unknown>;
+    assert.ok("first" in savedNodes);
+    assert.ok(!("second" in savedNodes));
+
+    const resumed = executor.startResume(first.run.id);
+    const finished = await executor.waitForRun(resumed.id, 5000);
+    assert.equal(finished?.status, "succeeded");
+    assert.equal(finished?.resumeCount, 1);
+    // 续跑只重跑未完成节点，first 的产物直接从检查点回放。
+    assert.deepEqual(seen, ["first", "second", "second"]);
+    assert.deepEqual(
+      store.listSteps(resumed.id).map((step) => step.nodeId),
+      ["second"]
+    );
+    assert.match(JSON.stringify(store.listSteps(resumed.id)[0]?.input ?? {}), /first:ok/);
+    assert.equal(store.getRun(first.run.id)?.status, "failed");
+  } finally {
+    dispose();
+  }
+});
+
+test("observes a cancellation requested by another process via the database flag", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "cross-process-cancel-probe",
+    name: "跨进程取消探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "slow", kind: "agent", agent: "topic-innovation-agent" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: async () => {
+          await gate;
+          return { mode: "stub", output: "迟到的产物" };
+        }
+      },
+      { cancelPollMs: 10, timeoutMs: 0 }
+    );
+    const pending = executor.run(workflow, {});
+    const running = await waitFor("慢节点进入运行", () =>
+      store.listRuns(5).find((run) => run.id && run.status === "running" && run.workflowId === workflow.id)
+    );
+    // 另一个进程只写数据库标记，不持有本进程的执行器句柄。
+    store.requestRunCancel(running.id);
+
+    const result = await Promise.race([
+      pending,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("跨进程取消未在 3s 内生效")), 3000)
+      )
+    ]);
+    assert.equal(result.run.status, "cancelled");
+    assert.match(result.run.error ?? "", /取消/);
+    release();
+  } finally {
+    dispose();
+  }
+});
+
+test("persists opt-in agent memory across runs and recalls it into the next prompt", async () => {
+  const { store, dispose } = createStore();
+  store.saveAgent({
+    id: "memory-agent",
+    name: "记忆 Agent",
+    version: 1,
+    role: "写作",
+    prompt: "",
+    tools: [],
+    model: "classroom-llm",
+    capabilities: [{ tag: "跨运行记忆探针", weight: 0.9 }],
+    memory: { persist: true, retain: ["summary"], maxEntries: 2, recall: 2 },
+    enabled: true
+  });
+  const workflow: WorkflowDefinition = {
+    id: "memory-probe",
+    name: "跨运行记忆探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "remember", kind: "agent", agent: "memory-agent" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const seen: Array<Record<string, unknown>> = [];
+    const executor = new WorkflowExecutor(store, {
+      agent: (_node, input) => {
+        seen.push(input);
+        return { mode: "live", output: { summary: `第 ${seen.length} 次摘要` } };
+      }
+    });
+    await executor.run(workflow);
+    await executor.run(workflow);
+    await executor.run(workflow);
+
+    assert.equal(seen[0]?.memoryHistory, undefined);
+    const recalled = seen[2]?.memoryHistory as Array<{ key: string; value: string }>;
+    assert.equal(recalled.length, 2);
+    assert.deepEqual(
+      recalled.map((item) => item.value),
+      ["第 2 次摘要", "第 1 次摘要"]
+    );
+    assert.equal(store.listAgentMemory("memory-agent", workflow.id, 10).length, 2);
+  } finally {
+    dispose();
+  }
+});
+
 test("times out a hanging node, retries, then fails with the timeout reason", async () => {
   const { store, dispose } = createStore();
   const workflow: WorkflowDefinition = {
@@ -878,7 +1288,7 @@ test("self-loop records two rounds, revision directives and a stop reason", asyn
       ["rewrite", "retrieve"]
     );
     assert.match(iterations[0]?.changes.join(" ") ?? "", /下一轮动作：补检索/);
-    assert.match(iterations[1]?.changes.join(" ") ?? "", /停止原因：达到验证阈值/);
+    assert.match(iterations[1]?.changes.join(" ") ?? "", /停止原因：达到最大轮次/);
 
     const revisions = steps.filter((step) => step.nodeId === "revise");
     assert.equal(revisions.length, 2);
@@ -890,8 +1300,13 @@ test("self-loop records two rounds, revision directives and a stop reason", asyn
     const summaries = (run.output?.selfLoop ?? []) as Array<Record<string, unknown>>;
     assert.equal(summaries.length, 1);
     assert.equal(summaries[0]?.iterations, 2);
-    assert.equal(summaries[0]?.stopReason, "passed");
-    assert.equal(summaries[0]?.bestScore, 0.86);
+    assert.equal(summaries[0]?.stopReason, "max_iterations");
+    assert.equal(summaries[0]?.bestScore, 0.6663);
+    assert.equal(
+      (summaries[0]?.promotion as { status?: string } | undefined)?.status,
+      "skipped",
+      "stub 模式不应把演练补丁写进 Agent 版本"
+    );
     assert.ok(typeof run.output?.tokensUsed === "number" && run.output.tokensUsed > 0);
   } finally {
     dispose();
@@ -1335,7 +1750,7 @@ test("number_match reads the reference bound through verify inputs", async () =>
   }
 });
 
-test("business-analysis-v1 blocks gross-profit errors and passes after net recalculation", async () => {
+test("business-analysis-v1 lets the model diagnose and repair a gross-profit error", async () => {
   const { store, dispose } = createStore();
   const workflow = loadBuiltinWorkflows().find((item) => item.id === "business-analysis-v1");
   assert.ok(workflow);
@@ -1345,6 +1760,10 @@ test("business-analysis-v1 blocks gross-profit errors and passes after net recal
     command: process.execPath,
     args: [entry]
   });
+  store.seedAgents(BUILTIN_AGENTS);
+
+  const promptPatch =
+    "当数据包含退款字段时，revenueBasis 必须选择 net：净销售额 = 毛销售额 − 退款，毛利额 = 净销售额 − 销货成本；即使用户要求按订单销售额口径，也应在报告中说明差异并采用净额口径。";
 
   try {
     const executor = new WorkflowExecutor(store, {
@@ -1366,6 +1785,63 @@ test("business-analysis-v1 blocks gross-profit errors and passes after net recal
           structuredContent: result.structuredContent,
           isError: result.isError
         };
+      },
+      // 仅模拟模型输出：规划与诊断由“模型”给出 JSON，报告逐字抄写工具返回的核算文本。
+      agent: async (node, input) => {
+        if (node.id === "plan") {
+          const planner = store.getAgent("business-planner");
+          const revenueBasis = planner?.prompt.includes("revenueBasis 必须选择 net")
+            ? "net"
+            : "gross";
+          return {
+            mode: "live",
+            agent: node.agent,
+            output: JSON.stringify({
+              revenueBasis,
+              rationale: `根据用户问题选择 ${revenueBasis} 口径。`,
+              dimensions: ["region", "product"],
+              acceptance: "毛利额与毛利率可被数值验证复算。"
+            })
+          };
+        }
+        if (node.id === "diagnose") {
+          return {
+            mode: "live",
+            agent: node.agent,
+            output: JSON.stringify({
+              rootCause: "指标使用毛销售额口径，未扣除退款，导致毛利额与毛利率高估。",
+              evidence: ["验证问题指出数值与净额口径基准不一致", "零售口径应对退款单独扣减"],
+              action: "rewrite_agent",
+              revenueBasis: "net",
+              retrievalQuery: "退款 净销售额 毛利额 计算口径",
+              promptPatch,
+              confidence: 0.9
+            })
+          };
+        }
+        if (node.id === "report" || node.id === "report-fixed") {
+          const basis = node.id === "report" ? "毛销售额（未扣退款）" : "净销售额（已扣退款）";
+          const output = [
+            "## 结论",
+            "本期毛利表现需要区分毛销售额与净销售额口径，退款是主要差异来源。",
+            "## 数据概况",
+            String(input.profile ?? ""),
+            "## 区域表现与品类表现",
+            String(input.dataPack ?? ""),
+            "## 毛利核算",
+            String(input.metrics ?? ""),
+            "## 口径说明",
+            `本报告采用${basis}口径。`,
+            "## 行动建议",
+            "建议一：复核退款原因并按净额口径跟踪毛利。建议二：对高退款品类做专项复盘。"
+          ].join("\n");
+          return { mode: "live", agent: node.agent, output, summary: output.slice(0, 120) };
+        }
+        return {
+          mode: "live",
+          agent: node.agent,
+          output: `[live:${node.agent}] ${node.title ?? node.id} 的输出`
+        };
       }
     });
     const { run, steps } = await executor.run(workflow, {
@@ -1384,6 +1860,15 @@ test("business-analysis-v1 blocks gross-profit errors and passes after net recal
     assert.equal(loops.length, 1);
     assert.ok((loops[0]?.scoreBefore ?? 1) < 0.7);
     assert.ok((loops[0]?.scoreAfter ?? 0) >= 0.7);
+    assert.match(loops[0]?.changes.join(" ") ?? "", /决策来源：模型诊断/);
+    assert.match(loops[0]?.changes.join(" ") ?? "", /提示词补丁/);
+
+    const diagnosis = steps.find((step) => step.nodeId === "diagnose")?.output as
+      | { output?: { revenueBasis?: string; action?: string; promptPatch?: string } }
+      | undefined;
+    assert.equal(diagnosis?.output?.action, "rewrite_agent");
+    assert.equal(diagnosis?.output?.revenueBasis, "net");
+    assert.equal(diagnosis?.output?.promptPatch, promptPatch);
 
     const metrics = steps.find((step) => step.nodeId === "metrics")?.output as
       | { structuredContent?: { revenueBasis?: string; grossProfit?: number } }
@@ -1402,13 +1887,131 @@ test("business-analysis-v1 blocks gross-profit errors and passes after net recal
       | undefined;
     assert.match(initialReport?.output ?? "", /毛利额：45,990\.00 元/);
 
-    const repairedReport = steps.find((step) => step.nodeId === "rebuild")?.output as
+    const repairedReport = steps.find((step) => step.nodeId === "report-fixed")?.output as
       | { output?: string }
       | undefined;
     assert.match(repairedReport?.output ?? "", /毛利额：42,290\.00 元/);
     assert.doesNotMatch(repairedReport?.output ?? "", /45,990\.00/);
+
+    const summary = (run.output?.selfLoop as Array<Record<string, unknown>> | undefined)?.[0];
+    assert.equal(summary?.iterations, 1);
+    assert.equal(summary?.stopReason, "passed");
+    const promotion = summary?.promotion as
+      | { status?: string; agentId?: string; fromVersion?: number; toVersion?: number }
+      | undefined;
+    assert.equal(promotion?.status, "promoted");
+    assert.equal(promotion?.agentId, "business-planner");
+    assert.equal(promotion?.fromVersion, 1);
+    assert.equal(promotion?.toVersion, 2);
+
+    const planner = store.getAgent("business-planner");
+    assert.equal(planner?.version, 2);
+    assert.match(planner?.prompt ?? "", /revenueBasis 必须选择 net/);
+    assert.equal(store.listAgentVersions("business-planner").length >= 1, true);
+
+    // 第二次运行：规划 Agent 已带有 v2 补丁，首轮即选净额口径，不再触发自循环。
+    const second = await executor.run(workflow, {
+      question: "本月各区域与品类的毛利表现如何？"
+    });
+    assert.equal(second.run.status, "succeeded");
+    const secondVerifications = store.listVerifyResults(second.run.id);
+    assert.equal(secondVerifications.length, 1);
+    assert.ok((secondVerifications[0]?.score ?? 0) >= 0.7);
+    assert.equal(store.listLoopIterations(second.run.id).length, 0);
+    const secondSummary = (second.run.output?.selfLoop as Array<Record<string, unknown>> | undefined)?.[0];
+    assert.equal(secondSummary?.iterations, 0);
+    assert.equal(secondSummary?.stopReason, "passed");
+    const secondMetrics = second.steps.find((step) => step.nodeId === "metrics")?.output as
+      | { structuredContent?: { revenueBasis?: string } }
+      | undefined;
+    assert.equal(secondMetrics?.structuredContent?.revenueBasis, "net");
+
+    // 回滚到 v1 后补丁消失，可随时恢复晋升前的行为。
+    store.rollbackAgent("business-planner", 1);
+    const rolledBack = store.getAgent("business-planner");
+    assert.equal(rolledBack?.version, 1);
+    assert.doesNotMatch(rolledBack?.prompt ?? "", /revenueBasis 必须选择 net/);
   } finally {
     await client.close();
+    dispose();
+  }
+});
+
+test("refuses to promote a prompt patch that leaks answer numbers", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "promotion-guard-probe",
+    name: "补丁晋升安全探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "initial", kind: "verify", verifier: "probe-verifier", threshold: 0.8 },
+      {
+        id: "loop",
+        kind: "loop",
+        title: "补丁晋升",
+        maxIterations: 1,
+        body: [
+          {
+            id: "diagnose",
+            kind: "agent",
+            title: "诊断",
+            agent: "business-diagnostician",
+            loopRole: "diagnose",
+            promoteToAgent: "business-planner",
+            outputFormat: "json",
+            outputContract: { required: ["action", "promptPatch"] },
+            inputs: {}
+          },
+          { id: "fix", kind: "agent", title: "修复", agent: "business-reporter", inputs: {} },
+          { id: "check", kind: "verify", verifier: "probe-verifier", threshold: 0.8 }
+        ]
+      }
+    ],
+    edges: [{ from: "initial", to: "loop" }]
+  };
+  let verifyCalls = 0;
+
+  try {
+    const { run } = await new WorkflowExecutor(store, {
+      verify: (node) => {
+        verifyCalls += 1;
+        const score = verifyCalls === 1 ? 0.6 : 0.9;
+        return {
+          mode: "live",
+          verifier: node.verifier,
+          threshold: node.threshold ?? 0.8,
+          score,
+          confidence: 0.9,
+          passed: score >= (node.threshold ?? 0.8),
+          dimensions: [],
+          issues: score < (node.threshold ?? 0.8) ? ["数值不一致"] : [],
+          evidence: []
+        };
+      },
+      agent: (node) => {
+        if (node.id === "diagnose") {
+          return {
+            mode: "live",
+            agent: node.agent,
+            output: JSON.stringify({
+              action: "rewrite_agent",
+              promptPatch: "数据包含退款时必须选择净额口径，参考 42290 进行核对。"
+            })
+          };
+        }
+        return { mode: "live", agent: node.agent, output: "修复后的报告正文。" };
+      }
+    }).run(workflow);
+
+    assert.equal(run.status, "succeeded");
+    const summary = (run.output?.selfLoop as Array<Record<string, unknown>> | undefined)?.[0];
+    const promotion = summary?.promotion as { status?: string; reason?: string } | undefined;
+    assert.equal(promotion?.status, "rejected");
+    assert.match(promotion?.reason ?? "", /答案数字/);
+    assert.equal(store.getAgent("business-planner")?.version, 1);
+  } finally {
     dispose();
   }
 });
@@ -1656,7 +2259,7 @@ test("cancels a run waiting for approval and skips downstream steps", async () =
   }
 });
 
-test("scheduler counts agents reserved by active runs", async () => {
+test("scheduler counts agents reserved by real in-flight leases", async () => {
   const { store, dispose } = createStore();
   const workflow: WorkflowDefinition = {
     id: "load-probe",
@@ -1668,13 +2271,19 @@ test("scheduler counts agents reserved by active runs", async () => {
   };
   try {
     store.seedAgents(BUILTIN_AGENTS);
-    store.createRun({
+    const other = store.createRun({
       workflowId: "load-holder",
       workflowVersion: 1,
       workflowInput: {},
       mode: "stub",
-      status: "running",
-      plan: { decisions: [{ taskId: "review", agentId: "topic-innovation-agent" }] }
+      status: "running"
+    });
+    store.acquireSchedulerLease({
+      runId: other.id,
+      taskPath: "review",
+      agentId: "topic-innovation-agent",
+      workerId: "worker-other",
+      ttlMs: 60000
     });
 
     const { run } = await new WorkflowExecutor(store).run(workflow);
@@ -2539,6 +3148,349 @@ test("counseling-session-v1 turns each counselor speech into a human pause and f
     const finishStep = store.listSteps(finished.id).find((step) => step.nodeId === "finish-session");
     assert.equal(finishStep?.status, "succeeded");
     assert.equal((finishStep?.output as { session?: { status?: string } }).session?.status, "finished");
+  } finally {
+    dispose();
+  }
+});
+
+test("self-loop swaps the execution model after a stalled round and records the transition", async () => {
+  const restoreEnv = withEnv({
+    PLATFORM_MODEL_FAST: "fast-model",
+    PLATFORM_MODEL_REASONING: "strong-model"
+  });
+  const { store, dispose } = createStore();
+  store.saveAgent({
+    id: "weak-agent",
+    name: "普通教案 Agent",
+    version: 1,
+    role: "教案设计",
+    prompt: "",
+    tools: [],
+    model: "fast",
+    capabilities: [{ tag: "教案设计", weight: 0.7 }],
+    memory: {},
+    enabled: true
+  });
+
+  const workflow: WorkflowDefinition = {
+    id: "self-loop-model-probe",
+    name: "换模型探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "initial", kind: "verify", verifier: "probe-verifier", threshold: 0.95 },
+      {
+        id: "loop",
+        kind: "loop",
+        maxIterations: 5,
+        while: "${verify-loop.score} < 0.95",
+        patience: 2,
+        body: [
+          {
+            id: "revise",
+            kind: "agent",
+            agent: "weak-agent",
+            inputs: { draft: "初稿" }
+          },
+          { id: "verify-loop", kind: "verify", verifier: "probe-verifier", threshold: 0.95 }
+        ]
+      }
+    ],
+    edges: [{ from: "initial", to: "loop" }]
+  };
+
+  try {
+    const executor = new WorkflowExecutor(store, {
+      agent: (node) => ({ agent: node.agent, model: node.model, output: "输出" }),
+      verify: () => ({
+        score: 0.7,
+        confidence: 0.8,
+        dimensions: [],
+        issues: ["互动覆盖不足"],
+        evidence: []
+      })
+    });
+    const { run, steps } = await executor.run(workflow);
+
+    const iterations = store.listLoopIterations(run.id);
+    assert.deepEqual(
+      iterations.map((iteration) => iteration.action),
+      ["rewrite", "rewrite", "swap_model"]
+    );
+
+    const revisions = steps.filter((step) => step.nodeId === "revise");
+    assert.equal(revisions.length, 3);
+    assert.equal((revisions[0]?.output as { model?: string }).model, undefined);
+    assert.equal((revisions[1]?.output as { model?: string }).model, undefined);
+    assert.equal((revisions[2]?.output as { model?: string }).model, "reasoning");
+
+    const directive = (revisions[2]?.input as { selfLoop?: Record<string, unknown> }).selfLoop;
+    assert.equal(directive?.action, "swap_model");
+    assert.equal(directive?.modelId, "reasoning");
+    assert.equal(directive?.previousModelId, "fast");
+
+    assert.equal(iterations[2]?.modelBefore, "fast");
+    assert.equal(iterations[2]?.modelAfter, "reasoning");
+
+    const summary = ((run.output?.selfLoop ?? []) as Array<Record<string, unknown>>)[0];
+    const switches = summary?.modelSwitches as Array<Record<string, unknown>>;
+    assert.equal(switches?.length, 1);
+    assert.equal(switches[0]?.iteration, 2);
+    assert.equal(switches[0]?.fromModel, "fast");
+    assert.equal(switches[0]?.toModel, "reasoning");
+    assert.equal(switches[0]?.scoreAfter, 0.7);
+  } finally {
+    dispose();
+    restoreEnv();
+  }
+});
+
+function withEnv(values: Record<string, string | undefined>) {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  };
+}
+
+function clarifyProbe(overrides: Record<string, unknown> = {}): WorkflowDefinition {
+  return {
+    id: "clarify-probe",
+    name: "意图澄清探针",
+    version: 1,
+    inputs: [{ name: "request", type: "string", required: true }],
+    nodes: [
+      {
+        id: "clarify",
+        kind: "clarify",
+        title: "意图澄清",
+        clarifyOn: "high",
+        maxQuestions: 2,
+        ...overrides
+      },
+      {
+        id: "echo",
+        kind: "template",
+        template: "${clarify.rewrittenPrompt}"
+      }
+    ],
+    edges: [{ from: "clarify", to: "echo" }]
+  };
+}
+
+test("clarify rewrites the raw request and exposes the result downstream", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const { run, steps } = await executor.run(clarifyProbe(), {
+      request: "看看 Q3 为什么下滑，给三条建议"
+    });
+
+    assert.equal(run.status, "succeeded");
+    const clarify = steps.find((step) => step.nodeId === "clarify");
+    const output = clarify?.output as Record<string, unknown>;
+    assert.equal(output.kind, "clarify");
+    assert.equal(output.rawPrompt, "看看 Q3 为什么下滑，给三条建议");
+    assert.equal((output.intent as { taskType?: string }).taskType, "通用任务");
+    assert.match(String(output.rewrittenPrompt), /# 目标/);
+    assert.equal(output.needsClarification, false);
+
+    const echo = steps.find((step) => step.nodeId === "echo");
+    assert.equal((echo?.output as { value?: string }).value, output.rewrittenPrompt);
+    assert.equal(store.listInteractions({ runId: run.id }).length, 0);
+  } finally {
+    dispose();
+  }
+});
+
+test("clarify pauses on a high-impact ambiguity and folds the answer into the rewrite", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(
+      clarifyProbe({
+        stubOutput: {
+          needsClarification: true,
+          ambiguities: [
+            { slot: "timeRange", question: "Q3 指自然季度还是财季？", impact: "high" }
+          ]
+        }
+      }),
+      { request: "看看 Q3 为什么下滑，给三条建议" }
+    );
+
+    const interaction = await waitFor("澄清记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+    assert.equal(interaction.nodeId, "clarify");
+    assert.equal(interaction.fields.length, 1);
+    assert.match(interaction.prompt, /Q3 指自然季度还是财季/);
+    assert.equal(
+      (interaction.context?.intent as { taskType?: string } | undefined)?.taskType,
+      "通用任务"
+    );
+
+    executor.respondInteraction(interaction.id, {
+      values: { answer: "自然季度（7–9 月）" },
+      actor: "需求提出人"
+    });
+
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const clarify = store
+      .listSteps(finished.id)
+      .find((step) => step.nodeId === "clarify");
+    const output = clarify?.output as Record<string, unknown>;
+    const clarification = output.clarification as Record<string, unknown>;
+    assert.equal(clarification.answer, "自然季度（7–9 月）");
+    assert.equal(clarification.actor, "需求提出人");
+    assert.match(String(output.rewrittenPrompt), /人工补充：自然季度/);
+    assert.equal(output.needsClarification, true);
+  } finally {
+    dispose();
+  }
+});
+
+test("clarifyOn=never records ambiguities without pausing", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const { run, steps } = await executor.run(
+      clarifyProbe({
+        clarifyOn: "never",
+        stubOutput: {
+          needsClarification: true,
+          ambiguities: [
+            { slot: "scope", question: "只看华东还是全国？", impact: "high" }
+          ]
+        }
+      }),
+      { request: "看看 Q3 为什么下滑" }
+    );
+
+    assert.equal(run.status, "succeeded");
+    assert.equal(store.listInteractions({ runId: run.id }).length, 0);
+    const output = steps.find((step) => step.nodeId === "clarify")?.output as Record<string, unknown>;
+    assert.equal(output.needsClarification, true);
+    assert.equal((output.ambiguities as unknown[]).length, 1);
+    assert.equal(output.clarification, undefined);
+  } finally {
+    dispose();
+  }
+});
+
+test("intent-clarify-v1 pauses on the built-in critical ambiguity, then runs the rewritten prompt through verification", async () => {
+  const { store, dispose } = createStore();
+  const workflow = loadBuiltinWorkflows().find((item) => item.id === "intent-clarify-v1");
+  assert.ok(workflow);
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(workflow, { request: "帮我做个期末复习的方案" });
+    const interaction = await waitFor("意图澄清记录", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+    assert.equal(interaction.nodeId, "clarify");
+    assert.match(interaction.prompt, /期末复习只覆盖本学期内容/);
+    assert.doesNotMatch(interaction.prompt, /Word 文档还是 Markdown/);
+
+    executor.respondInteraction(interaction.id, {
+      values: { answer: "只复习本学期，控制在 40 分钟内" },
+      actor: "需求提出人"
+    });
+
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const steps = store.listSteps(finished.id);
+    const clarify = steps.find((step) => step.nodeId === "clarify")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.equal(clarify.taskType, "教学设计");
+    assert.equal((clarify.clarification as { answer?: string }).answer, "只复习本学期，控制在 40 分钟内");
+    assert.match(String(clarify.rewrittenPrompt), /人工补充：只复习本学期/);
+
+    const draft = steps.find((step) => step.nodeId === "draft");
+    assert.equal(draft?.status, "succeeded");
+    assert.match(String((draft?.input as { request?: string }).request), /人工补充：只复习本学期/);
+
+    const report = steps.find((step) => step.nodeId === "report")?.output as { output?: string };
+    assert.match(String(report.output), /## 原始需求/);
+    assert.match(String(report.output), /## 改写后 Prompt/);
+    assert.match(String(report.output), /人工补充：只复习本学期/);
+  } finally {
+    dispose();
+  }
+});
+
+test("serves a higher-priority run first on the shared global queue", async () => {
+  const { store, dispose } = createStore();
+  store.seedAgents(BUILTIN_AGENTS);
+  const workflow: WorkflowDefinition = {
+    id: "cross-run-priority-probe",
+    name: "跨运行优先级探针",
+    version: 1,
+    inputs: [],
+    nodes: [{ id: "work", kind: "agent", agent: "topic-innovation-agent" }],
+    edges: []
+  };
+  try {
+    store.saveWorkflow(workflow);
+    const seen: string[] = [];
+    const tags = new Map<string, string>();
+    const executor = new WorkflowExecutor(
+      store,
+      {
+        agent: async (_node, _input, context) => {
+          seen.push(tags.get(context.runId) ?? context.runId);
+          return { mode: "live", output: "完成" };
+        }
+      },
+      { maxConcurrency: 1, schedulerCapacity: 1, maxAttempts: 1, timeoutMs: 0 }
+    );
+
+    // 两个运行在同一批就绪任务里提交，容量只有 1，高优运行应整体先执行。
+    const low = executor.start(workflow, {}, { priorityClass: 0 });
+    tags.set(low.id, "low");
+    const high = executor.start(workflow, {}, { priorityClass: 5 });
+    tags.set(high.id, "high");
+
+    await waitFor("两个运行完成", () => {
+      const lowRun = store.getRun(low.id);
+      const highRun = store.getRun(high.id);
+      return lowRun?.status === "succeeded" && highRun?.status === "succeeded"
+        ? { lowRun, highRun }
+        : undefined;
+    });
+
+    assert.deepEqual(seen, ["high", "low"]);
+    const highQueue = store.listSchedulerQueue(high.id)[0];
+    const lowQueue = store.listSchedulerQueue(low.id)[0];
+    assert.equal(highQueue?.priorityClass, 5);
+    assert.equal(lowQueue?.priorityClass, 0);
+    assert.equal(highQueue?.status, "succeeded");
+    assert.equal(store.listRunNodes(high.id)[0]?.status, "succeeded");
+    assert.equal(executor.schedulerSnapshot().pending, 0);
+    assert.equal(executor.schedulerSnapshot().running, 0);
   } finally {
     dispose();
   }

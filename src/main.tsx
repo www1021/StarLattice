@@ -54,6 +54,7 @@ import { KnowledgePage } from "./features/platform/KnowledgePage";
 import { McpPage } from "./features/platform/McpPage";
 import { RunMonitorPage } from "./features/platform/RunMonitorPage";
 import { VerifyReportPage } from "./features/platform/VerifyReportPage";
+import { EvolutionPage } from "./features/platform/EvolutionPage";
 import { VoiceChatStage } from "./features/voice/VoiceChatStage";
 import "./styles.css";
 
@@ -4027,12 +4028,9 @@ function SpeakTrainingRoom({
     }
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const host =
-      window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
-        ? `${window.location.hostname}:8787`
-        : window.location.host;
+    // 走同源：开发态由 Vite 代理 /api（含 ws），部署态由反向代理转发。
     const socket = new WebSocket(
-      `${protocol}://${host}/api/speak-training/realtime`
+      `${protocol}://${window.location.host}/api/speak-training/realtime`
     );
     realtimeSocketRef.current = socket;
     socket.onopen = () => {
@@ -8328,6 +8326,7 @@ function App() {
     | "mcp"
     | "monitor"
     | "report"
+    | "evolution"
   >("platform");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [newTaskToken, setNewTaskToken] = useState(0);
@@ -10890,6 +10889,10 @@ function App() {
           setActiveSection("report");
           setActiveInsightMessageId(undefined);
         }}
+        onOpenEvolution={() => {
+          setActiveSection("evolution");
+          setActiveInsightMessageId(undefined);
+        }}
         onNewTask={() => {
           setNewTaskToken((value) => value + 1);
           setActiveSection("platform");
@@ -11053,6 +11056,10 @@ function App() {
         ) : activeSection === "report" ? (
           <div className="workspace-inner platform-workspace">
             <VerifyReportPage />
+          </div>
+        ) : activeSection === "evolution" ? (
+          <div className="workspace-inner platform-workspace">
+            <EvolutionPage />
           </div>
         ) : (
           <div className={`workspace-inner ${hasMessages ? "has-messages" : ""}`}>

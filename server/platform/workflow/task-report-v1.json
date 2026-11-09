@@ -49,6 +49,10 @@
       "title": "独立验证",
       "verifier": "quality-verifier",
       "verifiers": ["quality-verifier", "reviewer-agent"],
+      "verifierModels": {
+        "quality-verifier": "reasoning",
+        "reviewer-agent": "fast"
+      },
       "rubric": ["结构完整", "论证清晰", "可执行性"],
       "threshold": 0.7,
       "inputs": { "artifact": "${draft.output}" }
@@ -83,6 +87,10 @@
           "title": "复核",
           "verifier": "quality-verifier",
           "verifiers": ["quality-verifier", "reviewer-agent"],
+          "verifierModels": {
+            "quality-verifier": "reasoning",
+            "reviewer-agent": "fast"
+          },
           "rubric": ["结构完整", "论证清晰", "可执行性"],
           "threshold": 0.7
         }

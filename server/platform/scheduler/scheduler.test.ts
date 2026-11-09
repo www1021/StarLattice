@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentCapability, AgentRecord, AgentWrite } from "../types.js";
+import type {
+  AgentCapability,
+  AgentRecord,
+  AgentWrite,
+  CompiledPlan,
+  WorkflowDefinition
+} from "../types.js";
 import { BUILTIN_AGENTS } from "../registry/agents.js";
+import { buildWorkflowSchedule, replanForTask } from "./planner.js";
 import { createSchedule, parseScheduleRequest } from "./scheduler.js";
 
 function toRecord(write: AgentWrite): AgentRecord {
@@ -198,4 +205,337 @@ test("validates schedule requests before scheduling", () => {
     () => parseScheduleRequest({ tasks: [{ id: "a", capabilities: ["设计"] }], loads: { "a": { inFlight: -1 } } }),
     /inFlight/
   );
+});
+
+test("prefers an agent whose model matches the task's model tags", () => {
+  const agents = [
+    agentWithModel("fast-designer", "快速设计 Agent", [{ tag: "设计", weight: 0.9 }], "fast"),
+    agentWithModel("strong-designer", "推理设计 Agent", [{ tag: "设计", weight: 0.9 }], "reasoning")
+  ];
+  const plan = createSchedule(
+    [{ id: "deep-diagnosis", capabilities: ["设计"], priority: 0.5, modelTags: ["reasoning"] }],
+    agents
+  );
+
+  const decision = plan.decisions[0];
+  assert.equal(decision.agentId, "strong-designer");
+  assert.equal(decision.model.id, "reasoning");
+  assert.equal(decision.model.costTier, "high");
+  assert.equal(decision.model.fit, 1);
+  assert.equal(decision.breakdown.model, 1);
+  assert.equal(plan.weights.model, 0.15);
+});
+
+test("cost caps exclude expensive models but keep the cheapest candidate as a marked fallback", () => {
+  const restore = withEnv({
+    PLATFORM_MODEL_CATALOG: JSON.stringify([
+      {
+        id: "reasoning-lite",
+        label: "低成本推理",
+        model: "lite-model",
+        tags: ["reasoning"],
+        costTier: "low"
+      }
+    ])
+  });
+  try {
+    const agents = [
+      agentWithModel("agent-a", "高成本推理 Agent", [{ tag: "设计", weight: 0.9 }], "reasoning"),
+      agentWithModel("agent-b", "低成本推理 Agent", [{ tag: "设计", weight: 0.9 }], "reasoning-lite")
+    ];
+    const uncapped = createSchedule(
+      [{ id: "task", capabilities: ["设计"], priority: 0.5, modelTags: ["reasoning"] }],
+      agents
+    );
+    assert.equal(uncapped.decisions[0]?.agentId, "agent-a");
+
+    const capped = createSchedule(
+      [
+        {
+          id: "task",
+          capabilities: ["设计"],
+          priority: 0.5,
+          modelTags: ["reasoning"],
+          maxCostTier: "medium"
+        }
+      ],
+      agents
+    );
+    assert.equal(capped.decisions[0]?.agentId, "agent-b");
+    assert.equal(capped.decisions[0]?.model.costTier, "low");
+    assert.doesNotMatch(capped.decisions[0]?.reason ?? "", /超过任务成本上限/);
+
+    const allCapped = createSchedule(
+      [
+        {
+          id: "task",
+          capabilities: ["设计"],
+          priority: 0.5,
+          modelTags: ["reasoning"],
+          maxCostTier: "low"
+        }
+      ],
+      [agents[0]]
+    );
+    assert.equal(allCapped.decisions[0]?.agentId, "agent-a");
+    assert.match(allCapped.decisions[0]?.reason ?? "", /超过任务成本上限/);
+  } finally {
+    restore();
+  }
+});
+
+test("leaves a task unassigned when no agent model carries the required tag", () => {
+  const plan = createSchedule(
+    [{ id: "deep-diagnosis", capabilities: ["设计"], modelTags: ["reasoning"] }],
+    [agentWithModel("fast-designer", "快速设计 Agent", [{ tag: "设计", weight: 0.9 }], "fast")]
+  );
+
+  assert.equal(plan.decisions.length, 0);
+  assert.equal(plan.unassigned.length, 1);
+  assert.match(plan.unassigned[0]?.reason ?? "", /模型标签「reasoning」/);
+});
+
+test("parses model tags and cost caps and rejects invalid values", () => {
+  const parsed = parseScheduleRequest({
+    tasks: [
+      {
+        id: "task",
+        capabilities: ["设计"],
+        modelTags: ["reasoning"],
+        maxCostTier: "medium"
+      }
+    ]
+  });
+  assert.deepEqual(parsed.tasks[0]?.modelTags, ["reasoning"]);
+  assert.equal(parsed.tasks[0]?.maxCostTier, "medium");
+
+  assert.throws(
+    () =>
+      parseScheduleRequest({
+        tasks: [{ id: "task", capabilities: ["设计"], maxCostTier: "premium" }]
+      }),
+    /maxCostTier/
+  );
+  assert.throws(
+    () =>
+      parseScheduleRequest({
+        tasks: [{ id: "task", capabilities: ["设计"], modelTags: [1] }]
+      }),
+    /modelTags/
+  );
+});
+
+test("workflow planning lifts diagnose agents' reasoning model into scheduling constraints", () => {
+  const workflow: WorkflowDefinition = {
+    id: "model-aware-plan",
+    name: "模型感知调度探针",
+    version: 1,
+    inputs: [],
+    nodes: [],
+    edges: []
+  };
+  const plan = {
+    workflow,
+    steps: [
+      {
+        path: "diagnose",
+        nodeId: "diagnose",
+        depth: 1,
+        node: {
+          id: "diagnose",
+          kind: "agent",
+          agent: "strong-diagnostician",
+          loopRole: "diagnose"
+        }
+      },
+      {
+        path: "draft",
+        nodeId: "draft",
+        depth: 1,
+        node: { id: "draft", kind: "agent", agent: "fast-writer" }
+      }
+    ]
+  } as unknown as CompiledPlan;
+  const agents = [
+    agentWithModel("strong-diagnostician", "推理诊断 Agent", [{ tag: "诊断", weight: 0.9 }], "reasoning"),
+    agentWithModel("fast-writer", "快速写作 Agent", [{ tag: "写作", weight: 0.9 }], "fast")
+  ];
+
+  const schedule = buildWorkflowSchedule(plan, agents);
+  const diagnose = schedule.decisions.find((decision) => decision.taskId === "diagnose");
+  assert.equal(diagnose?.agentId, "strong-diagnostician");
+  assert.equal(diagnose?.model.id, "reasoning");
+  assert.equal(diagnose?.breakdown.model, 1);
+});
+
+test("PLATFORM_SCHEDULE_MAX_COST applies a global cap and marks an unavoidable downgrade", () => {
+  const restore = withEnv({ PLATFORM_SCHEDULE_MAX_COST: "low" });
+  try {
+    const workflow: WorkflowDefinition = {
+      id: "cost-cap-plan",
+      name: "成本上限探针",
+      version: 1,
+      inputs: [],
+      nodes: [],
+      edges: []
+    };
+    const plan = {
+      workflow,
+      steps: [
+        {
+          path: "diagnose",
+          nodeId: "diagnose",
+          depth: 1,
+          node: {
+            id: "diagnose",
+            kind: "agent",
+            agent: "strong-diagnostician",
+            loopRole: "diagnose"
+          }
+        }
+      ]
+    } as unknown as CompiledPlan;
+    const agents = [
+      agentWithModel("strong-diagnostician", "推理诊断 Agent", [{ tag: "诊断", weight: 0.9 }], "reasoning")
+    ];
+
+    const schedule = buildWorkflowSchedule(plan, agents);
+    const diagnose = schedule.decisions.find((decision) => decision.taskId === "diagnose");
+    assert.equal(diagnose?.model.costTier, "high");
+    assert.match(diagnose?.reason ?? "", /超过任务成本上限/);
+  } finally {
+    restore();
+  }
+});
+
+test("schedulerMode=static keeps the DSL-declared agent and skips runtime replanning", () => {
+  const plan = {
+    workflow: {
+      id: "static-ablation",
+      name: "静态调度消融",
+      version: 1,
+      schedulerMode: "static",
+      inputs: [],
+      nodes: [],
+      edges: []
+    } satisfies WorkflowDefinition,
+    steps: [
+      {
+        path: "draft",
+        nodeId: "draft",
+        depth: 1,
+        node: { id: "draft", kind: "agent", agent: "fast-writer", capabilities: ["写作"] }
+      }
+    ]
+  } as unknown as CompiledPlan;
+  const agents = [
+    agentWithModel("fast-writer", "快速写作 Agent", [{ tag: "写作", weight: 0.3 }], "fast"),
+    agentWithModel("strong-writer", "强力写作 Agent", [{ tag: "写作", weight: 0.95 }], "reasoning")
+  ];
+
+  const schedule = buildWorkflowSchedule(plan, agents, {
+    "fast-writer": { inFlight: 3, capacity: 1 }
+  });
+  const draft = schedule.decisions.find((decision) => decision.taskId === "draft");
+
+  assert.equal(schedule.staticMode, true);
+  assert.equal(draft?.agentId, "fast-writer");
+  assert.match(draft?.reason ?? "", /静态消融/);
+  assert.equal(replanForTask(schedule, "draft", ["fast-writer"], agents), undefined);
+});
+
+function agentWithModel(
+  id: string,
+  name: string,
+  capabilities: AgentCapability[],
+  model: string
+): AgentRecord {
+  return { ...customAgent(id, name, capabilities), model };
+}
+
+function withEnv(values: Record<string, string | undefined>) {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  };
+}
+
+test("excludeAgentIds re-plans away from the failed agent", () => {
+  const agents = [
+    customAgent("agent-a", "主 Agent", [{ tag: "调度重排探针技能", weight: 0.9 }]),
+    customAgent("agent-b", "备用 Agent", [{ tag: "调度重排探针技能", weight: 0.6 }])
+  ];
+  const tasks = [
+    { id: "t1", title: "任务", capabilities: ["调度重排探针技能"], priority: 0.9 }
+  ];
+
+  assert.equal(createSchedule(tasks, agents).decisions[0]?.agentId, "agent-a");
+  assert.equal(
+    createSchedule(tasks, agents, { excludeAgentIds: ["agent-a"] }).decisions[0]?.agentId,
+    "agent-b"
+  );
+  const none = createSchedule(tasks, agents, { excludeAgentIds: ["agent-a", "agent-b"] });
+  assert.equal(none.decisions.length, 0);
+  assert.equal(none.unassigned.length, 1);
+});
+
+test("node-level capabilities drive scheduling instead of authored agent tags", () => {
+  const workflow: WorkflowDefinition = {
+    id: "content-aware-plan",
+    name: "节点能力调度探针",
+    version: 1,
+    inputs: [],
+    nodes: [],
+    edges: []
+  };
+  const plan = {
+    workflow,
+    steps: [
+      {
+        path: "task",
+        nodeId: "task",
+        depth: 1,
+        node: {
+          id: "task",
+          kind: "agent",
+          agent: "writer-agent",
+          capabilities: ["数据分析"]
+        }
+      }
+    ]
+  } as unknown as CompiledPlan;
+  const agents = [
+    customAgent("writer-agent", "写作 Agent", [{ tag: "写作", weight: 0.95 }]),
+    customAgent("analyst-agent", "分析 Agent", [{ tag: "数据分析", weight: 0.9 }])
+  ];
+
+  const schedule = buildWorkflowSchedule(plan, agents);
+  const decision = schedule.decisions.find((item) => item.taskId === "task");
+  assert.equal(decision?.agentId, "analyst-agent");
+  assert.deepEqual(decision?.matchedCapabilities.map((item) => item.tag), ["数据分析"]);
+
+  const inherited = buildWorkflowSchedule(
+    {
+      workflow,
+      steps: [
+        { path: "task", nodeId: "task", depth: 1, node: { id: "task", kind: "agent", agent: "writer-agent" } }
+      ]
+    } as unknown as CompiledPlan,
+    agents
+  );
+  assert.equal(inherited.decisions[0]?.agentId, "writer-agent");
 });

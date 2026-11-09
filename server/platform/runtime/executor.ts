@@ -1,9 +1,15 @@
+import { hostname } from "node:os";
 import {
   PlatformError,
   type AgentNode,
+  type AgentRecord,
   type ApprovalDecision,
   type ApprovalRecord,
   type ApproveNode,
+  type ClarifyAmbiguity,
+  type ClarifyAnswer,
+  type ClarifyNode,
+  type IntentAnalysis,
   type CompiledBlock,
   type CompiledExpression,
   type CompiledPlan,
@@ -20,6 +26,8 @@ import {
   type RunMode,
   type RunRecord,
   type RunStatus,
+  type SchedulerLease,
+  type SchedulerWorkerStatus,
   type StepRecord,
   type SubWorkflowNode,
   type TemplateNode,
@@ -31,12 +39,13 @@ import {
 import { ApprovalGate, type ApprovalOutcome } from "./approvalGate.js";
 import { HumanGate } from "./humanGate.js";
 import { compileWorkflow } from "../workflow/compiler.js";
-import { assignmentsOf, buildWorkflowSchedule } from "../scheduler/planner.js";
+import { assignmentsOf, buildWorkflowSchedule, replanForTask } from "../scheduler/planner.js";
 import {
   actionLabel,
   estimateTokens,
   SelfLoopController,
   type SelfLoopAction,
+  type SelfLoopPromotion,
   type SelfLoopStopReason,
   type SelfLoopSummary
 } from "../selfLoop/controller.js";
@@ -51,6 +60,15 @@ import {
   type VerifyReport
 } from "../verify/verifier.js";
 import type { PlatformStateStore } from "./stateStore.js";
+import type { ResolvedRelease } from "../evolution/types.js";
+import { InlineStepInvoker, type StepInvoker } from "./invoker.js";
+import { SchedulerService, SchedulerTaskCancelledError } from "../scheduler/service.js";
+import { WorkerLostError } from "../workers/errors.js";
+import {
+  buildWorkerInvocation,
+  type WorkerLease,
+  type WorkerPoolLike
+} from "../workers/protocol.js";
 
 const REF_PATTERN = /^\$\{([^}\s]+)\}$/;
 const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
@@ -58,6 +76,18 @@ const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
 export type RunOptions = {
   /** 试跑：执行到该顶层节点完成后停下，后续节点保持未执行。 */
   stopAfter?: string;
+  /** 使用冻结发布运行；为空时直接读取实时注册中心。 */
+  releaseId?: string;
+  /** 演化实验 id，写入运行记录用于门禁与金丝雀对比。 */
+  experimentId?: string;
+  /** 实验分组。 */
+  arm?: "control" | "treatment";
+  /** 运行落库后的回调，供控制面在真正执行前写入分流归属。 */
+  onCreated?: (run: RunRecord) => void;
+  /** 运行级优先档，覆盖节点类别分档；数值越大越先出队。 */
+  priorityClass?: number;
+  /** 运行截止时间；临近或超时的任务在全局队列中获得加成。 */
+  deadlineAt?: string;
 };
 
 type RunScope = {
@@ -83,17 +113,57 @@ export type LoopScope = {
   retrievalQuery?: string;
 };
 
+/** 循环帧里参与 ${loop.*} 解析的字段；Worker 进程只需这一部分。 */
+export type LoopProfile = LoopScope & { path: string };
+
+/**
+ * 叶子步骤执行所需的最小状态。父进程的完整 RunState 与 Worker 进程按 IPC
+ * 重建的状态都满足该形状，因此同一个 invoke 实现可以两端复用。
+ */
+export type LeafExecutionState = {
+  runId: string;
+  workflowId: string;
+  iteration: number;
+  scope: RunScope;
+  loops: LoopProfile[];
+  workflowKnowledgeBaseIds: string[];
+  tokensUsed: number;
+  tokenBudget?: number;
+  agentSnapshots?: Map<string, AgentRecord>;
+};
+
 export type ExecutionContext = {
   runId: string;
   workflowId: string;
   iteration: number;
   scope: RunScope;
   loop?: LoopScope;
+  /** 工作流级知识库范围，供 Agent 自主调用 knowledge.search 时使用。 */
+  knowledgeBaseIds?: string[];
+  /** 当前运行已消耗的估算 token，供模型解析做预算降级。 */
+  tokensUsed?: number;
+  /** 运行级 token 预算；0 或未设置表示不限制。 */
+  tokenBudget?: number;
+  /** 冻结发布中的 Agent 快照；存在时替换实时注册表。 */
+  agentSnapshots?: Map<string, AgentRecord>;
+  /** 本次运行的发布与实验标记。 */
+  release?: { releaseId: string; experimentId?: string; arm?: string };
 };
+
+/** clarify 节点分两阶段调用模型：先分析意图，再按澄清结果改写 Prompt。 */
+export type ClarifyPhase =
+  | { phase: "analyze" }
+  | { phase: "rewrite"; analysis: IntentAnalysis; clarification?: ClarifyAnswer };
 
 export type ExecutorHandlers = {
   agent?: (node: AgentNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   llm?: (node: LlmNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  clarify?: (
+    node: ClarifyNode,
+    input: Record<string, unknown>,
+    context: ExecutionContext,
+    phase: ClarifyPhase
+  ) => unknown | Promise<unknown>;
   tool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 仅处理已注册的 MCP 工具；返回 undefined 时回落到内置 stub，因此不会把整个执行器标记为 live。 */
   mcpTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
@@ -117,6 +187,8 @@ export type VerifyOutput = {
   evidence: string[];
   layers?: VerifyLayers;
   verifiers?: VerifyReport["layers"]["crossCheck"]["verifiers"];
+  citations?: VerifyReport["citations"];
+  independence?: VerifyReport["independence"];
   artifactNodeId?: string;
 };
 
@@ -132,7 +204,43 @@ export type ExecutorOptions = {
   approvalTimeoutMs?: number;
   /** human 节点未显式声明超时时的默认等待时长。 */
   humanTimeoutMs?: number;
+  /** 运行级 token 预算；超出后模型解析自动降级到低成本档。 */
+  tokenBudget?: number;
+  /** 冻结发布解析器；由演化控制面注入。 */
+  releaseProvider?: { resolveRelease(id: string): ResolvedRelease | undefined };
+  /** 运行进入终态后的回调，用于金丝雀观测与护栏判定。 */
+  onRunFinished?: (runId: string) => void;
+  /** 发布运行中自循环补丁不直接写注册表，改为登记演化候选。 */
+  onPromptCandidate?: (signal: PromptCandidateSignal) => void;
   onStatusChange?: (runId: string, status: RunStatus) => void;
+  /** 叶子步骤执行边界；默认在本进程内执行，替换后可将步骤派发到 Worker 进程。 */
+  invoker?: StepInvoker;
+  /** 全局调度服务；多运行共享时注入同一实例，缺省按本执行器并发建一个进程内服务。 */
+  scheduler?: SchedulerService;
+  /** 全局并发槽位数；缺省沿用 maxConcurrency，可用 PLATFORM_SCHEDULER_CAPACITY 覆盖。 */
+  schedulerCapacity?: number;
+  /** 队列选择策略：dynamic 按有效优先级；static 固定 FIFO，用于对照实验。 */
+  schedulerPolicy?: SchedulerPolicy;
+  /** 跨进程取消的数据库轮询间隔；0 关闭。 */
+  cancelPollMs?: number;
+  /** 同一恢复链允许的最大续跑次数。 */
+  maxResumes?: number;
+  /** 叶子步骤的进程池；注入后叶子步骤在 Worker 子进程执行，缺省留在本进程。 */
+  workerPool?: WorkerPoolLike;
+};
+
+export type SchedulerPolicy = "dynamic" | "static";
+
+export type PromptCandidateSignal = {
+  workflowId: string;
+  runId: string;
+  agentId: string;
+  patch: string;
+  iteration: number;
+  scoreBefore?: number;
+  scoreAfter?: number;
+  source: "model" | "stub";
+  baseReleaseId?: string;
 };
 
 export class HumanInputError extends Error {
@@ -156,13 +264,45 @@ export class RunCancelledError extends Error {
   }
 }
 
-type ResolvedExecutorOptions = Required<
-  Omit<ExecutorOptions, "onStatusChange" | "dimensionScorer">
-> &
-  Pick<ExecutorOptions, "onStatusChange">;
+/** 步骤超时。Worker 进程按超时直接终止，避免陈旧调用与新任务在同一进程内并发。 */
+class StepTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StepTimeoutError";
+  }
+}
 
-type LoopFrame = {
-  path: string;
+/** 模拟 Worker 被终止：步骤立即失败并进入重试/重派，而不是整单取消。 */
+export { WorkerLostError } from "../workers/errors.js";
+
+const ACTIVE_RUN_STATUSES = new Set<RunStatus>([
+  "queued",
+  "running",
+  "verifying",
+  "revising",
+  "waiting_approval",
+  "waiting_input"
+]);
+
+type ResolvedExecutorOptions = Required<
+  Omit<
+    ExecutorOptions,
+    | "onStatusChange"
+    | "dimensionScorer"
+    | "releaseProvider"
+    | "onRunFinished"
+    | "onPromptCandidate"
+    | "invoker"
+    | "scheduler"
+    | "workerPool"
+  >
+> &
+  Pick<
+    ExecutorOptions,
+    "onStatusChange" | "releaseProvider" | "onRunFinished" | "onPromptCandidate"
+  >;
+
+type LoopFrame = {  path: string;
   controller: SelfLoopController;
   action: SelfLoopAction;
   actionReason: string;
@@ -170,8 +310,13 @@ type LoopFrame = {
   retrievalQuery?: string;
   directive: Record<string, unknown>;
   agentOverrides: Map<string, string>;
+  /** 循环体内的模型覆盖：与 agentOverrides 一样按编译路径生效。 */
+  modelOverrides: Map<string, string>;
   currentAgentId?: string;
   previousAgentId?: string;
+  currentModelId?: string;
+  previousModelId?: string;
+  modelSwitches: NonNullable<SelfLoopSummary["modelSwitches"]>;
   /** 循环体内首个 Agent 节点的编译路径；分配与换 Agent 都以 path 为键。 */
   primaryAgentPath?: string;
   /** 进入本轮前的产物、验证分与轮次，供循环体内的 ${loop.*} 引用。 */
@@ -180,9 +325,30 @@ type LoopFrame = {
   iteration: number;
   startedAt: number;
   tokensAtStart: number;
+  /** 最近一次诊断 Agent 的结构化输出；由控制器消费，不作为产物直接暴露给验证器。 */
+  diagnosis?: Record<string, unknown>;
+  diagnosisSource?: "model" | "stub";
+  promptPatch?: string;
+  promotionTarget?: string;
+  lastPatch?: {
+    patch: string;
+    source: "model" | "stub";
+    iteration: number;
+    scoreBefore?: number;
+    scoreAfter?: number;
+    targetAgentId?: string;
+  };
+  patchHistory: Array<{
+    patch: string;
+    source: "model" | "stub";
+    iteration: number;
+    scoreBefore?: number;
+    scoreAfter?: number;
+    targetAgentId?: string;
+  }>;
 };
 
-type RunState = ExecutionContext & {
+export type RunState = ExecutionContext & {
   sequence: number;
   tokensUsed: number;
   loops: LoopFrame[];
@@ -190,10 +356,42 @@ type RunState = ExecutionContext & {
   assignments: Map<string, string>;
   /** 工作流级知识库绑定，工具节点未显式配置检索范围时使用。 */
   workflowKnowledgeBaseIds: string[];
+  /** 运行中重调度：给定失败任务与已尝试 Agent，返回下一候选。 */
+  reschedule?: (
+    taskId: string,
+    attemptedAgentIds: string[]
+  ) => { agentId: string; agentName: string; score: number; reason: string } | undefined;
+  /** 全局队列排序使用的运行级优先档与截止时间。 */
+  priorityClass?: number;
+  deadlineAt?: string;
 };
 
-type ScopeSnapshot = {
+/** 检查点里保存的可恢复状态：已结算的顶层节点 + 作用域。 */
+type ResumeData = {
+  sequence: number;
   iteration: number;
+  tokensUsed: number;
+  loopSummaries: SelfLoopSummary[];
+  assignments: Map<string, string>;
+  nodes: Map<string, { status: "succeeded" | "skipped"; output?: unknown }>;
+  scope: RunScope;
+};
+
+type SimulatedWorker = {
+  id: string;
+  killed: boolean;
+  tasks: Map<string, (error: Error) => void>;
+};
+
+type StepWorkerHandle = {
+  workerId: string;
+  abort: Promise<never>;
+  release: () => void;
+  /** 进程池句柄才有远程调用；模拟 Worker 为 undefined，仍走本进程 invoker。 */
+  invoke?: (step: CompiledStep, input: Record<string, unknown>, state: LeafExecutionState) => Promise<unknown>;
+};
+
+type ScopeSnapshot = {  iteration: number;
   score?: number;
   artifact?: unknown;
   artifactNodeId?: string;
@@ -217,6 +415,24 @@ export class WorkflowExecutor {
   private readonly approvals = new ApprovalGate();
   private readonly humans = new HumanGate();
   private readonly cancelledRuns = new Set<string>();
+  /** 本进程内正在执行的运行，孤儿回收据此避免重复入队。 */
+  private readonly activeRuns = new Set<string>();
+  /** 每个运行当前占用的 Worker；跨进程取消时用于终止在飞执行。 */
+  private readonly runWorkers = new Map<string, Set<string>>();
+  private cancelWatcher?: ReturnType<typeof setInterval>;
+  private readonly simulatedWorkers = new Map<string, SimulatedWorker>();
+  private workerSequence = 0;
+  /** 当前进程的执行者标识；多 Worker 部署时用 PLATFORM_WORKER_ID 覆盖。 */
+  private readonly workerId = process.env.PLATFORM_WORKER_ID?.trim() || `${hostname()}:${process.pid}`;
+  private readonly leaseTtlMs = clampInt(envInt("PLATFORM_LEASE_TTL_MS", 30000), 1000, 600000);
+  /** Agent 并发容量只用于调度打分；租约是观测性的，不会因超容量而阻塞。 */
+  private readonly agentCapacity = clampInt(envInt("PLATFORM_AGENT_CAPACITY", 1), 1, 64);
+  /** 叶子步骤执行边界；默认进程内执行，Worker Pool 接入后替换为远程实现。 */
+  private readonly invoker: StepInvoker;
+  /** 全局调度：同一执行器内的多个运行共享队列与并发槽位。 */
+  private readonly scheduler: SchedulerService;
+  /** 叶子步骤的真实 Worker 进程池；为空时留在本进程执行。 */
+  private readonly workerPool?: WorkerPoolLike;
 
   constructor(
     private readonly store: PlatformStateStore,
@@ -225,18 +441,80 @@ export class WorkflowExecutor {
   ) {
     this.mode = handlers.agent || handlers.llm || handlers.tool || handlers.verify ? "live" : "stub";
     this.options = resolveExecutorOptions(options);
+    this.invoker =
+      options.invoker ?? new InlineStepInvoker((step, input, state) => this.invoke(step, input, state));
+    this.workerPool = options.workerPool;
+    this.scheduler =
+      options.scheduler ??
+      new SchedulerService(this.store, {
+        capacity: this.options.schedulerCapacity,
+        workerId: `${this.workerId}:inline`,
+        selection: this.options.schedulerPolicy === "static" ? "fifo" : "priority"
+      });
     this.injectedFailures = new Set(
       (process.env.PLATFORM_FAIL_NODE_IDS ?? "")
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean)
     );
-    // stub 模式用模拟打分器保留“修订后提升”的演示曲线；接入真实 Agent 后使用注入的验证打分器。
+    // stub 模式只按产物内容打分，不按轮次抬分；接入真实 Agent 后使用注入的验证打分器。
     this.verifier = new LayeredVerifier(
       this.mode === "stub"
         ? stubDimensionScorer
         : (options.dimensionScorer ?? heuristicDimensionScorer)
     );
+    this.startCancelWatcher();
+  }
+
+  /**
+   * 取消请求落库后由本进程轮询；跨实例部署时，执行进程不是接收 API 的进程，
+   * 只能靠数据库标志发现取消。定时器 unref，不阻塞进程退出。
+   */
+  private startCancelWatcher() {
+    if (this.options.cancelPollMs <= 0 || this.cancelWatcher) {
+      return;
+    }
+    this.cancelWatcher = setInterval(() => this.pollCrossProcessCancels(), this.options.cancelPollMs);
+    this.cancelWatcher.unref?.();
+  }
+
+  private pollCrossProcessCancels() {
+    for (const runId of this.activeRuns) {
+      if (this.cancelledRuns.has(runId)) {
+        continue;
+      }
+      if (!this.store.isRunCancelRequested(runId)) {
+        continue;
+      }
+      this.interruptRun(runId, "检测到跨进程取消请求。");
+    }
+  }
+
+  /** 标记取消、撤销队列任务，并终止该运行正在使用的 Worker。 */
+  private interruptRun(runId: string, reason: string) {
+    if (this.cancelledRuns.has(runId)) {
+      return;
+    }
+    this.cancelledRuns.add(runId);
+    this.scheduler.cancelRun(runId, reason);
+    for (const workerId of this.runWorkers.get(runId) ?? []) {
+      this.killWorker(workerId);
+    }
+    const run = this.store.getRun(runId);
+    if (run?.status === "waiting_approval") {
+      for (const approval of this.store.listApprovals({ runId, status: "pending" })) {
+        if (this.approvals.has(approval.id)) {
+          this.approvals.decide(approval.id, "rejected", "system", "运行已取消。");
+        }
+      }
+    }
+    if (run?.status === "waiting_input") {
+      for (const interaction of this.store.listInteractions({ runId, status: "pending" })) {
+        if (this.humans.has(interaction.id)) {
+          this.humans.cancel(interaction.id);
+        }
+      }
+    }
   }
 
   runtimeConfig() {
@@ -247,17 +525,60 @@ export class WorkflowExecutor {
       retryBaseDelayMs: this.options.retryBaseDelayMs,
       retryMaxDelayMs: this.options.retryMaxDelayMs,
       maxConcurrency: this.options.maxConcurrency,
+      schedulerCapacity: this.options.schedulerCapacity,
+      schedulerPolicy: this.options.schedulerPolicy,
+      cancelPollMs: this.options.cancelPollMs,
+      maxResumes: this.options.maxResumes,
+      workerPoolSize: this.workerPool?.size ?? 0,
+      workerPoolLane: this.workerPool?.lane,
       rollbackOnFailure: this.options.rollbackOnFailure,
       approvalTimeoutMs: this.options.approvalTimeoutMs,
-      humanTimeoutMs: this.options.humanTimeoutMs
+      humanTimeoutMs: this.options.humanTimeoutMs,
+      workerId: this.workerId,
+      leaseTtlMs: this.leaseTtlMs,
+      agentCapacity: this.agentCapacity
     };
   }
 
-  /** 子流程定义从平台台账读取，保证保存/运行/重跑使用同一套引用解析。 */
-  private compile(workflow: WorkflowDefinition) {
+  /**
+   * 子流程定义优先取冻结发布里的副本；没有发布时回落到平台台账，
+   * 保证保存/运行/重跑使用同一套引用解析。
+   */
+  private compile(workflow: WorkflowDefinition, frozen?: Map<string, WorkflowDefinition>) {
     return compileWorkflow(workflow, {
-      resolveWorkflow: (id, version) => this.store.getWorkflow(id, version)?.definition
+      resolveWorkflow: (id, version) => {
+        const released = frozen?.get(id);
+        if (released && (version === undefined || released.version === version)) {
+          return released;
+        }
+        return this.store.getWorkflow(id, version)?.definition;
+      }
     });
+  }
+
+  /** 发布快照里的 Agent 优先；缺失时回落到实时注册中心。 */
+  private releaseAgents(
+    state: Pick<ExecutionContext, "agentSnapshots">,
+    fallback: AgentRecord[]
+  ): AgentRecord[] {
+    return state.agentSnapshots ? [...state.agentSnapshots.values()] : fallback;
+  }
+
+  private resolveRelease(releaseId: string | undefined, workflowId: string): ResolvedRelease | undefined {
+    if (!releaseId) {
+      return undefined;
+    }
+    const release = this.options.releaseProvider?.resolveRelease(releaseId);
+    if (!release) {
+      throw new PlatformError(`发布「${releaseId}」不存在或不可用于运行。`, 404);
+    }
+    if (release.workflow.id !== workflowId) {
+      throw new PlatformError(
+        `发布「${releaseId}」属于工作流「${release.workflow.id}」，不能用于「${workflowId}」。`,
+        400
+      );
+    }
+    return release;
   }
 
   /**
@@ -272,21 +593,9 @@ export class WorkflowExecutor {
     if (!isActiveStatus(run.status)) {
       throw new PlatformError(`运行已结束（${run.status}），不能取消。`, 409);
     }
-    this.cancelledRuns.add(runId);
-    if (run.status === "waiting_approval") {
-      for (const approval of this.store.listApprovals({ runId, status: "pending" })) {
-        if (this.approvals.has(approval.id)) {
-          this.approvals.decide(approval.id, "rejected", "system", "运行已取消。");
-        }
-      }
-    }
-    if (run.status === "waiting_input") {
-      for (const interaction of this.store.listInteractions({ runId, status: "pending" })) {
-        if (this.humans.has(interaction.id)) {
-          this.humans.cancel(interaction.id);
-        }
-      }
-    }
+    this.store.requestRunCancel(runId);
+    // 尚未开始的任务立即退出队列；已在执行的步骤在下一条语句边界停止。
+    this.interruptRun(runId, "运行已取消，未再调度。");
     return this.store.getRun(runId)!;
   }
 
@@ -341,8 +650,17 @@ export class WorkflowExecutor {
     input: Record<string, unknown> = {},
     options: RunOptions = {}
   ): Promise<PlatformRunView> {
-    const { run, plan, schedule } = this.prepare(workflow, input, options);
-    await this.execute(plan, run.id, input, assignmentsOf(schedule), options.stopAfter);
+    const { run, plan, schedule, release, agents } = this.prepare(workflow, input, options);
+    await this.execute(
+      plan,
+      run.id,
+      input,
+      assignmentsOf(schedule),
+      options.stopAfter,
+      (taskId, attempted) =>
+        replanForTask(schedule, taskId, attempted, agents, this.schedulerLoads()),
+      { release, agents, experimentId: options.experimentId, arm: options.arm }
+    );
     return { run: this.store.getRun(run.id)!, steps: this.store.listSteps(run.id) };
   }
 
@@ -351,11 +669,115 @@ export class WorkflowExecutor {
    * 同步调用方仍可用 run() 拿完整结果。
    */
   start(workflow: WorkflowDefinition, input: Record<string, unknown> = {}, options: RunOptions = {}) {
-    const { run, plan, schedule } = this.prepare(workflow, input, options);
-    void this.execute(plan, run.id, input, assignmentsOf(schedule), options.stopAfter).catch(() => {
+    const { run, plan, schedule, release, agents } = this.prepare(workflow, input, options);
+    void this.execute(
+      plan,
+      run.id,
+      input,
+      assignmentsOf(schedule),
+      options.stopAfter,
+      (taskId, attempted) =>
+        replanForTask(schedule, taskId, attempted, agents, this.schedulerLoads()),
+      { release, agents, experimentId: options.experimentId, arm: options.arm }
+    ).catch(() => {
       // execute 内部已把失败写回 run，这里只负责吞掉 fire-and-forget 的 rejection。
     });
     return run;
+  }
+
+  /**
+   * 从最新检查点续跑：原运行（若仍在执行）标记失败，新建一条运行只执行未完成节点。
+   * 已完成的顶层节点直接回放产物，不会重复调用 Agent 或工具。
+   */
+  async resumeRun(runId: string, options: RunOptions = {}): Promise<PlatformRunView> {
+    const started = this.beginResume(runId, options);
+    await started.done;
+    return {
+      run: this.store.getRun(started.run.id)!,
+      steps: this.store.listSteps(started.run.id)
+    };
+  }
+
+  /** 异步续跑：返回新运行记录，执行在后台继续。 */
+  startResume(runId: string, options: RunOptions = {}) {
+    return this.beginResume(runId, options).run;
+  }
+
+  private beginResume(runId: string, options: RunOptions) {
+    const run = this.store.getRun(runId);
+    if (!run) {
+      throw new PlatformError("运行记录不存在。", 404);
+    }
+    const checkpoint = this.store.latestRunCheckpoint(runId);
+    if (!checkpoint) {
+      throw new PlatformError("该运行没有可恢复的检查点。", 409);
+    }
+    const resume = parseCheckpointState(checkpoint.state);
+    if (!resume) {
+      throw new PlatformError("检查点格式不受支持，无法恢复。", 409);
+    }
+    const runNodes = this.store.listRunNodes(runId);
+    if (
+      runNodes.length > 0 &&
+      runNodes.every((node) => node.status === "succeeded" || node.status === "skipped")
+    ) {
+      throw new PlatformError("该运行的所有节点都已完成，无需从检查点恢复。", 409);
+    }
+    const resumeCount = (run.resumeCount ?? 0) + 1;
+    if (resumeCount > this.options.maxResumes) {
+      throw new PlatformError(`同一恢复链的续跑次数已达上限（${this.options.maxResumes}）。`, 409);
+    }
+    const definition =
+      run.definition ?? this.store.getWorkflow(run.workflowId, run.workflowVersion)?.definition;
+    if (!definition) {
+      throw new PlatformError("运行缺少 DSL 快照，无法恢复。", 409);
+    }
+    if (ACTIVE_RUN_STATUSES.has(run.status)) {
+      for (const approval of this.store.listApprovals({ runId, status: "pending" })) {
+        this.store.decideApproval(approval.id, "rejected", "system", "运行已从检查点恢复。");
+      }
+      for (const interaction of this.store.listInteractions({ runId, status: "pending" })) {
+        this.store.decideInteraction(interaction.id, "cancelled");
+      }
+      for (const step of this.store.listSteps(runId)) {
+        if (step.status === "running" || step.status === "waiting") {
+          this.store.completeStep(step.id, "failed", undefined, "运行已从检查点恢复。", {
+            attempts: step.attempts
+          });
+        }
+      }
+      this.store.finishRun(runId, "failed", undefined, `已从检查点 #${checkpoint.sequence} 恢复。`);
+    }
+    const prepared = this.prepare(definition, run.input, {
+      ...options,
+      releaseId: options.releaseId ?? run.releaseId,
+      experimentId: options.experimentId ?? run.experimentId,
+      arm: (options.arm ?? run.arm) as RunOptions["arm"],
+      priorityClass: options.priorityClass ?? run.priorityClass,
+      deadlineAt: options.deadlineAt ?? run.deadlineAt
+    });
+    this.store.setRunResumeCount(prepared.run.id, resumeCount);
+    this.store.updateRunSchedulerState(prepared.run.id, "resumed");
+    const done = this.execute(
+      prepared.plan,
+      prepared.run.id,
+      run.input,
+      assignmentsOf(prepared.schedule),
+      options.stopAfter,
+      (taskId, attempted) =>
+        replanForTask(prepared.schedule, taskId, attempted, prepared.agents, this.schedulerLoads()),
+      {
+        release: prepared.release,
+        agents: prepared.agents,
+        experimentId: prepared.run.experimentId,
+        arm: prepared.run.arm
+      },
+      resume
+    );
+    void done.catch(() => {
+      // execute 已把失败写回运行记录，避免后台续跑的 rejection 变成未处理异常。
+    });
+    return { run: prepared.run, done };
   }
 
   /**
@@ -377,7 +799,9 @@ export class WorkflowExecutor {
     if (!definition) {
       throw new PlatformError("运行对应的工作流版本不存在。", 404);
     }
-    const plan = this.compile(definition);
+    const release = this.resolveRelease(run.releaseId, run.workflowId);
+    const frozenWorkflows = release?.workflows;
+    const plan = this.compile(release?.workflow ?? definition, frozenWorkflows);
     const compiled =
       plan.steps.find((step) => step.path === original.path) ??
       plan.steps.find((step) => step.nodeId === original.nodeId);
@@ -405,6 +829,16 @@ export class WorkflowExecutor {
       loopSummaries: [],
       assignments: assignmentsOf(run.plan),
       workflowKnowledgeBaseIds: definition.knowledgeBaseIds ?? [],
+      ...(release
+        ? {
+            agentSnapshots: new Map(release.agents.map((agent) => [agent.id, agent])),
+            release: {
+              releaseId: release.manifest.id,
+              experimentId: run.experimentId,
+              arm: run.arm
+            }
+          }
+        : {}),
       scope: {
         input: run.input,
         outputs: new Map(),
@@ -427,31 +861,286 @@ export class WorkflowExecutor {
     return this.store.getStep(retryStepId)!;
   }
 
+  /** 真实在飞租约 + 可配置容量，供运行前规划与失败重调度共用。 */
+  private schedulerLoads(): Record<string, { inFlight: number; capacity: number }> {
+    const loads = this.store.activeLeaseLoads();
+    return Object.fromEntries(
+      Object.entries(loads).map(([agentId, load]) => [
+        agentId,
+        { inFlight: load.inFlight, capacity: this.agentCapacity }
+      ])
+    );
+  }
+
+  /** 执行叶子步骤的 Worker 池：接进程池时返回真实子进程，否则返回本进程模拟 Worker。 */
+  listWorkers(): Array<{
+    id: string;
+    killed: boolean;
+    activeTasks: string[];
+    pid?: number;
+    slot?: number;
+    status?: SchedulerWorkerStatus;
+  }> {
+    if (this.workerPool) {
+      return this.workerPool.listWorkers();
+    }
+    return [...this.simulatedWorkers.values()].map((worker) => ({
+      id: worker.id,
+      killed: worker.killed,
+      activeTasks: [...worker.tasks.keys()]
+    }));
+  }
+
+  /** 全局调度快照：跨运行队列、当前在飞任务与有效优先级，供监控台展示。 */
+  schedulerSnapshot() {
+    return this.scheduler.snapshot();
+  }
+
+  killWorker(workerId: string) {
+    if (this.workerPool) {
+      return this.workerPool.killWorker(workerId);
+    }
+    const worker = this.simulatedWorkers.get(workerId);
+    if (!worker || worker.killed) {
+      return { workerId, killed: false, aborted: 0 };
+    }
+    worker.killed = true;
+    const tasks = [...worker.tasks.entries()];
+    worker.tasks.clear();
+    for (const [taskKey, reject] of tasks) {
+      reject(new WorkerLostError(`Worker ${workerId} 被终止，${taskKey} 将重新调度。`));
+    }
+    return { workerId, killed: true, aborted: tasks.length };
+  }
+
+  /**
+   * 孤儿回收：租约过期说明 Worker 已失联。单进程内不会发生“本进程还活着但租约过期”，
+   * 因此把非本进程执行的运行标记失败，并用 DSL 快照重新入队。
+   */
+  /** 由周期回收器调用：清掉本进程队列里已过期的认领并放回待调度。 */
+  reclaimSchedulerTasks() {
+    return this.scheduler.reclaim();
+  }
+
+  async requeueOrphanedRuns(options: { wait?: boolean } = {}) {
+    const expired = this.store.expireSchedulerLeases();
+    const leases = this.store.listSchedulerLeases({ status: "expired", limit: 200 });
+    const runIds = [...new Set(leases.map((lease) => lease.runId))];
+    const requeued: Array<{
+      previousRunId: string;
+      runId: string;
+      resumed: boolean;
+      checkpointSequence?: number;
+    }> = [];
+    const skipped: Array<{ runId: string; reason: string }> = [];
+    for (const runId of runIds) {
+      if (this.activeRuns.has(runId)) {
+        skipped.push({ runId, reason: "本进程仍在执行该运行。" });
+        continue;
+      }
+      const run = this.store.getRun(runId);
+      if (!run) {
+        skipped.push({ runId, reason: "运行记录不存在。" });
+        continue;
+      }
+      if (!ACTIVE_RUN_STATUSES.has(run.status)) {
+        skipped.push({ runId, reason: `运行已是终态（${run.status}）。` });
+        continue;
+      }
+      if (!run.definition) {
+        skipped.push({ runId, reason: "缺少 DSL 快照，无法自动重建。" });
+        continue;
+      }
+      const checkpoint = this.store.latestRunCheckpoint(runId);
+      const message = checkpoint
+        ? `Worker 失联：租约过期，运行从检查点 #${checkpoint.sequence} 恢复。`
+        : "Worker 失联：租约过期，运行已重新入队。";
+      for (const step of this.store.listSteps(runId)) {
+        if (step.status === "running") {
+          this.store.completeStep(step.id, "failed", undefined, message, { attempts: step.attempts });
+        }
+      }
+      this.store.finishRun(runId, "failed", undefined, message);
+      const runOptions: RunOptions = {
+        releaseId: run.releaseId,
+        experimentId: run.experimentId,
+        arm: run.arm as RunOptions["arm"],
+        priorityClass: run.priorityClass,
+        deadlineAt: run.deadlineAt
+      };
+      if (checkpoint) {
+        const started = this.startResume(runId, runOptions);
+        if (options.wait !== false) {
+          await this.waitForRun(started.id);
+        }
+        requeued.push({
+          previousRunId: runId,
+          runId: started.id,
+          resumed: true,
+          checkpointSequence: checkpoint.sequence
+        });
+      } else if (options.wait === false) {
+        const started = this.start(run.definition, run.input, runOptions);
+        requeued.push({ previousRunId: runId, runId: started.id, resumed: false });
+      } else {
+        const next = await this.run(run.definition, run.input, runOptions);
+        requeued.push({ previousRunId: runId, runId: next.run.id, resumed: false });
+      }
+    }
+    return { expired, requeued, skipped };
+  }
+
+  /** 测试与恢复器等待后台运行到终态；0 间隔轮询，避免引入额外依赖。 */
+  async waitForRun(runId: string, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = this.store.getRun(runId);
+      if (!run) {
+        return undefined;
+      }
+      if (!ACTIVE_RUN_STATUSES.has(run.status)) {
+        return run;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return this.store.getRun(runId);
+  }
+
+  private acquireWorker(taskKey: string) {
+    let worker = [...this.simulatedWorkers.values()]
+      .filter((item) => !item.killed)
+      .sort((left, right) => left.tasks.size - right.tasks.size || left.id.localeCompare(right.id))[0];
+    if (!worker) {
+      worker = {
+        id: `${this.workerId}#w${(this.workerSequence += 1)}`,
+        killed: false,
+        tasks: new Map()
+      };
+      this.simulatedWorkers.set(worker.id, worker);
+    }
+    let rejectTask: (error: Error) => void = () => {};
+    const abort = new Promise<never>((_resolve, reject) => {
+      rejectTask = reject;
+    });
+    worker.tasks.set(taskKey, rejectTask);
+    return {
+      workerId: worker.id,
+      abort,
+      release: () => {
+        worker!.tasks.delete(taskKey);
+      }
+    };
+  }
+
   private prepare(workflow: WorkflowDefinition, input: Record<string, unknown>, options: RunOptions = {}) {
-    const plan = this.compile(workflow);
-    const missing = workflow.inputs
+    const release = this.resolveRelease(options.releaseId, workflow.id);
+    const effectiveWorkflow = release?.workflow ?? workflow;
+    const frozenWorkflows = release?.workflows;
+    const plan = this.compile(effectiveWorkflow, frozenWorkflows);
+    const missing = effectiveWorkflow.inputs
       .filter((variable) => variable.required && input[variable.name] === undefined)
       .map((variable) => variable.name);
     if (missing.length > 0) {
       throw new PlatformError(`缺少必填输入：${missing.join("、")}`, 400);
     }
-    if (options.stopAfter && !workflow.nodes.some((node) => node.id === options.stopAfter)) {
+    if (options.stopAfter && !effectiveWorkflow.nodes.some((node) => node.id === options.stopAfter)) {
       throw new PlatformError(`stopAfter 只能指向顶层节点：${options.stopAfter}`, 400);
     }
 
-    const agents = this.scopedAgents(workflow);
-    const schedule = buildWorkflowSchedule(plan, agents, this.store.activeAgentLoads());
+    const agents = release
+      ? this.scopeReleasedAgents(effectiveWorkflow, release.agents)
+      : this.scopedAgents(effectiveWorkflow);
+    const schedule = buildWorkflowSchedule(plan, agents, this.schedulerLoads());
     const run = this.store.createRun({
-      workflowId: workflow.id,
-      workflowVersion: workflow.version,
+      workflowId: effectiveWorkflow.id,
+      workflowVersion: effectiveWorkflow.version,
       workflowInput: input,
       mode: this.mode,
       status: "queued",
       plan: schedule,
-      definition: workflow
+      definition: effectiveWorkflow,
+      releaseId: release?.manifest.id,
+      experimentId: options.experimentId,
+      arm: options.arm,
+      priorityClass: options.priorityClass,
+      deadlineAt: options.deadlineAt
     });
     this.options.onStatusChange?.(run.id, "queued");
-    return { run, plan, schedule };
+    options.onCreated?.(run);
+    return { run, plan, schedule, release, agents };
+  }
+
+  /** 发布运行仍遵守工作流声明的团队范围，但候选池来自冻结快照。 */
+  private scopeReleasedAgents(workflow: WorkflowDefinition, agents: AgentRecord[]): AgentRecord[] {
+    if (!workflow.teamId) {
+      return agents;
+    }
+    const team = this.store.getTeam(workflow.teamId);
+    if (!team) {
+      throw new PlatformError(`工作流绑定的团队「${workflow.teamId}」不存在。`, 400);
+    }
+    const allowed = new Set(team.agentIds);
+    return agents.filter((agent) => allowed.has(agent.id));
+  }
+
+  /**
+   * 跨运行记忆只在 Agent 显式配置 memory.persist=true 时启用；
+   * retain 指定要保留的输出字段，recall 控制注入条数。
+   */
+  private memoryConfigOf(agentId: string, state?: Pick<ExecutionContext, "agentSnapshots">) {
+    const memory = (state?.agentSnapshots?.get(agentId) ?? this.store.getAgent(agentId))?.memory;
+    if (!isRecord(memory) || memory.persist !== true) {
+      return undefined;
+    }
+    const retain = Array.isArray(memory.retain)
+      ? memory.retain.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+      : [];
+    if (retain.length === 0) {
+      return undefined;
+    }
+    const recall = Number(memory.recall ?? 5);
+    const maxEntries = Number(memory.maxEntries ?? 3);
+    return {
+      retain,
+      recall: Number.isFinite(recall) ? Math.max(1, Math.trunc(recall)) : 5,
+      maxEntries: Number.isFinite(maxEntries) ? Math.max(1, Math.trunc(maxEntries)) : 3
+    };
+  }
+
+  private persistAgentMemory(
+    step: CompiledStep,
+    workflowId: string,
+    output: unknown,
+    state?: Pick<ExecutionContext, "agentSnapshots">
+  ) {
+    if (step.node.kind !== "agent") {
+      return;
+    }
+    const config = this.memoryConfigOf(step.node.agent, state);
+    if (!config) {
+      return;
+    }
+    const source = isRecord(output) && isRecord(output.output) ? output.output : output;
+    if (!isRecord(source)) {
+      return;
+    }
+    for (const key of config.retain) {
+      const value = source[key];
+      if (value === undefined || value === null) {
+        continue;
+      }
+      const text = (typeof value === "string" ? value : JSON.stringify(value)).trim();
+      if (!text) {
+        continue;
+      }
+      this.store.appendAgentMemory({
+        agentId: step.node.agent,
+        workflowId,
+        key,
+        value: text.slice(0, 2000),
+        maxEntries: config.maxEntries
+      });
+    }
   }
 
   /** 工作流声明 teamId 时只允许该团队的 Agent 参与调度；未声明的流程保持全局池。 */
@@ -473,30 +1162,59 @@ export class WorkflowExecutor {
     runId: string,
     input: Record<string, unknown>,
     assignments: Map<string, string>,
-    stopAfter?: string
+    stopAfter?: string,
+    reschedule?: RunState["reschedule"],
+    release?: {
+      release?: ResolvedRelease;
+      agents: AgentRecord[];
+      experimentId?: string;
+      arm?: string;
+    },
+    resume?: ResumeData
   ) {
+    const runRecord = this.store.getRun(runId);
     const state: RunState = {
       runId,
       workflowId: plan.workflow.id,
-      iteration: 0,
-      sequence: 0,
-      tokensUsed: 0,
+      iteration: resume?.iteration ?? 0,
+      sequence: resume?.sequence ?? 0,
+      tokensUsed: resume?.tokensUsed ?? 0,
       loops: [],
-      loopSummaries: [],
-      assignments,
+      loopSummaries: resume?.loopSummaries ?? [],
+      assignments: resume?.assignments ?? assignments,
+      reschedule,
       workflowKnowledgeBaseIds: plan.workflow.knowledgeBaseIds ?? [],
-      scope: { input, outputs: new Map(), evidence: [], verifyRounds: 0 }
+      ...(runRecord?.priorityClass !== undefined ? { priorityClass: runRecord.priorityClass } : {}),
+      ...(runRecord?.deadlineAt !== undefined ? { deadlineAt: runRecord.deadlineAt } : {}),
+      scope: resume?.scope ?? { input, outputs: new Map(), evidence: [], verifyRounds: 0 },
+      ...(release?.release
+        ? {
+            agentSnapshots: new Map(release.agents.map((agent) => [agent.id, agent])),
+            release: {
+              releaseId: release.release.manifest.id,
+              experimentId: release.experimentId,
+              arm: release.arm
+            }
+          }
+        : {})
     };
+    // 恢复运行的作用域输入以本次运行的输入为准，其余产物来自检查点。
+    state.scope.input = input;
 
+    this.activeRuns.add(runId);
     this.setStatus(runId, "running");
+    this.store.updateRunSchedulerState(runId, "running");
     try {
-      await this.executeRoot(plan, state, stopAfter);
+      await this.executeRoot(plan, state, stopAfter, resume);
       this.throwIfCancelled(runId);
       this.finish(runId, "succeeded", {
         mode: this.mode,
         score: state.scope.lastVerifyScore,
         stepCount: state.sequence,
         tokensUsed: state.tokensUsed,
+        tokenBudget: this.options.tokenBudget,
+        budgetExceeded:
+          this.options.tokenBudget > 0 && state.tokensUsed >= this.options.tokenBudget,
         ...(stopAfter ? { stoppedAfter: stopAfter } : {}),
         verify: {
           score: state.scope.lastVerifyScore,
@@ -522,6 +1240,12 @@ export class WorkflowExecutor {
         return;
       }
       this.finish(runId, "failed", undefined, message);
+    } finally {
+      this.activeRuns.delete(runId);
+      this.runWorkers.delete(runId);
+      this.scheduler.completeRun(runId);
+      // 兜底回收：正常路径逐步骤释放租约，这里清掉异常退出可能遗留的整单租约。
+      this.store.releaseRunSchedulerLeases(runId, "run_finished");
     }
   }
 
@@ -530,7 +1254,7 @@ export class WorkflowExecutor {
    * 边条件在汇合点求值；所有入边都未激活时节点标记 skipped 并继续向下游传播。
    * 容器、审批与验证会改写共享运行态，通过读写锁独占执行，避免与并发分支交错。
    */
-  private async executeRoot(plan: CompiledPlan, state: RunState, stopAfter?: string) {
+  private async executeRoot(plan: CompiledPlan, state: RunState, stopAfter?: string, resume?: ResumeData) {
     const statements = new Map<string, CompiledStatement>();
     for (const statement of plan.program) {
       statements.set(statementNodeId(statement), statement);
@@ -557,12 +1281,54 @@ export class WorkflowExecutor {
     );
     const edgeResolved = new Array<boolean>(plan.graph.edges.length).fill(false);
     const edgeSourceSucceeded = new Array<boolean>(plan.graph.edges.length).fill(false);
+    const outgoingNodes = new Map<string, string[]>(nodeIds.map((nodeId) => [nodeId, []]));
+    for (const edge of plan.graph.edges) {
+      if (nodeSet.has(edge.from) && nodeSet.has(edge.to)) {
+        outgoingNodes.get(edge.from)!.push(edge.to);
+      }
+    }
+    // 队列优先级取“到汇点的最长剩余路径”，比单纯节点顺序更接近关键路径。
+    const depthMemo = new Map<string, number>();
+    const remainingDepth = (nodeId: string): number => {
+      const cached = depthMemo.get(nodeId);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const children = outgoingNodes.get(nodeId) ?? [];
+      const depth = children.length === 0 ? 0 : 1 + Math.max(...children.map(remainingDepth));
+      depthMemo.set(nodeId, depth);
+      return depth;
+    };
+    const maxDepth = Math.max(0, ...nodeIds.map(remainingDepth));
+    const priorityOf = (nodeId: string) => {
+      const depth = remainingDepth(nodeId);
+      return Number((maxDepth === 0 ? 1 : 0.5 + (0.5 * depth) / maxDepth).toFixed(4));
+    };
+
     const launched = new Set<string>();
-    const ready = nodeIds.filter((nodeId) => pending.get(nodeId) === 0);
     const inFlight = new Map<string, Promise<void>>();
     const lock = new AsyncReadWriteLock();
+    const runInputTokens = estimateTokens(state.scope.input);
     let failure: unknown;
     let stopped = false;
+
+    // 先幂等登记 DAG 节点：监控与恢复阶段直接读这张表，不必从步骤 trace 反推进度。
+    this.store.insertRunNodes(
+      state.runId,
+      nodeIds.map((nodeId) => {
+        const statement = statements.get(nodeId);
+        return {
+          nodeId,
+          path: statement ? statementPath(statement) : nodeId,
+          status: "pending" as const,
+          priority: priorityOf(nodeId)
+        };
+      })
+    );
+
+    const cancelPending = (reason: string) => {
+      this.scheduler.cancelRun(state.runId, reason);
+    };
 
     const resolveOutgoing = (nodeId: string, succeeded: boolean) => {
       for (const edgeIndex of outgoing.get(nodeId) ?? []) {
@@ -583,7 +1349,7 @@ export class WorkflowExecutor {
             return !condition || evaluateExpression(condition, state.scope);
           });
           if (selected.length > 0) {
-            ready.push(edge.to);
+            enqueueNode(edge.to);
           } else {
             skipNode(edge.to, candidates.length > 0 ? "上游边条件未满足。" : "上游分支未执行。");
           }
@@ -596,6 +1362,8 @@ export class WorkflowExecutor {
         return;
       }
       launched.add(nodeId);
+      this.store.setRunNodeStatus(state.runId, nodeId, "skipped", { error: reason });
+      this.saveRunCheckpoint(state);
       const statement = statements.get(nodeId);
       if (statement) {
         const stepId = this.store.beginStep({
@@ -616,56 +1384,160 @@ export class WorkflowExecutor {
       resolveOutgoing(nodeId, false);
     };
 
-    const launchNode = (nodeId: string) => {
+    /**
+     * 就绪节点交给全局调度服务排队：本方法的 DAG 循环只负责依赖传播，
+     * 出队顺序与并发槽位由 SchedulerService 跨运行统一裁决。
+     */
+    const enqueueNode = (nodeId: string) => {
+      if (launched.has(nodeId) || stopped || failure !== undefined) {
+        return;
+      }
       const statement = statements.get(nodeId);
       if (!statement) {
         skipNode(nodeId, "编译计划缺少该节点。");
         return;
       }
       launched.add(nodeId);
-      const lockMode = lockModeForStatement(statement);
-      const task = (async () => {
-        const release = lockMode ? await lock.acquire(lockMode) : undefined;
-        try {
-          await this.executeStatement(statement, state);
-        } finally {
-          release?.();
+      this.store.setRunNodeStatus(state.runId, nodeId, "ready");
+      const node = statement.type === "step" ? statement.step.node : undefined;
+      const task = this.scheduler.submit({
+        runId: state.runId,
+        nodeId,
+        path: statementPath(statement),
+        kind: statementKind(statement),
+        criticalPathDepth: remainingDepth(nodeId),
+        maxDepth,
+        agentId: node?.kind === "agent" ? node.agent : undefined,
+        maxAttempts: this.options.maxAttempts,
+        priorityClass: state.priorityClass,
+        deadlineAt: state.deadlineAt,
+        inputTokens: runInputTokens,
+        execute: async () => {
+          const lockMode = lockModeForStatement(statement);
+          const release = lockMode ? await lock.acquire(lockMode) : undefined;
+          try {
+            await this.executeStatement(statement, state);
+          } finally {
+            release?.();
+          }
         }
-      })().then(
+      });
+      const settled = task.then(
         () => {
           inFlight.delete(nodeId);
+          this.saveRunCheckpoint(state);
           if (stopAfter === nodeId) {
             stopped = true;
+            cancelPending("试运行已在目标节点停止。");
+            return;
           }
-          resolveOutgoing(nodeId, true);
+          if (!stopped && failure === undefined) {
+            resolveOutgoing(nodeId, true);
+          }
         },
         (error) => {
           inFlight.delete(nodeId);
+          // 队列层撤销的任务从未开始执行，不构成运行失败。
+          if (error instanceof SchedulerTaskCancelledError) {
+            return;
+          }
           if (failure === undefined) {
             failure = error;
           }
           stopped = true;
+          cancelPending(
+            error instanceof RunCancelledError || this.cancelledRuns.has(state.runId)
+              ? "运行已取消。"
+              : "运行失败，未再调度。"
+          );
         }
       );
-      inFlight.set(nodeId, task);
+      inFlight.set(nodeId, settled);
     };
 
-    while (true) {
-      while (!failure && !stopped && ready.length > 0 && inFlight.size < this.options.maxConcurrency) {
-        const nodeId = ready.shift()!;
-        if (!launched.has(nodeId)) {
-          launchNode(nodeId);
+    if (resume) {
+      // 已结算节点直接恢复为完成态并回放产物，只重新调度检查点之后的节点。
+      for (const [nodeId, node] of resume.nodes) {
+        if (!nodeSet.has(nodeId)) {
+          continue;
+        }
+        this.store.setRunNodeStatus(state.runId, nodeId, node.status);
+        if (node.output !== undefined) {
+          state.scope.outputs.set(nodeId, node.output);
+        }
+        launched.add(nodeId);
+      }
+      if (stopAfter && resume.nodes.has(stopAfter)) {
+        stopped = true;
+      }
+      if (!stopped) {
+        for (const [nodeId, node] of resume.nodes) {
+          if (!nodeSet.has(nodeId)) {
+            continue;
+          }
+          resolveOutgoing(nodeId, node.status === "succeeded");
         }
       }
-      if (inFlight.size === 0) {
-        break;
-      }
-      await Promise.race([...inFlight.values()]);
     }
 
+    for (const nodeId of nodeIds) {
+      if (pending.get(nodeId) === 0) {
+        enqueueNode(nodeId);
+      }
+    }
+
+    while (inFlight.size > 0) {
+      await Promise.race([...inFlight.values()]);
+      if (failure !== undefined || stopped || this.cancelledRuns.has(state.runId)) {
+        cancelPending(
+          this.cancelledRuns.has(state.runId)
+            ? "运行已取消。"
+            : failure !== undefined
+              ? "运行失败，未再调度。"
+              : "运行已停止，未再调度。"
+        );
+      }
+    }
+
+    // 取消优先于其他异常：终态由 execute() 统一判定。
+    this.throwIfCancelled(state.runId);
     if (failure !== undefined) {
       throw failure;
     }
+  }
+
+  /** 每个顶层节点结算后写一份检查点；恢复时只重跑检查点之后的节点。 */
+  private saveRunCheckpoint(state: RunState) {
+    const settled = this.store
+      .listRunNodes(state.runId)
+      .filter((node) => node.status === "succeeded" || node.status === "skipped");
+    if (settled.length === 0) {
+      return;
+    }
+    const nodes: Record<string, { status: "succeeded" | "skipped"; output?: unknown }> = {};
+    for (const node of settled) {
+      nodes[node.nodeId] = {
+        status: node.status as "succeeded" | "skipped",
+        ...(state.scope.outputs.has(node.nodeId)
+          ? { output: state.scope.outputs.get(node.nodeId) }
+          : {})
+      };
+    }
+    this.store.saveRunCheckpoint({
+      runId: state.runId,
+      sequence: state.sequence,
+      state: {
+        version: 1,
+        workflowId: state.workflowId,
+        sequence: state.sequence,
+        iteration: state.iteration,
+        tokensUsed: state.tokensUsed,
+        loopSummaries: state.loopSummaries,
+        assignments: [...state.assignments.entries()],
+        nodes,
+        scope: serializeRunScope(state.scope)
+      }
+    });
   }
 
   private async executeBlock(block: CompiledBlock, state: RunState) {
@@ -720,6 +1592,15 @@ export class WorkflowExecutor {
       primaryAgent && primaryAgent.node.kind === "agent"
         ? (state.assignments.get(primaryAgent.path) ?? primaryAgent.node.agent)
         : undefined;
+    // 循环的“当前模型”取节点覆盖优先，其次 Agent 注册记录，最后平台默认。
+    const primaryModelId =
+      primaryAgent && primaryAgent.node.kind === "agent"
+        ? primaryAgent.node.model?.trim() ||
+          (primaryAgentId
+            ? (state.agentSnapshots?.get(primaryAgentId) ?? this.store.getAgent(primaryAgentId))?.model?.trim()
+            : undefined) ||
+          "platform-default"
+        : undefined;
 
     // 初始验证已达标时不进入修正，避免为了用掉轮次而重写合格产物。
     if (initialScore !== undefined && initialScore >= threshold) {
@@ -753,15 +1634,19 @@ export class WorkflowExecutor {
             maxTokens: statement.budget?.maxTokens
           }
         },
-        agents: this.store.listAgents()
+        agents: this.releaseAgents(state, this.store.listAgents())
       }),
       action: "rewrite",
       actionReason: "首轮修正：根据初始验证问题重写输出。",
       issues: state.scope.lastVerifyIssues ?? [],
       directive: {},
       agentOverrides: new Map(),
+      modelOverrides: new Map(),
       currentAgentId: primaryAgentId,
+      currentModelId: primaryModelId,
+      modelSwitches: [],
       primaryAgentPath: primaryAgent?.path,
+      patchHistory: [],
       artifact: state.scope.lastArtifact,
       score: initialScore,
       iteration: 0,
@@ -779,14 +1664,34 @@ export class WorkflowExecutor {
         const scoreBefore = state.scope.lastVerifyScore;
         state.iteration = iteration;
         frame.directive = buildLoopDirective(frame, iteration, scoreBefore, threshold);
+        frame.diagnosis = undefined;
+        frame.diagnosisSource = undefined;
+        frame.promptPatch = undefined;
         await this.executeBlock(statement.body, state);
 
         const scoreAfter = state.scope.lastVerifyScore;
+        // 补上一轮换模型后的验证分，便于报告对比“换模型前后的提升”。
+        const lastSwitch = frame.modelSwitches[frame.modelSwitches.length - 1];
+        if (lastSwitch && lastSwitch.scoreAfter === undefined && lastSwitch.iteration < iteration) {
+          lastSwitch.scoreAfter = scoreAfter;
+        }
         const issues = state.scope.lastVerifyIssues ?? [];
         const snapshot = snapshotScope(state.scope, iteration);
         frame.artifact = snapshot.artifact;
         frame.score = scoreAfter;
         frame.iteration = iteration;
+        if (frame.promptPatch && frame.diagnosisSource) {
+          const patchRecord = {
+            patch: frame.promptPatch,
+            source: frame.diagnosisSource,
+            iteration,
+            scoreBefore,
+            scoreAfter,
+            targetAgentId: frame.promotionTarget ?? frame.currentAgentId
+          };
+          frame.lastPatch = patchRecord;
+          frame.patchHistory.push(patchRecord);
+        }
         if (
           snapshot.score !== undefined &&
           (best === undefined || snapshot.score > (best.score ?? Number.NEGATIVE_INFINITY))
@@ -801,7 +1706,9 @@ export class WorkflowExecutor {
           whilePassed: !statement.while || evaluateExpression(statement.while, state.scope, frame),
           elapsedMs: Date.now() - frame.startedAt,
           tokensUsed: state.tokensUsed - frame.tokensAtStart,
-          currentAgentId: frame.currentAgentId
+          currentAgentId: frame.currentAgentId,
+          currentModelId: frame.currentModelId,
+          modelDecision: frame.diagnosis
         });
 
         iterations += 1;
@@ -809,6 +1716,7 @@ export class WorkflowExecutor {
           stopReason = decision.stopReason;
           decision.changes.push(retentionNote(best, iteration));
         }
+        // 切换在上一轮结束时决定、本轮生效；本轮记录 from → to，然后清空以免重复。
         this.store.recordLoopIteration({
           runId: state.runId,
           loopNodeId: statement.nodeId,
@@ -816,8 +1724,11 @@ export class WorkflowExecutor {
           scoreBefore,
           scoreAfter,
           action: frame.action,
+          modelBefore: frame.previousModelId ?? frame.currentModelId,
+          modelAfter: frame.currentModelId,
           changes: decision.changes
         });
+        frame.previousModelId = undefined;
 
         if (!decision.continue) {
           break;
@@ -828,16 +1739,38 @@ export class WorkflowExecutor {
           frame.currentAgentId = decision.nextAgentId;
           frame.agentOverrides.set(frame.primaryAgentPath, decision.nextAgentId);
         }
+        if (decision.action === "swap_model" && decision.nextModelId && frame.primaryAgentPath) {
+          const fromModel = frame.currentModelId ?? "platform-default";
+          frame.previousModelId = fromModel;
+          frame.currentModelId = decision.nextModelId;
+          frame.modelOverrides.set(frame.primaryAgentPath, decision.nextModelId);
+          frame.modelSwitches.push({
+            iteration,
+            fromModel,
+            toModel: decision.nextModelId,
+            reason: decision.reason,
+            scoreBefore: scoreAfter
+          });
+        }
         frame.action = decision.action;
         frame.actionReason = decision.reason;
         frame.issues = issues;
         frame.retrievalQuery = decision.retrievalQuery;
+        frame.promptPatch = decision.promptPatch ?? frame.promptPatch;
       }
     } finally {
       state.loops.pop();
       if (best && iterations > 0) {
         restoreScope(state.scope, best, collectLeafSteps(statement.body));
       }
+      const promotion = this.promoteSelfLoopPatch({
+        frame,
+        runId: state.runId,
+        initialScore,
+        best,
+        minGain: frame.controller.policy.minGain,
+        state
+      });
       state.loopSummaries.push({
         loopNodeId: statement.nodeId,
         iterations,
@@ -848,10 +1781,133 @@ export class WorkflowExecutor {
         bestIteration: best?.iteration,
         stopReason,
         tokensUsed: state.tokensUsed - frame.tokensAtStart,
-        elapsedMs: Date.now() - frame.startedAt
+        elapsedMs: Date.now() - frame.startedAt,
+        ...(frame.modelSwitches.length > 0 ? { modelSwitches: frame.modelSwitches } : {}),
+        promotion
       });
       this.setStatus(state.runId, "running");
     }
+  }
+
+  private promoteSelfLoopPatch(input: {
+    frame: LoopFrame;
+    runId: string;
+    initialScore?: number;
+    best?: ScopeSnapshot;
+    minGain: number;
+    state?: RunState;
+  }): SelfLoopPromotion {
+    const { frame, initialScore, best, minGain } = input;
+    if (this.mode !== "live") {
+      return { status: "skipped", reason: "stub 模式只做契约演练，不写入 Agent 版本。" };
+    }
+    if (!best || initialScore === undefined || best.iteration === undefined || best.iteration === 0) {
+      return { status: "skipped", reason: "没有超过初始产物的更优轮次，不晋升补丁。" };
+    }
+    if ((best.score ?? Number.NEGATIVE_INFINITY) <= initialScore + minGain) {
+      return {
+        status: "skipped",
+        reason: `最佳轮得分未超过初始分 + ${minGain.toFixed(2)}，不晋升补丁。`,
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    const patch = frame.patchHistory.find((item) => item.iteration === best.iteration);
+    if (!patch || patch.source !== "model") {
+      return {
+        status: "skipped",
+        reason: "最佳轮没有可复用的模型诊断补丁。",
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    const agentId = patch.targetAgentId;
+    if (!agentId) {
+      return {
+        status: "skipped",
+        reason: "诊断节点未声明补丁晋升目标。",
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    const rejection = validatePromptPatch(patch.patch);
+    if (rejection) {
+      return {
+        status: "rejected",
+        reason: rejection,
+        agentId,
+        patchPreview: previewPatch(patch.patch),
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    const agent = input.state?.agentSnapshots?.get(agentId) ?? this.store.getAgent(agentId);
+    if (!agent) {
+      return {
+        status: "rejected",
+        reason: `晋升目标 Agent「${agentId}」不在注册中心。`,
+        agentId,
+        patchPreview: previewPatch(patch.patch),
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    if (agent.prompt.includes(patch.patch)) {
+      return {
+        status: "skipped",
+        reason: "该补丁已经存在于目标 Agent 的提示词中。",
+        agentId,
+        fromVersion: agent.version,
+        toVersion: agent.version,
+        patchPreview: previewPatch(patch.patch),
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    if (input.state?.release) {
+      // 发布运行不允许直接改注册表：补丁进入演化候选，必须通过离线门禁与人工批准。
+      this.options.onPromptCandidate?.({
+        workflowId: input.state.workflowId,
+        runId: input.runId,
+        agentId,
+        patch: patch.patch,
+        iteration: patch.iteration,
+        scoreBefore: initialScore,
+        scoreAfter: best.score,
+        source: patch.source,
+        baseReleaseId: input.state.release.releaseId
+      });
+      return {
+        status: "skipped",
+        reason: "发布运行不直接写注册表：补丁已登记为演化候选，需通过离线门禁与人工批准。",
+        agentId,
+        patchPreview: previewPatch(patch.patch),
+        scoreBefore: initialScore,
+        scoreAfter: best.score
+      };
+    }
+    const saved = this.store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      version: agent.version + 1,
+      role: agent.role,
+      prompt: `${agent.prompt}\n\n## 自循环补丁（来源运行 ${input.runId} / 第 ${patch.iteration} 轮）\n${patch.patch}`,
+      tools: agent.tools,
+      model: agent.model,
+      capabilities: agent.capabilities,
+      memory: agent.memory,
+      enabled: agent.enabled
+    });
+    return {
+      status: "promoted",
+      reason: `第 ${best.iteration} 轮提升 ${(initialScore ?? 0).toFixed(3)} → ${(best.score ?? 0).toFixed(3)}，补丁写入 Agent v${saved.version}。`,
+      agentId: saved.id,
+      fromVersion: agent.version,
+      toVersion: saved.version,
+      patchPreview: previewPatch(patch.patch),
+      scoreBefore: initialScore,
+      scoreAfter: best.score
+    };
   }
 
   private async executeStep(step: CompiledStep, state: RunState) {
@@ -877,7 +1933,14 @@ export class WorkflowExecutor {
                   body: node.requestBody,
                   ...(node.inputs ?? {})
                 }
-              : node.inputs ?? {};
+              : node.kind === "clarify"
+                ? {
+                    // 澄清读的是本次运行的原始需求；inputs 可覆盖 request 或补充领域上下文。
+                    ...state.scope.input,
+                    ...(node.inputs ?? {}),
+                    ...(node.prompt ? { hint: node.prompt } : {})
+                  }
+                : node.inputs ?? {};
     let input = resolveValue(rawInput, state.scope, frame) as Record<string, unknown>;
     if (node.kind === "verify") {
       // 未显式映射时，默认验证最近一个非验证节点的输出，证据取当前运行已收集的引用池。
@@ -913,9 +1976,32 @@ export class WorkflowExecutor {
       const loopOverride = frame?.agentOverrides.get(step.path);
       const scheduled = state.assignments.get(step.path);
       const effectiveAgent = loopOverride ?? scheduled ?? node.agent;
-      if (effectiveAgent !== node.agent) {
+      const modelOverride = frame?.modelOverrides.get(step.path);
+      if (effectiveAgent !== node.agent || modelOverride) {
         // 换 Agent 后原节点的版本钉子失效，否则可能钉到新 Agent 不存在的版本。
-        effectiveStep = { ...step, node: { ...node, agent: effectiveAgent, agentVersion: undefined } };
+        effectiveStep = {
+          ...step,
+          node: {
+            ...node,
+            agent: effectiveAgent,
+            ...(effectiveAgent !== node.agent ? { agentVersion: undefined } : {}),
+            ...(modelOverride ? { model: modelOverride } : {})
+          }
+        };
+      }
+      const memory = this.memoryConfigOf(effectiveAgent, state);
+      if (memory) {
+        const entries = this.store.listAgentMemory(effectiveAgent, state.workflowId, memory.recall);
+        if (entries.length > 0) {
+          input = {
+            ...input,
+            memoryHistory: entries.map((entry) => ({
+              key: entry.key,
+              value: entry.value,
+              at: entry.created_at
+            }))
+          };
+        }
       }
     }
 
@@ -934,6 +2020,10 @@ export class WorkflowExecutor {
     }
     if (node.kind === "human") {
       await this.executeHumanStep(effectiveStep, input, state, stepId);
+      return;
+    }
+    if (node.kind === "clarify") {
+      await this.executeClarifyStep(effectiveStep, input, state, stepId);
       return;
     }
     if (node.kind !== "verify") {
@@ -1193,6 +2283,141 @@ export class WorkflowExecutor {
     this.store.completeStep(stepId, "succeeded", payload, undefined, { attempts: 1 });
   }
 
+  /**
+   * 意图澄清：先分析原始需求，只有缺失信息会改变交付结果时才暂停人工补充，
+   * 再按澄清结果改写 Prompt。产物同时保留原文、意图、假设与改写后文本，供对比与追溯。
+   */
+  private async executeClarifyStep(
+    step: CompiledStep,
+    input: Record<string, unknown>,
+    state: RunState,
+    stepId: string
+  ) {
+    const node = step.node as ClarifyNode;
+    const frame = findLoopFrame(state, step.path);
+    const context: ExecutionContext = {
+      runId: state.runId,
+      workflowId: state.workflowId,
+      iteration: state.iteration,
+      scope: state.scope,
+      loop: frame ? loopScopeOf(frame) : undefined,
+      knowledgeBaseIds: state.workflowKnowledgeBaseIds,
+      tokensUsed: state.tokensUsed,
+      tokenBudget: this.options.tokenBudget
+    };
+    const rawPrompt = extractClarifyRequest(input);
+
+    try {
+      this.throwIfCancelled(state.runId);
+      const analysis = normalizeClarifyAnalysis(
+        this.handlers.clarify
+          ? await this.handlers.clarify(node, input, context, { phase: "analyze" })
+          : stubClarifyAnalysis(node, input, this.mode),
+        rawPrompt
+      );
+      const questions = clarifyQuestionsOf(analysis, node);
+      let clarification: ClarifyAnswer | undefined;
+
+      if (shouldPauseForClarification(node, analysis)) {
+        const timeoutMs = node.timeoutMs ?? this.options.humanTimeoutMs;
+        const interaction = this.store.createInteraction({
+          runId: state.runId,
+          stepId,
+          nodeId: node.id,
+          path: step.path,
+          title: node.title ?? "意图澄清",
+          prompt: buildClarifyInteractionPrompt(questions),
+          fields: [
+            {
+              key: "answer",
+              label: "补充说明",
+              type: "textarea",
+              required: false,
+              placeholder: "可直接回答上面的问题；没有补充可留空。"
+            }
+          ],
+          context: { rawPrompt, intent: analysis },
+          expiresAt: timeoutMs > 0 ? new Date(Date.now() + timeoutMs).toISOString() : undefined
+        });
+
+        this.store.updateStepStatus(stepId, "waiting");
+        this.setStatus(state.runId, "waiting_input");
+
+        let outcome;
+        try {
+          outcome = await this.humans.wait(interaction.id, timeoutMs);
+        } finally {
+          if (this.store.getRun(state.runId)?.status === "waiting_input") {
+            this.setStatus(state.runId, "running");
+          }
+        }
+
+        if (outcome.status === "cancelled") {
+          this.store.decideInteraction(interaction.id, "cancelled");
+          this.store.completeStep(stepId, "failed", undefined, "运行已取消。", { attempts: 1 });
+          throw new RunCancelledError();
+        }
+        if (outcome.status === "expired") {
+          this.store.decideInteraction(interaction.id, "expired");
+          const message = `意图澄清超时（${timeoutMs}ms），运行已终止。`;
+          this.store.completeStep(stepId, "failed", undefined, message, { attempts: 1 });
+          throw new HumanInputError(message);
+        }
+
+        const decided = this.store.decideInteraction(
+          interaction.id,
+          "answered",
+          outcome.values,
+          outcome.actor
+        );
+        clarification = {
+          questions,
+          answer: typeof outcome.values.answer === "string" ? outcome.values.answer.trim() : "",
+          actor: outcome.actor,
+          askedAt: decided?.decidedAt ?? new Date().toISOString()
+        };
+        this.throwIfCancelled(state.runId);
+      }
+
+      const rewrite = normalizeClarifyRewrite(
+        this.handlers.clarify
+          ? await this.handlers.clarify(node, input, context, {
+              phase: "rewrite",
+              analysis,
+              clarification
+            })
+          : stubClarifyRewrite(node, analysis, clarification)
+      );
+      const payload: Record<string, unknown> = {
+        mode: this.mode,
+        kind: "clarify",
+        summary: `意图「${analysis.taskType}」· 置信度 ${analysis.confidence.toFixed(2)}${
+          clarification ? " · 已人工澄清" : ""
+        }`,
+        rawPrompt,
+        intent: analysis,
+        ...analysis,
+        clarification,
+        ...rewrite,
+        inputs: input
+      };
+      state.scope.outputs.set(node.id, payload);
+      state.scope.lastArtifact = payload;
+      state.scope.lastArtifactNodeId = node.id;
+      state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
+      this.store.completeStep(stepId, "succeeded", payload, undefined, {
+        attempts: 1,
+        snapshot: serializeScope(state.scope)
+      });
+    } catch (error) {
+      if (error instanceof RunCancelledError || error instanceof HumanInputError) {
+        throw error;
+      }
+      this.store.completeStep(stepId, "failed", undefined, errorDetail(error), { attempts: 1 });
+      throw error;
+    }
+  }
+
   private async runStepBody(
     step: CompiledStep,
     input: Record<string, unknown>,
@@ -1200,16 +2425,75 @@ export class WorkflowExecutor {
     stepId: string
   ) {
     let lastError: unknown;
+    let currentStep = step;
+    const attemptedAgents: string[] = [];
     for (let attempt = 1; attempt <= this.options.maxAttempts; attempt += 1) {
       this.throwIfCancelled(state.runId);
       if (attempt > 1) {
         await sleep(this.retryDelay(attempt));
       }
       await this.stubDelay();
+      // 租约只观测真实在飞任务：不阻塞并发分支，但让调度器看到当前负载。
+      let lease: SchedulerLease | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      let worker: StepWorkerHandle | undefined;
+      let releaseReason = "completed";
       try {
-        const rawOutput = await this.invokeWithTimeout(step, input, state);
-        let output: unknown = rawOutput;
-        if (step.node.kind === "verify") {
+        if (this.workerPool && isPoolLeafKind(currentStep.node.kind)) {
+          const invocationId = `${state.runId}:${stepId}:${attempt}`;
+          const slot = await this.workerPool.acquire(`${state.runId}:${stepId}`);
+          worker = {
+            workerId: slot.workerId,
+            abort: slot.abort,
+            release: slot.release,
+            invoke: (invokeStep, invokeInput, invokeState) =>
+              slot.invoke(
+                buildWorkerInvocation({
+                  id: invocationId,
+                  stepId,
+                  step: invokeStep,
+                  input: invokeInput,
+                  state: invokeState,
+                  tokenBudget: this.options.tokenBudget
+                })
+              )
+          };
+        } else if (currentStep.node.kind === "agent") {
+          worker = this.acquireWorker(`${state.runId}:${stepId}`);
+        }
+        if (worker) {
+          let owned = this.runWorkers.get(state.runId);
+          if (!owned) {
+            owned = new Set();
+            this.runWorkers.set(state.runId, owned);
+          }
+          owned.add(worker.workerId);
+        }
+        if (currentStep.node.kind === "agent") {
+          lease = this.store.acquireSchedulerLease({
+            runId: state.runId,
+            stepId,
+            taskPath: currentStep.path,
+            agentId: currentStep.node.agent,
+            workerId: worker!.workerId,
+            ttlMs: this.leaseTtlMs
+          });
+          heartbeat = setInterval(() => {
+            this.store.heartbeatSchedulerLease(lease!.id, this.leaseTtlMs);
+          }, Math.max(250, Math.floor(this.leaseTtlMs / 3)));
+          heartbeat.unref?.();
+        }
+        const rawOutput = await this.invokeWithTimeout(
+          currentStep,
+          input,
+          state,
+          worker?.abort,
+          worker?.invoke
+        );
+        const normalizedOutput =
+          currentStep.node.kind === "agent" ? normalizeAgentJsonOutput(currentStep.node, rawOutput) : rawOutput;
+        let output: unknown = normalizedOutput;
+        if (currentStep.node.kind === "verify") {
           const verification = normalizeVerifyOutput(rawOutput);
           state.scope.verifyRounds += 1;
           state.scope.lastVerifyScore = verification.score;
@@ -1220,7 +2504,7 @@ export class WorkflowExecutor {
           this.store.recordVerifyResult({
             runId: state.runId,
             stepId,
-            verifier: step.node.verifier,
+            verifier: currentStep.node.verifier,
             score: verification.score,
             confidence: verification.confidence,
             dimensions: verification.dimensions,
@@ -1231,21 +2515,100 @@ export class WorkflowExecutor {
           output = verification;
         } else {
           // 开始节点只转发输入；若把它记成最近产物，后续验证会把原始输入误当成待验证产物。
-          if (step.node.kind !== "start") {
+          if (currentStep.node.kind !== "start") {
             state.scope.lastArtifact = output;
-            state.scope.lastArtifactNodeId = step.nodeId;
+            state.scope.lastArtifactNodeId = currentStep.nodeId;
           }
         }
-        state.scope.outputs.set(step.nodeId, output);
+        state.scope.outputs.set(currentStep.nodeId, output);
         absorbEvidence(state.scope, output);
+        if (currentStep.node.kind === "agent" && currentStep.node.loopRole === "diagnose") {
+          const frame = findLoopFrame(state, currentStep.path);
+          const diagnosis = isRecord(output) && isRecord(output.output) ? output.output : undefined;
+          if (frame && diagnosis) {
+            frame.diagnosis = diagnosis;
+            frame.diagnosisSource =
+              this.mode === "live" && !(isRecord(output) && output.stubFixture === true)
+                ? "model"
+                : "stub";
+            frame.promptPatch =
+              typeof diagnosis.promptPatch === "string" ? diagnosis.promptPatch.trim() : undefined;
+            frame.promotionTarget = currentStep.node.promoteToAgent;
+          }
+        }
         state.tokensUsed += estimateTokens(input) + estimateTokens(output);
+        this.persistAgentMemory(currentStep, state.workflowId, output, state);
         this.store.completeStep(stepId, "succeeded", output, undefined, {
           attempts: attempt,
           snapshot: serializeScope(state.scope)
         });
         return;
       } catch (error) {
+        releaseReason =
+          error instanceof WorkerLostError
+            ? "worker_lost"
+            : error instanceof RunCancelledError
+              ? "cancelled"
+              : "failed";
+        if (error instanceof RunCancelledError || error instanceof HumanInputError) {
+          throw error;
+        }
+        // 超时的子进程可能还卡在原调用上；终止它，让下一个重试拿到干净槽位。
+        if (error instanceof StepTimeoutError && this.workerPool && worker) {
+          this.workerPool.killWorker(worker.workerId);
+        }
         lastError = error;
+        if (currentStep.node.kind === "agent" && attempt < this.options.maxAttempts) {
+          attemptedAgents.push(currentStep.node.agent);
+          const next = state.reschedule?.(currentStep.path, attemptedAgents);
+          const swapped =
+            Boolean(next) &&
+            next!.agentId !== currentStep.node.agent &&
+            !attemptedAgents.includes(next!.agentId);
+          if (swapped) {
+            const previousAgent = currentStep.node.agent;
+            currentStep = {
+              ...currentStep,
+              node: { ...currentStep.node, agent: next!.agentId, agentVersion: undefined }
+            };
+            releaseReason = error instanceof WorkerLostError ? "worker_lost" : "rescheduled";
+            this.store.annotateStepInput(stepId, {
+              reschedule: {
+                attempt,
+                from: previousAgent,
+                to: next!.agentId,
+                reason: next!.reason,
+                at: new Date().toISOString()
+              }
+            });
+          } else if (error instanceof WorkerLostError) {
+            // 没有可换的 Agent 时也记录 Worker 终止，下一轮会换一个模拟 Worker 重试。
+            this.store.annotateStepInput(stepId, {
+              reschedule: {
+                attempt,
+                from: currentStep.node.agent,
+                to: currentStep.node.agent,
+                reason: error.message,
+                at: new Date().toISOString()
+              }
+            });
+          }
+        }
+      } finally {
+        if (heartbeat) {
+          clearInterval(heartbeat);
+        }
+        if (lease) {
+          this.store.releaseSchedulerLease(lease.id, releaseReason);
+        }
+        worker?.release();
+        if (worker) {
+          const owned = this.runWorkers.get(state.runId);
+          owned?.delete(worker.workerId);
+          if (owned && owned.size === 0) {
+            this.runWorkers.delete(state.runId);
+          }
+        }
       }
     }
 
@@ -1258,23 +2621,35 @@ export class WorkflowExecutor {
   private async invokeWithTimeout(
     step: CompiledStep,
     input: Record<string, unknown>,
-    state: RunState
+    state: RunState,
+    abort?: Promise<never>,
+    remote?: (step: CompiledStep, input: Record<string, unknown>, state: LeafExecutionState) => Promise<unknown>
   ): Promise<unknown> {
-    if (this.options.timeoutMs <= 0) {
-      return this.invoke(step, input, state);
-    }
     const timeoutMs = this.options.timeoutMs;
+    const start = () => (remote ? remote(step, input, state) : this.invoker.invoke(step, input, state));
+    if (timeoutMs <= 0 && !abort) {
+      return start();
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        this.invoke(step, input, state),
+    const invocation = start();
+    // 超时/终止先返回时，原调用仍可能在后台结束；挂一个空 catch 避免未处理拒绝。
+    void invocation.catch(() => {});
+    const racers: Array<Promise<unknown>> = [invocation];
+    if (timeoutMs > 0) {
+      racers.push(
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`步骤执行超时（>${timeoutMs}ms）`)),
+            () => reject(new StepTimeoutError(`步骤执行超时（>${timeoutMs}ms）`)),
             timeoutMs
           );
         })
-      ]);
+      );
+    }
+    if (abort) {
+      racers.push(abort);
+    }
+    try {
+      return await Promise.race(racers);
     } finally {
       if (timer) {
         clearTimeout(timer);
@@ -1307,6 +2682,7 @@ export class WorkflowExecutor {
     this.cancelledRuns.delete(runId);
     this.store.finishRun(runId, status, output, error);
     this.options.onStatusChange?.(runId, status);
+    this.options.onRunFinished?.(runId);
   }
 
   private rollbackToSnapshot(runId: string, state: RunState, error: string): boolean {
@@ -1346,14 +2722,31 @@ export class WorkflowExecutor {
     await new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5000)));
   }
 
-  private async invoke(step: CompiledStep, input: Record<string, unknown>, state: RunState): Promise<unknown> {
-    const frame = findLoopFrame(state, step.path);
+  /** Worker 进程的执行入口：接收父进程重建的最小状态，复用同一套 handler 与 stub。 */
+  async invokeLeaf(
+    step: CompiledStep,
+    input: Record<string, unknown>,
+    state: LeafExecutionState
+  ): Promise<unknown> {
+    return this.invoke(step, input, state);
+  }
+
+  private async invoke(
+    step: CompiledStep,
+    input: Record<string, unknown>,
+    state: LeafExecutionState
+  ): Promise<unknown> {
+    const profile = findLoopProfile(state.loops, step.path);
+    const tokenBudget = this.tokenBudgetOf(state);
     const context: ExecutionContext = {
       runId: state.runId,
       workflowId: state.workflowId,
       iteration: state.iteration,
       scope: state.scope,
-      loop: frame ? loopScopeOf(frame) : undefined
+      loop: profile ? loopScopeOf(profile) : undefined,
+      knowledgeBaseIds: state.workflowKnowledgeBaseIds,
+      tokensUsed: state.tokensUsed,
+      tokenBudget
     };
     const node = step.node;
     // 演示/演练用：PLATFORM_FAIL_NODE_IDS 让 stub 在指定节点抛错，用于验证重试与回滚。
@@ -1397,7 +2790,7 @@ export class WorkflowExecutor {
       return this.handlers.llm ? await this.handlers.llm(node, input, context) : stubLlm(node, input);
     }
     if (node.kind === "template") {
-      const rendered = resolveValue(node.template, state.scope, frame);
+      const rendered = resolveValue(node.template, state.scope, profile);
       return {
         mode: this.mode,
         kind: "template",
@@ -1446,8 +2839,14 @@ export class WorkflowExecutor {
       reference: input.reference,
       attempt: state.scope.verifyRounds + 1,
       mode: this.mode,
-      agents: this.store.listAgents()
+      agents: this.releaseAgents(state, this.store.listAgents()),
+      budgetExceeded: tokenBudget > 0 && state.tokensUsed >= tokenBudget
     });
+  }
+
+  /** 父进程按执行器配置；Worker 进程按调用方随消息带来的预算，两者保持同口径。 */
+  private tokenBudgetOf(state: LeafExecutionState) {
+    return state.tokenBudget ?? this.options.tokenBudget;
   }
 }
 
@@ -1550,6 +2949,23 @@ function isActiveStatus(status: RunStatus): boolean {
 }
 
 function stubAgent(node: AgentNode, input: Record<string, unknown>) {
+  if (node.outputFormat === "json") {
+    if (!node.stubOutput) {
+      throw new Error(
+        `[stub] 节点「${node.title ?? node.id}」声明 JSON 输出但未配置 stubOutput；请切换到 live 模式或提供离线夹具。`
+      );
+    }
+    return {
+      mode: "stub",
+      agent: node.agent,
+      ...(node.agentVersion === undefined ? {} : { agentVersion: node.agentVersion }),
+      summary: `[stub] ${node.title ?? node.id} 已执行（契约夹具）`,
+      output: node.stubOutput,
+      rawOutput: JSON.stringify(node.stubOutput),
+      inputs: input,
+      stubFixture: true
+    };
+  }
   return {
     mode: "stub",
     agent: node.agent,
@@ -1578,6 +2994,183 @@ function stubLlm(node: LlmNode, input: Record<string, unknown>) {
     output: `[stub:llm] ${node.title ?? node.id} 的输出`,
     inputs: input
   };
+}
+
+/** 原始需求通常来自运行输入里的 request / topic / question 等字段；优先取最像“任务描述”的那个。 */
+function extractClarifyRequest(input: Record<string, unknown>): string {
+  for (const key of ["request", "topic", "question", "text", "query"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  const strings = Object.entries(input)
+    .filter(([key, value]) => key !== "hint" && key !== "selfLoop" && typeof value === "string" && value.trim() !== "")
+    .map(([, value]) => (value as string).trim());
+  if (strings.length > 0) {
+    return strings.join("\n");
+  }
+  return "（运行输入未提供可读的任务描述）";
+}
+
+function normalizeClarifyAnalysis(raw: unknown, rawPrompt: string): IntentAnalysis {
+  const record = isRecord(raw) && isRecord(raw.output) ? raw.output : isRecord(raw) ? raw : {};
+  const ambiguities: ClarifyAmbiguity[] = Array.isArray(record.ambiguities)
+    ? record.ambiguities
+        .filter((item): item is Record<string, unknown> => isRecord(item))
+        .map((item) => ({
+          slot: clarifyText(item.slot) || "未命名",
+          question: clarifyText(item.question),
+          impact: clarifyImpact(item.impact)
+        }))
+        .filter((item) => item.question !== "")
+        .slice(0, 5)
+    : [];
+  const confidence = clarifyNumber(record.confidence);
+  return {
+    taskType: clarifyText(record.taskType) || "通用任务",
+    goal: clarifyText(record.goal) || rawPrompt.slice(0, 120),
+    audience: clarifyText(record.audience) || undefined,
+    deliverable: clarifyText(record.deliverable) || "可执行交付物",
+    constraints: stringList(record.constraints),
+    ambiguities,
+    assumptions: stringList(record.assumptions),
+    needsClarification:
+      typeof record.needsClarification === "boolean"
+        ? record.needsClarification
+        : ambiguities.some((item) => item.impact === "high"),
+    confidence: confidence ?? 0.6
+  };
+}
+
+function normalizeClarifyRewrite(raw: unknown): {
+  rewrittenPrompt: string;
+  changes: string[];
+  guardrail: { ok: boolean; unexpected: string[] };
+} {
+  const record = isRecord(raw) && isRecord(raw.output) ? raw.output : isRecord(raw) ? raw : {};
+  const rewrittenPrompt = clarifyText(record.rewrittenPrompt);
+  if (rewrittenPrompt === "") {
+    throw new Error("意图澄清节点未返回改写后的 Prompt。");
+  }
+  const guardrail = isRecord(record.guardrail) ? record.guardrail : {};
+  return {
+    rewrittenPrompt,
+    changes: stringList(record.changes),
+    guardrail: {
+      ok: guardrail.ok !== false,
+      unexpected: stringList(guardrail.unexpected)
+    }
+  };
+}
+
+function shouldPauseForClarification(node: ClarifyNode, analysis: IntentAnalysis): boolean {
+  const mode = node.clarifyOn ?? "high";
+  if (mode === "never" || !analysis.needsClarification) {
+    return false;
+  }
+  return mode === "any" || analysis.ambiguities.some((item) => item.impact === "high");
+}
+
+function clarifyQuestionsOf(analysis: IntentAnalysis, node: ClarifyNode): string[] {
+  const limit = Math.min(3, Math.max(1, node.maxQuestions ?? 2));
+  // 默认只追问会改变交付结果的 high 歧义；clarifyOn=any 时才把中低影响项一并列出。
+  const byMode =
+    (node.clarifyOn ?? "high") === "any"
+      ? analysis.ambiguities
+      : analysis.ambiguities.filter((item) => item.impact === "high");
+  const relevant = byMode.length > 0 ? byMode : analysis.ambiguities;
+  const ordered = [...relevant].sort(
+    (left, right) => clarifyImpactWeight(right.impact) - clarifyImpactWeight(left.impact)
+  );
+  const questions = ordered.map((item) => item.question).filter(Boolean).slice(0, limit);
+  return questions.length > 0
+    ? questions
+    : ["请补充交付对象、范围与验收标准，平台会据此改写任务。"];
+}
+
+function buildClarifyInteractionPrompt(questions: string[]): string {
+  return [
+    "以下信息会影响交付结果，请补充确认：",
+    ...questions.map((question, index) => `${index + 1}. ${question}`),
+    "可直接回答，也可以补充其他约束；没有补充可留空。"
+  ].join("\n");
+}
+
+function stubClarifyAnalysis(
+  node: ClarifyNode,
+  input: Record<string, unknown>,
+  mode: string
+): Record<string, unknown> {
+  const stub = isRecord(node.stubOutput) ? node.stubOutput : {};
+  const rawPrompt = extractClarifyRequest(input);
+  const base = {
+    taskType: "通用任务",
+    goal: rawPrompt.slice(0, 120),
+    deliverable: "结构化交付物",
+    constraints: [],
+    ambiguities: [],
+    assumptions: [],
+    needsClarification: false,
+    confidence: 0.8
+  };
+  return {
+    ...base,
+    ...stub,
+    mode,
+    output: stub
+  };
+}
+
+function stubClarifyRewrite(
+  node: ClarifyNode,
+  analysis: IntentAnalysis,
+  clarification?: ClarifyAnswer
+): Record<string, unknown> {
+  const stub = isRecord(node.stubOutput) ? node.stubOutput : {};
+  if (typeof stub.rewrittenPrompt === "string" && stub.rewrittenPrompt.trim() !== "") {
+    return {
+      rewrittenPrompt: stub.rewrittenPrompt.trim(),
+      changes: stringList(stub.changes),
+      guardrail: { ok: true, unexpected: [] as string[] }
+    };
+  }
+  const sections = [
+    `# 目标\n${analysis.goal}`,
+    `# 已知条件\n- 原始需求：${analysis.goal}\n${
+      analysis.constraints.length > 0 ? analysis.constraints.map((item) => `- 约束：${item}`).join("\n") : "- 无显式约束"
+    }`,
+    `# 待确认假设\n${
+      analysis.assumptions.length > 0
+        ? analysis.assumptions.map((item) => `- ${item}`).join("\n")
+        : "- 无额外假设"
+    }${clarification?.answer ? `\n- 人工补充：${clarification.answer}` : ""}`,
+    `# 交付格式\n${analysis.deliverable}`,
+    "# 验收标准\n- 结论可追溯到原始需求\n- 不引入原始输入与澄清回答之外的事实或数字"
+  ];
+  return {
+    rewrittenPrompt: sections.join("\n\n"),
+    changes: ["补充了目标、交付格式与验收标准"],
+    guardrail: { ok: true, unexpected: [] as string[] }
+  };
+}
+
+function clarifyText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function clarifyNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : undefined;
+}
+
+function clarifyImpact(value: unknown): ClarifyAmbiguity["impact"] {
+  const text = clarifyText(value).toLowerCase();
+  return text === "high" || text === "low" ? text : "medium";
+}
+
+function clarifyImpactWeight(impact: ClarifyAmbiguity["impact"]): number {
+  return impact === "high" ? 3 : impact === "medium" ? 2 : 1;
 }
 
 function stubTool(node: ToolNode, input: Record<string, unknown>) {
@@ -1676,7 +3269,7 @@ function lockModeForStatement(statement: CompiledStatement): "read" | "write" | 
   if (statement.step.node.kind === "approve") {
     return undefined;
   }
-  if (statement.step.node.kind === "human") {
+  if (statement.step.node.kind === "human" || statement.step.node.kind === "clarify") {
     return undefined;
   }
   return "read";
@@ -1752,6 +3345,12 @@ function verifyDetail(verification: VerifyOutput): Record<string, unknown> | und
   if (verification.verifiers) {
     detail.verifiers = verification.verifiers;
   }
+  if (verification.citations) {
+    detail.citations = verification.citations;
+  }
+  if (verification.independence) {
+    detail.independence = verification.independence;
+  }
   if (verification.artifactNodeId) {
     detail.artifactNodeId = verification.artifactNodeId;
   }
@@ -1760,6 +3359,98 @@ function verifyDetail(verification: VerifyOutput): Record<string, unknown> | und
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeAgentJsonOutput(node: AgentNode, raw: unknown): unknown {
+  if (node.outputFormat !== "json") {
+    return raw;
+  }
+  const record = isRecord(raw) ? raw : undefined;
+  const text =
+    typeof raw === "string"
+      ? raw
+      : typeof record?.output === "string"
+        ? record.output
+        : undefined;
+  const candidate =
+    text !== undefined
+      ? parseJsonPayload(text, node)
+      : isRecord(record?.output)
+        ? record.output
+        : undefined;
+  if (!candidate) {
+    throw new Error(
+      `Agent「${node.agent}」在节点「${node.title ?? node.id}」未返回可解析的 JSON 对象。`
+    );
+  }
+  const parsed = candidate;
+  const required = node.outputContract?.required ?? [];
+  const missing = required.filter((key) => parsed[key] === undefined || parsed[key] === null || parsed[key] === "");
+  if (missing.length > 0) {
+    throw new Error(
+      `Agent「${node.agent}」的 JSON 输出缺少必填字段：${missing.join("、")}。`
+    );
+  }
+  for (const [key, allowed] of Object.entries(node.outputContract?.enums ?? {})) {
+    const value = parsed[key];
+    if (value !== undefined && !allowed.includes(String(value))) {
+      throw new Error(
+        `Agent「${node.agent}」的字段「${key}」取值「${String(value)}」不在允许范围：${allowed.join(" / ")}。`
+      );
+    }
+  }
+  return {
+    ...(record ?? { mode: "live", agent: node.agent }),
+    output: parsed,
+    rawOutput: text ?? JSON.stringify(parsed)
+  };
+}
+
+function parseJsonPayload(text: string, node: AgentNode): Record<string, unknown> | undefined {
+  const trimmed = text.replace(/^\uFEFF/, "").trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  const body = (fenced?.[1] ?? trimmed).trim();
+  for (const candidate of [body, body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1)]) {
+    if (!candidate || !candidate.startsWith("{") || !candidate.endsWith("}")) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // 继续尝试下一个候选片段。
+    }
+  }
+  throw new Error(
+    `Agent「${node.agent}」在节点「${node.title ?? node.id}」返回的 JSON 无法解析：${trimmed.slice(0, 160)}`
+  );
+}
+
+function validatePromptPatch(patch: string): string | undefined {
+  const text = patch.trim();
+  if (text.length < 20) {
+    return "补丁少于 20 个字符，信息量不足。";
+  }
+  if (text.length > 800) {
+    return "补丁超过 800 个字符，拒绝整段重写。";
+  }
+  if (/参考答案|reference\s*answer/i.test(text)) {
+    return "补丁引用了参考答案，拒绝泄漏验证基准。";
+  }
+  for (const match of text.matchAll(/(?<![\d.])(\d{4,})(?![\d.])/g)) {
+    const value = Number(match[1]);
+    if (!(value >= 1900 && value <= 2099)) {
+      return `补丁包含疑似答案数字 ${match[1]}，拒绝把具体结果写进提示词。`;
+    }
+  }
+  return undefined;
+}
+
+function previewPatch(patch: string) {
+  const text = patch.trim();
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
 
 function errorDetail(error: unknown): string {
@@ -1778,6 +3469,32 @@ function findLoopFrame(state: RunState, path: string): LoopFrame | undefined {
     }
   }
   return undefined;
+}
+
+/** 与 findLoopFrame 相同的匹配规则，但只要求 ${loop.*} 需要的字段，供 Worker 重建状态使用。 */
+function findLoopProfile(loops: LoopProfile[], path: string): LoopProfile | undefined {
+  for (let index = loops.length - 1; index >= 0; index -= 1) {
+    const frame = loops[index];
+    if (path === frame.path || path.startsWith(`${frame.path}/`)) {
+      return frame;
+    }
+  }
+  return undefined;
+}
+
+/** 会走 invoke 的叶子节点；approve/human/clarify 由父进程专用路径处理。 */
+function isPoolLeafKind(kind: NodeKind) {
+  return (
+    kind === "start" ||
+    kind === "end" ||
+    kind === "agent" ||
+    kind === "llm" ||
+    kind === "template" ||
+    kind === "tool" ||
+    kind === "knowledge" ||
+    kind === "http" ||
+    kind === "verify"
+  );
 }
 
 function buildLoopDirective(
@@ -1800,13 +3517,20 @@ function buildLoopDirective(
     },
     ...(frame.currentAgentId ? { agentId: frame.currentAgentId } : {}),
     ...(frame.previousAgentId ? { previousAgentId: frame.previousAgentId } : {}),
-    ...(frame.retrievalQuery ? { retrievalQuery: frame.retrievalQuery } : {})
+    ...(frame.currentModelId ? { modelId: frame.currentModelId } : {}),
+    ...(frame.previousModelId ? { previousModelId: frame.previousModelId } : {}),
+    ...(frame.retrievalQuery ? { retrievalQuery: frame.retrievalQuery } : {}),
+    ...(frame.promptPatch ? { promptPatch: frame.promptPatch } : {})
   };
 }
 
 function findFirstAgentStep(block: CompiledBlock): CompiledStep | undefined {
   for (const statement of block) {
-    if (statement.type === "step" && statement.step.node.kind === "agent") {
+    if (
+      statement.type === "step" &&
+      statement.step.node.kind === "agent" &&
+      statement.step.node.loopRole !== "diagnose"
+    ) {
       return statement.step;
     }
     if (statement.type === "parallel") {
@@ -1857,6 +3581,97 @@ function findVerifyThreshold(block: CompiledBlock): number | undefined {
   return undefined;
 }
 
+function serializeRunScope(scope: RunScope): Record<string, unknown> {
+  return {
+    input: scope.input,
+    outputs: [...scope.outputs.entries()],
+    evidence: scope.evidence,
+    verifyRounds: scope.verifyRounds,
+    lastVerifyScore: scope.lastVerifyScore,
+    lastVerifyIssues: scope.lastVerifyIssues,
+    lastVerifyConfidence: scope.lastVerifyConfidence,
+    lastVerifyPassed: scope.lastVerifyPassed,
+    lastVerifyLayers: scope.lastVerifyLayers,
+    lastArtifact: scope.lastArtifact,
+    lastArtifactNodeId: scope.lastArtifactNodeId
+  };
+}
+
+/** 解析检查点；格式不符时返回 undefined，由调用方给出可读错误。 */
+function parseCheckpointState(raw: Record<string, unknown>): ResumeData | undefined {
+  if (raw.version !== 1 || !isRecord(raw.scope) || !isRecord(raw.nodes)) {
+    return undefined;
+  }
+  const scopeRaw = raw.scope;
+  const outputsRaw = Array.isArray(scopeRaw.outputs) ? scopeRaw.outputs : [];
+  const outputs = new Map<string, unknown>();
+  for (const entry of outputsRaw) {
+    if (Array.isArray(entry) && typeof entry[0] === "string") {
+      outputs.set(entry[0], entry[1]);
+    }
+  }
+  const scope: RunScope = {
+    input: isRecord(scopeRaw.input) ? scopeRaw.input : {},
+    outputs,
+    evidence: Array.isArray(scopeRaw.evidence)
+      ? scopeRaw.evidence.filter((item): item is string => typeof item === "string")
+      : [],
+    verifyRounds: Number(scopeRaw.verifyRounds) || 0,
+    ...(typeof scopeRaw.lastVerifyScore === "number"
+      ? { lastVerifyScore: scopeRaw.lastVerifyScore }
+      : {}),
+    ...(Array.isArray(scopeRaw.lastVerifyIssues)
+      ? {
+          lastVerifyIssues: scopeRaw.lastVerifyIssues.filter(
+            (item): item is string => typeof item === "string"
+          )
+        }
+      : {}),
+    ...(typeof scopeRaw.lastVerifyConfidence === "number"
+      ? { lastVerifyConfidence: scopeRaw.lastVerifyConfidence }
+      : {}),
+    ...(typeof scopeRaw.lastVerifyPassed === "boolean"
+      ? { lastVerifyPassed: scopeRaw.lastVerifyPassed }
+      : {}),
+    ...(isRecord(scopeRaw.lastVerifyLayers)
+      ? { lastVerifyLayers: scopeRaw.lastVerifyLayers as VerifyLayers }
+      : {}),
+    ...(scopeRaw.lastArtifact !== undefined ? { lastArtifact: scopeRaw.lastArtifact } : {}),
+    ...(typeof scopeRaw.lastArtifactNodeId === "string"
+      ? { lastArtifactNodeId: scopeRaw.lastArtifactNodeId }
+      : {})
+  };
+  const nodes = new Map<string, { status: "succeeded" | "skipped"; output?: unknown }>();
+  for (const [nodeId, value] of Object.entries(raw.nodes)) {
+    if (!isRecord(value) || (value.status !== "succeeded" && value.status !== "skipped")) {
+      continue;
+    }
+    nodes.set(nodeId, {
+      status: value.status,
+      ...(value.output !== undefined ? { output: value.output } : {})
+    });
+  }
+  const assignments = new Map<string, string>();
+  if (Array.isArray(raw.assignments)) {
+    for (const entry of raw.assignments) {
+      if (Array.isArray(entry) && typeof entry[0] === "string" && typeof entry[1] === "string") {
+        assignments.set(entry[0], entry[1]);
+      }
+    }
+  }
+  return {
+    sequence: Number(raw.sequence) || 0,
+    iteration: Number(raw.iteration) || 0,
+    tokensUsed: Number(raw.tokensUsed) || 0,
+    loopSummaries: Array.isArray(raw.loopSummaries)
+      ? (raw.loopSummaries as SelfLoopSummary[])
+      : [],
+    assignments,
+    nodes,
+    scope
+  };
+}
+
 function serializeScope(scope: RunScope): string {
   return JSON.stringify({
     outputs: Object.fromEntries(scope.outputs),
@@ -1892,6 +3707,19 @@ function resolveExecutorOptions(options: ExecutorOptions): ResolvedExecutorOptio
       1,
       16
     ),
+    schedulerCapacity: clampInt(
+      options.schedulerCapacity ??
+        envInt("PLATFORM_SCHEDULER_CAPACITY", options.maxConcurrency ?? envInt("PLATFORM_MAX_CONCURRENCY", 4)),
+      1,
+      64
+    ),
+    schedulerPolicy: options.schedulerPolicy ?? "dynamic",
+    cancelPollMs: clampInt(
+      options.cancelPollMs ?? envInt("PLATFORM_CANCEL_POLL_MS", 500),
+      0,
+      60000
+    ),
+    maxResumes: clampInt(options.maxResumes ?? envInt("PLATFORM_MAX_RESUMES", 3), 0, 20),
     rollbackOnFailure:
       options.rollbackOnFailure ?? process.env.PLATFORM_ROLLBACK_ON_FAILURE === "true",
     approvalTimeoutMs: clampInt(
@@ -1904,7 +3732,15 @@ function resolveExecutorOptions(options: ExecutorOptions): ResolvedExecutorOptio
       1000,
       86_400_000
     ),
-    onStatusChange: options.onStatusChange
+    tokenBudget: clampInt(
+      options.tokenBudget ?? envInt("PLATFORM_RUN_TOKEN_BUDGET", 0),
+      0,
+      100_000_000
+    ),
+    onStatusChange: options.onStatusChange,
+    releaseProvider: options.releaseProvider,
+    onRunFinished: options.onRunFinished,
+    onPromptCandidate: options.onPromptCandidate
   };
 }
 
@@ -1917,7 +3753,7 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
-function resolveValue(value: unknown, scope: RunScope, frame?: LoopFrame): unknown {
+function resolveValue(value: unknown, scope: RunScope, frame?: LoopProfile): unknown {
   if (typeof value === "string") {
     const whole = value.match(REF_PATTERN);
     if (whole) {
@@ -1941,7 +3777,7 @@ function resolveValue(value: unknown, scope: RunScope, frame?: LoopFrame): unkno
   return value;
 }
 
-function resolveRef(ref: string, scope: RunScope, frame?: LoopFrame): unknown {
+function resolveRef(ref: string, scope: RunScope, frame?: LoopProfile): unknown {
   const [head, ...rest] = ref.split(".");
   if (head === "loop") {
     return resolveLoopRef(rest, frame);
@@ -1957,7 +3793,7 @@ function resolveRef(ref: string, scope: RunScope, frame?: LoopFrame): unknown {
 }
 
 /** 循环作用域：artifact/issues/score/iteration/retrievalQuery 均指向进入本轮前的状态。 */
-function resolveLoopRef(path: string[], frame?: LoopFrame): unknown {
+function resolveLoopRef(path: string[], frame?: LoopProfile): unknown {
   if (!frame || path.length === 0) {
     return undefined;
   }
@@ -1972,7 +3808,7 @@ function resolveLoopRef(path: string[], frame?: LoopFrame): unknown {
   return current;
 }
 
-function loopScopeOf(frame: LoopFrame): LoopScope {
+function loopScopeOf(frame: LoopProfile): LoopScope {
   return {
     artifact: frame.artifact,
     issues: frame.issues,
