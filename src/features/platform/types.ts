@@ -154,6 +154,13 @@ export type PlatformIssue = {
   code: string;
   path: string;
   message: string;
+  /** 调试门禁诊断用：error 阻断进入调试视图，warning 只提示。 */
+  severity?: "error" | "warning";
+};
+
+export type DiagnoseWorkflowResponse = {
+  ok: boolean;
+  issues: PlatformIssue[];
 };
 
 export type WorkflowSummary = {

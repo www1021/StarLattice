@@ -3,6 +3,7 @@ import type {
   AgentVersionsResponse,
   ApprovalDecision,
   BindKnowledgeResponse,
+  DiagnoseWorkflowResponse,
   EvolutionAlert,
   EvolutionCandidate,
   EvolutionChange,
@@ -116,6 +117,13 @@ export const platformApi = {
 
   saveWorkflow: (dsl: WorkflowDefinition) =>
     request<SaveWorkflowResponse>("/workflows", { method: "POST", body: JSON.stringify({ dsl }) }),
+
+  /** 调试前的静态门禁：不写库、不起 run，返回节点级可展示问题。 */
+  diagnoseWorkflow: (dsl: WorkflowDefinition) =>
+    request<DiagnoseWorkflowResponse>(`/workflows/${encodeURIComponent(dsl.id)}/diagnose`, {
+      method: "POST",
+      body: JSON.stringify({ dsl })
+    }),
 
   startRun: (workflowId: string, input: Record<string, unknown>, stopAfter?: string) =>
     request<{ run: RunRecord }>("/runs", {

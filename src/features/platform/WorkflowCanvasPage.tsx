@@ -25,6 +25,7 @@ import {
   LayoutTemplate,
   Loader2,
   Maximize2,
+  MessageSquareText,
   Play,
   Plus,
   Redo2,
@@ -56,6 +57,7 @@ import {
   uniqueNodeId,
   type RunNodeStatus
 } from "./layout";
+import { WorkflowDebugPanel } from "./WorkflowDebugPanel";
 import { PlatformNodeCard, type PlatformFlowNode, type PlatformNodeData } from "./PlatformNodeCard";
 import {
   PlatformContainerNode,
@@ -212,6 +214,8 @@ function PlatformWorkspace({
   const [banner, setBanner] = useState<Banner>();
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugState, setDebugState] = useState<"idle" | "checking">("idle");
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [runState, setRunState] = useState<"idle" | "running">("idle");
   const [runOpen, setRunOpen] = useState(false);
@@ -712,7 +716,7 @@ function PlatformWorkspace({
       if (!isUndo && !isRedo) {
         return;
       }
-      if (runOpen || subflowPreview || isEditableTarget(event.target)) {
+      if (runOpen || subflowPreview || debugMode || isEditableTarget(event.target)) {
         return;
       }
       const history = definitionTemporal.getState();
@@ -724,7 +728,7 @@ function PlatformWorkspace({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [runOpen, subflowPreview]);
+  }, [runOpen, subflowPreview, debugMode]);
 
   function applyElkPositions(positions: Map<string, { x: number; y: number }>) {
     if (positions.size === 0) {
@@ -1097,6 +1101,9 @@ function PlatformWorkspace({
   }
 
   function handleConnect(connection: Connection) {
+    if (debugMode) {
+      return;
+    }
     const { source, target } = connection;
     const issue = validateConnection(source, target);
     if (issue) {
@@ -1128,6 +1135,9 @@ function PlatformWorkspace({
   }
 
   function insertOnEdge(edgeId: string) {
+    if (debugMode) {
+      return;
+    }
     window.clearTimeout(hoverTimerRef.current);
     setHoveredEdgeId(edgeId);
     setPendingInsertEdge(edgeId);
@@ -1265,6 +1275,61 @@ function PlatformWorkspace({
     }
   }
 
+  /** 调试门禁：先做静态诊断，无阻断问题才进入左画布右聊天的调试视图。 */
+  async function handleDebug() {
+    if (!definition || debugState === "checking") {
+      return;
+    }
+    setDebugState("checking");
+    setIssuesByNode({});
+    setBanner(undefined);
+    try {
+      const result = await platformApi.diagnoseWorkflow(definition);
+      const ids = new Set(definition.nodes.map((node) => node.id));
+      const grouped: Record<string, PlatformIssue[]> = {};
+      for (const issue of result.issues) {
+        const nodeId = issueNodeId(issue.path, ids);
+        if (nodeId) {
+          grouped[nodeId] = [...(grouped[nodeId] ?? []), issue];
+        }
+      }
+      setIssuesByNode(grouped);
+      const errors = result.issues.filter((issue) => issue.severity !== "warning");
+      if (errors.length > 0) {
+        setBanner({
+          tone: "error",
+          text: `调试前检查发现 ${errors.length} 处问题，请先修复标红节点`,
+          issues: result.issues
+        });
+        return;
+      }
+      const warnings = result.issues.length - errors.length;
+      // startRun 只认已入库的 workflowId：未保存改动或新建草稿都要先落库。
+      const isStored = workflows.some((workflow) => workflow.id === definition.id);
+      const saved = dirty || !isStored ? await handleSave() : definition;
+      if (!saved) {
+        return;
+      }
+      // handleSave 会清空 issuesByNode，这里恢复 warning 的节点高亮。
+      setIssuesByNode(grouped);
+      setTrace(undefined);
+      setSelectedEdgeId(undefined);
+      setDebugMode(true);
+      setBanner({
+        tone: warnings > 0 ? "info" : "success",
+        text:
+          warnings > 0
+            ? `静态检查通过，有 ${warnings} 条提示，已进入调试视图`
+            : "静态检查通过，已进入调试视图",
+        ...(warnings > 0 ? { issues: result.issues } : {})
+      });
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setDebugState("idle");
+    }
+  }
+
   async function handleRun() {
     // 没有未保存修改时直接运行已存版本，避免每次试跑都无谓地升一个版本。
     const saved = dirty ? await handleSave() : definition;
@@ -1362,13 +1427,19 @@ function PlatformWorkspace({
           {definition.description && <p>{definition.description}</p>}
         </div>
         <div className="platform-head-actions">
-          <button type="button" className="platform-button is-ghost" onClick={() => setNewOpen(true)}>
+          <button
+            type="button"
+            className="platform-button is-ghost"
+            onClick={() => setNewOpen(true)}
+            disabled={debugMode}
+          >
             <Plus size={14} /> 新建
           </button>
           <select
             className="platform-select"
             value={workflowId}
             onChange={(event) => handleSelectWorkflow(event.target.value)}
+            disabled={debugMode}
           >
             {flagshipWorkflows.length > 0 && (
               <optgroup label="旗舰地图">
@@ -1408,7 +1479,7 @@ function PlatformWorkspace({
             type="button"
             className="platform-button is-ghost"
             onClick={() => setInputsOpen(true)}
-            disabled={runState === "running"}
+            disabled={runState === "running" || debugMode}
           >
             输入定义 · {definition.inputs.length}
           </button>
@@ -1416,10 +1487,31 @@ function PlatformWorkspace({
             type="button"
             className="platform-button is-ghost"
             onClick={() => void handleSave()}
-            disabled={saveState === "saving" || runState === "running"}
+            disabled={saveState === "saving" || runState === "running" || debugMode}
           >
             {saveState === "saving" ? <Loader2 size={14} className="is-spinning" /> : <Save size={14} />}
             保存
+          </button>
+          <button
+            type="button"
+            className="platform-button is-ghost"
+            onClick={() => {
+              if (debugMode) {
+                setDebugMode(false);
+              } else {
+                void handleDebug();
+              }
+            }}
+            disabled={debugState === "checking" || runState === "running"}
+          >
+            {debugState === "checking" ? (
+              <Loader2 size={14} className="is-spinning" />
+            ) : debugMode ? (
+              <X size={14} />
+            ) : (
+              <MessageSquareText size={14} />
+            )}
+            {debugMode ? "退出调试" : "调试"}
           </button>
           <button
             type="button"
@@ -1428,7 +1520,7 @@ function PlatformWorkspace({
               setTrialTarget(undefined);
               setRunOpen(true);
             }}
-            disabled={runState === "running" || saveState === "saving"}
+            disabled={runState === "running" || saveState === "saving" || debugMode}
           >
             {runState === "running" ? <Loader2 size={14} className="is-spinning" /> : <Play size={14} />}
             运行
@@ -1477,7 +1569,8 @@ function PlatformWorkspace({
             type="button"
             className="platform-chip"
             onClick={() => setPaletteOpen((value) => !value)}
-            title="显示或收起左侧节点库"
+            disabled={debugMode}
+            title={debugMode ? "调试视图下节点库已隐藏" : "显示或收起左侧节点库"}
           >
             <LayoutGrid size={12} />
             {paletteOpen ? "收起节点库" : "节点库"}
@@ -1486,7 +1579,8 @@ function PlatformWorkspace({
             type="button"
             className="platform-chip"
             onClick={() => setTemplateOpen(true)}
-            title="用内置模板替换当前画布的节点与连线"
+            disabled={debugMode}
+            title={debugMode ? "请先退出调试再套用模板" : "用内置模板替换当前画布的节点与连线"}
           >
             <LayoutTemplate size={12} />
             模板库
@@ -1533,8 +1627,8 @@ function PlatformWorkspace({
             type="button"
             className="platform-chip"
             onClick={() => runHistory("undo")}
-            disabled={!canUndo}
-            title="撤销 (⌘/Ctrl+Z)"
+            disabled={!canUndo || debugMode}
+            title={debugMode ? "调试视图为只读" : "撤销 (⌘/Ctrl+Z)"}
           >
             <Undo2 size={12} />
             撤销
@@ -1543,8 +1637,8 @@ function PlatformWorkspace({
             type="button"
             className="platform-chip"
             onClick={() => runHistory("redo")}
-            disabled={!canRedo}
-            title="重做 (⇧⌘/Ctrl+Shift+Z 或 Ctrl+Y)"
+            disabled={!canRedo || debugMode}
+            title={debugMode ? "调试视图为只读" : "重做 (⇧⌘/Ctrl+Shift+Z 或 Ctrl+Y)"}
           >
             <Redo2 size={12} />
             重做
@@ -1585,20 +1679,33 @@ function PlatformWorkspace({
         </div>
       )}
 
-      <div className={`platform-canvas-wrap ${paletteOpen ? "has-palette" : "is-palette-collapsed"}`}>
-        <NodePalette
-          specs={specs}
-          open={paletteOpen}
-          onToggle={() => setPaletteOpen((value) => !value)}
-          onAdd={(kind) => handleAddNode(kind)}
-        />
+      <div
+        className={`platform-canvas-wrap ${paletteOpen && !debugMode ? "has-palette" : "is-palette-collapsed"}${
+          debugMode ? " is-debugging" : ""
+        }`}
+      >
+        {!debugMode && (
+          <NodePalette
+            specs={specs}
+            open={paletteOpen}
+            onToggle={() => setPaletteOpen((value) => !value)}
+            onAdd={(kind) => handleAddNode(kind)}
+          />
+        )}
         <div
           className="platform-canvas"
           onDragOver={(event) => {
+            if (debugMode) {
+              return;
+            }
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
           }}
-          onDrop={handleDrop}
+          onDrop={(event) => {
+            if (!debugMode) {
+              handleDrop(event);
+            }
+          }}
         >
           <CanvasContainerContext.Provider
             value={{ isExpanded: (id) => expandedContainers.has(id), toggle: toggleContainer }}
@@ -1617,8 +1724,15 @@ function PlatformWorkspace({
                 isValidConnection={(connection) =>
                   validateConnection(connection.source, connection.target) === undefined
                 }
-                onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
+                onNodesDelete={(deleted) => {
+                  if (!debugMode) {
+                    handleRemoveNodes(deleted.map((node) => node.id));
+                  }
+                }}
                 onEdgesDelete={(deleted) => {
+                  if (debugMode) {
+                    return;
+                  }
                   const removable = deleted.filter((edge) => !edge.data?.inner);
                   const removed = new Set(
                     removable.map((edge) => `${edge.source}->${edge.target}`)
@@ -1638,6 +1752,9 @@ function PlatformWorkspace({
                   const data = node.data as PlatformNodeData | PlatformContainerData;
                   selectNode("ownerId" in data && data.ownerId ? data.ownerId : node.id);
                 }}
+                nodesDraggable={!debugMode}
+                nodesConnectable={!debugMode}
+                elementsSelectable
                 onNodeDragStop={(_event, node) => {
                   if (!node.parentId) {
                     positionsRef.current.set(node.id, node.position);
@@ -1657,7 +1774,7 @@ function PlatformWorkspace({
                 connectionLineStyle={{ stroke: "#6366f1", strokeWidth: 2, strokeDasharray: "6 5" }}
                 minZoom={0.25}
                 maxZoom={1.6}
-                deleteKeyCode={["Backspace", "Delete"]}
+                deleteKeyCode={debugMode ? null : ["Backspace", "Delete"]}
               >
                 <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d9dfea" />
                 <Controls showInteractive={false} />
@@ -1695,7 +1812,20 @@ function PlatformWorkspace({
           )}
         </div>
 
-        {selectedEdge ? (
+        {debugMode ? (
+          <WorkflowDebugPanel
+            definition={definition}
+            workflowId={definition.id}
+            trace={trace}
+            runStatuses={runStatuses}
+            nodeDurations={nodeDurations}
+            selectedNodeId={selectedId}
+            onTrace={setTrace}
+            onRunningChange={(running) => setRunState(running ? "running" : "idle")}
+            onSelectNode={selectNode}
+            onClose={() => setDebugMode(false)}
+          />
+        ) : selectedEdge ? (
           <div className="platform-side">
             <div className="platform-side-bar">
               <button type="button" className="platform-link" onClick={() => setSelectedEdgeId(undefined)}>

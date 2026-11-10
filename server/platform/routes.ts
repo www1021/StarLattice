@@ -9,6 +9,7 @@ import {
 } from "./types.js";
 import { loadBuiltinWorkflows, parseWorkflowDefinition, WorkflowSyntaxError } from "./workflow/dsl.js";
 import { compileWorkflow, WorkflowCompileError } from "./workflow/compiler.js";
+import { diagnoseWorkflow, hasBlockingIssue, type WorkflowDiagnostic } from "./workflow/diagnostics.js";
 import {
   CANVAS_CONTRACT,
   COMMON_NODE_FIELDS,
@@ -680,6 +681,53 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       }
       const plan = compileWorkflow(definition, { resolveWorkflow: storeWorkflowResolver(store) });
       response.json({ ok: true, issues: [], stats: plan.stats, order: plan.order });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * 调试门禁：只做静态检查，不写库、不起 run。
+   * 与 validate 的区别：允许传入未解析的画布草稿（必填字段可能为空），
+   * 除编译器硬规则外额外给出「节点未连接 / 引用参数未填写」等可直接展示的中文提示。
+   * 前端点击「调试」时调用，有 error 级问题就不进入调试视图。
+   */
+  app.post("/api/platform/workflows/:id/diagnose", (request, response) => {
+    try {
+      const body = isRecord(request.body) ? request.body : {};
+      const draft = body.dsl;
+      const source =
+        draft === undefined
+          ? store.getWorkflow(request.params.id, typeof body.version === "number" ? body.version : undefined)?.definition
+          : draft;
+      if (!source) {
+        throw new PlatformError("工作流不存在，且请求未携带 dsl。", 404);
+      }
+      const issues: WorkflowDiagnostic[] = diagnoseWorkflow(source);
+      // 草稿本身有阻断问题时不再编译：编译器的英文/结构化报错会淹没节点级提示。
+      if (!hasBlockingIssue(issues)) {
+        try {
+          const definition =
+            draft === undefined ? (source as WorkflowDefinition) : parseWorkflowDefinition(draft);
+          compileWorkflow(definition, { resolveWorkflow: storeWorkflowResolver(store) });
+        } catch (error) {
+          if (error instanceof WorkflowCompileError) {
+            for (const issue of error.issues) {
+              issues.push({ ...issue, severity: "error" });
+            }
+          } else if (error instanceof WorkflowSyntaxError) {
+            issues.push({
+              code: "syntax",
+              path: error.path,
+              message: error.message,
+              severity: "error"
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
+      response.json({ ok: !hasBlockingIssue(issues), issues });
     } catch (error) {
       fail(response, error);
     }
