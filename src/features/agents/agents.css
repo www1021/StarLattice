@@ -877,6 +877,15 @@
   color: #c0392b;
 }
 
+/* 模型压根没调用工具：气泡上要明确提示，别让「凭记忆编的文献」看起来像检索结果 */
+.message-tool-row.is-skipped {
+  color: #a56413;
+}
+
+.message-tool-row.is-skipped svg {
+  color: #a56413;
+}
+
 /* 工作流会话：这轮真的走了哪个智能体/子流程节点，跟在回复徽标后的小字标签 */
 .message-agent-row {
   display: inline-flex;

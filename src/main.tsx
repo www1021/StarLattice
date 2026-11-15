@@ -140,10 +140,12 @@ type TraceAgent = {
 type ToolNote = {
   toolId: string;
   name: string;
-  stage: "running" | "done";
+  stage: "running" | "done" | "skipped";
   ok?: boolean;
   summary?: string;
   latencyMs?: number;
+  /** delegation = 把问题转交给了另一个智能体，界面上用「转交」而不是「调用」。 */
+  kind?: "tool" | "delegation";
 };
 
 type GenerationThinkingStep = {
@@ -2283,12 +2285,20 @@ function Conversation({
                     <span>{note.name}</span>
                     <small>
                       {note.stage === "running"
-                        ? "正在调用"
-                        : note.ok === false
-                          ? "调用失败"
-                          : note.latencyMs
-                            ? `${(note.latencyMs / 1000).toFixed(1)}s`
-                            : "已返回"}
+                        ? note.kind === "delegation"
+                          ? "正在转交"
+                          : "正在调用"
+                        : note.stage === "skipped"
+                          ? "未调用"
+                          : note.ok === false
+                            ? note.kind === "delegation"
+                              ? "转交失败"
+                              : "调用失败"
+                            : note.latencyMs
+                              ? `${(note.latencyMs / 1000).toFixed(1)}s`
+                              : note.kind === "delegation"
+                                ? "已转交"
+                                : "已返回"}
                     </small>
                   </span>
                 ))}
@@ -7071,10 +7081,11 @@ function handleChatStreamEvent(
     activeStepId?: string;
     completedStepIds?: string[];
     toolId?: string;
-    stage?: "running" | "done";
+    stage?: "running" | "done" | "skipped";
     ok?: boolean;
     summary?: string;
     latencyMs?: number;
+    kind?: "tool" | "delegation";
     workflowName?: string;
     trace?: {
       agents?: Array<{
@@ -7150,7 +7161,8 @@ function handleChatStreamEvent(
       stage: payload.stage,
       ok: payload.ok,
       summary: payload.summary,
-      latencyMs: payload.latencyMs
+      latencyMs: payload.latencyMs,
+      kind: payload.kind ?? (payload.toolId.startsWith("agent://") ? "delegation" : "tool")
     });
   }
 
@@ -9183,7 +9195,8 @@ function App() {
           stage: "done" as const,
           ok: note.ok,
           latencyMs: note.latencyMs,
-          summary: note.summary
+          summary: note.summary,
+          kind: note.toolId.startsWith("agent://") ? ("delegation" as const) : ("tool" as const)
         })),
         artifacts:
           message.role === "assistant" && index === conversation.messages.length - 1

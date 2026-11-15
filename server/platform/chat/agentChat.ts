@@ -191,6 +191,8 @@ export function buildAgentChatSystemPrompt(
     memories?: string[];
     /** 本轮真正可执行的工具名；有值才写工具协议，避免提示词里出现调不动的工具。 */
     toolNames?: string[];
+    /** 本轮能转交的专项智能体名；有值时转交是真实调用，不是台词。 */
+    delegationTargets?: string[];
   } = {}
 ): string {
   const parts = [BASELINE];
@@ -215,13 +217,35 @@ export function buildAgentChatSystemPrompt(
   if (memories.length > 0) {
     parts.push(`你记得此前的情况：\n${memories.map((item) => `- ${item}`).join("\n")}`);
   }
+  const delegationTargets = (options.delegationTargets ?? []).filter((item) => item.trim() !== "");
+  // 事实性边界对所有智能体生效：没有检索工具时，最容易「假装启动子 Agent」再凭记忆编一串带 DOI 的文献。
+  parts.push(
+    [
+      "事实性要求：不要编造具体的论文条目、DOI、期刊名、年份、数据或链接。",
+      "不要声称「已为你启动 / 已调用某个 Agent」「已经检索过」，除非本轮真的拿到了工具返回结果。",
+      delegationTargets.length > 0
+        ? "涉及真实文献、数据或最新资料时，先调用转交工具把问题交给对应专项智能体，再根据它返回的内容作答；转交失败或查不到就说清楚，不要自己补。"
+        : "涉及真实文献、数据或最新资料而本轮没有可用工具时，明确说明自己无法查证，并建议用户切换到挂有相应工具的专项智能体。"
+    ].join("\n")
+  );
+  if (delegationTargets.length > 0) {
+    parts.push(
+      [
+        `本轮可以转交的专项智能体：${delegationTargets.join("、")}。`,
+        "转交是真实执行：对方的提示词、模型和工具都会生效，返回结果会作为工具结果回到你这里。",
+        "问题明确属于某个专项时（找文献、选题规划、实验设计、开题答辩、成长困惑），直接把用户原话和已确认的背景一起转过去，不要先编一段自己的答案。",
+        "拿到转交结果后，可以按你的口吻概括和补充建议，但其中的文献、数据、结论必须来自返回内容，不要替换或扩写。"
+      ].join("\n")
+    );
+  }
   const toolNames = (options.toolNames ?? []).filter((item) => item.trim() !== "");
   if (toolNames.length > 0) {
     parts.push(
       [
-        `你可以调用这些工具：${toolNames.join("、")}。`,
-        "用户的问题需要真实资料、数据或业务记录时，先调用合适的工具，再根据返回结果作答。",
-        "工具结果是外部事实的唯一来源：查不到就直说查不到，不要用记忆里的数字或自己编的内容顶上；工具报错时说明失败原因，不要假装成功。"
+        `本轮可调用的工具：${toolNames.join("、")}。`,
+        "用户的问题需要真实文献、资料、数据或业务记录时，必须先调用合适的工具，再依据工具返回的内容作答；不能跳过工具直接给出具体条目。",
+        "工具结果是外部事实的唯一来源：查不到就直说查不到，不要用记忆里的内容顶上；工具报错时说明失败原因，不要假装成功。",
+        "拿到工具结果后，回答里要说明结论来自检索结果。"
       ].join("\n")
     );
   }

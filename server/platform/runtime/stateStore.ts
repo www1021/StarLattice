@@ -1409,16 +1409,24 @@ export class PlatformStateStore {
       memory?: Record<string, unknown>;
       config?: Record<string, unknown>;
       enabled?: boolean;
+      version?: number;
     }>
   ): number {
     const now = new Date().toISOString();
+    // 共享资产随代码升级：只对「无主且版本较旧」的行同步提示词与工具绑定，
+    // 名字、头像这类可能被本地改过的展示字段保持原样，私人行完全不碰。
     const insert = this.db.prepare(
       `
       INSERT INTO chat_agents
         (id, owner_id, name, description, avatar, role, prompt, model, tools,
          capabilities, memory, config, version, enabled, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-      ON CONFLICT(id) DO NOTHING
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        prompt = excluded.prompt,
+        tools = excluded.tools,
+        version = excluded.version,
+        updated_at = excluded.updated_at
+      WHERE chat_agents.owner_id IS NULL AND chat_agents.version < excluded.version
       `
     );
     let inserted = 0;
@@ -1436,6 +1444,7 @@ export class PlatformStateStore {
           JSON.stringify(seed.capabilities ?? []),
           JSON.stringify(seed.memory ?? {}),
           JSON.stringify(seed.config ?? {}),
+          seed.version ?? 1,
           seed.enabled === false ? 0 : 1,
           now,
           now

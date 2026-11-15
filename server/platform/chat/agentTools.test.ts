@@ -7,10 +7,12 @@ import type {
 import type { McpCallResult, ToolRecord } from "../types.js";
 import {
   buildChatToolCatalog,
+  needsExternalEvidence,
   parseToolArguments,
   runChatToolLoop,
   type ChatToolProgress
 } from "./agentTools.js";
+import { buildDelegationCatalog } from "./agentDelegation.js";
 
 function toolRecord(overrides: Partial<ToolRecord> = {}): ToolRecord {
   return {
@@ -220,4 +222,186 @@ test("参数解析对空串与数组分别给对结果", () => {
   assert.deepEqual(parseToolArguments("  "), { ok: true, value: {} });
   assert.equal(parseToolArguments("[1,2]").ok, false);
   assert.deepEqual(parseToolArguments('{"a":1}'), { ok: true, value: { a: 1 } });
+});
+
+/** 模拟真实挂载的「文献检索（OpenAlex）」插件，参数字段叫 search。 */
+function pluginCatalog() {
+  return buildChatToolCatalog(["plugin.literature"], () =>
+    toolRecord({
+      id: "plugin.literature",
+      name: "文献检索（OpenAlex）",
+      type: "builtin",
+      endpoint: "plugin://pl-1",
+      description: "按关键词检索 OpenAlex 学术文献，返回论文列表",
+      schema: {
+        type: "object",
+        properties: { search: { type: "string" }, per_page: { type: "integer" } },
+        required: ["search"]
+      }
+    })
+  );
+}
+
+test("识别需要外部资料的问题，闲聊不被误判", () => {
+  assert.equal(needsExternalEvidence("帮我查询病虫害识别相关文献"), true);
+  assert.equal(needsExternalEvidence("这个方向有哪些研究现状？"), true);
+  assert.equal(needsExternalEvidence("你好"), false);
+  assert.equal(needsExternalEvidence("谢谢，明白了"), false);
+});
+
+test("首轮不肯调工具时用 required 重试，凭记忆编的答案不进上下文", async () => {
+  const catalog = pluginCatalog();
+  const { fn, calls } = scriptedComplete([
+    { content: "《UAV Survey》Remote Sensing 2023，DOI 10.3390/xxx", toolCalls: [] },
+    {
+      content: "",
+      toolCalls: [
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "literature", arguments: JSON.stringify({ search: "病虫害识别" }) }
+        }
+      ]
+    },
+    { content: "检索到 2 篇真实文献。", toolCalls: [] }
+  ]);
+  const asked: Array<Record<string, unknown>> = [];
+
+  const result = await runChatToolLoop({
+    system: "你是文献助手。",
+    messages: [{ role: "user", content: "帮我查询病虫害识别相关文献" }],
+    catalog,
+    complete: fn,
+    callTool: async (_tool, args) => {
+      asked.push(args);
+      return mcpResult("1. UAV Pest Detection · OpenAlex");
+    }
+  });
+
+  assert.equal(calls[1].toolChoice, "required");
+  assert.deepEqual(asked, [{ search: "病虫害识别" }]);
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.forcedToolCall, false);
+  assert.match(result.content, /真实文献/);
+  // 首轮那段编造内容不能作为上下文依据传给模型。
+  assert.equal(
+    calls[2].messages.some(
+      (message) => message.role === "assistant" && message.content.includes("Remote Sensing")
+    ),
+    false
+  );
+  assert.match(calls[2].messages[calls[2].messages.length - 1].content, /OpenAlex/);
+});
+
+test("模型完全不支持 function calling 时，后端也兜底真查一次", async () => {
+  const catalog = pluginCatalog();
+  const calls: CompleteToolChatOptions[] = [];
+  const progress: ChatToolProgress[] = [];
+  let step = 0;
+  const fn = async (options: CompleteToolChatOptions): Promise<ToolChatResult> => {
+    calls.push(options);
+    step += 1;
+    if (step === 1) return { content: "《编的综述》Nature 2024", toolCalls: [] };
+    if (step === 2) throw new Error("tool_choice required is not supported");
+    if (step === 3) return { content: "我直接回答。", toolCalls: [] };
+    return { content: "根据检索结果，找到 2 篇真实文献。", toolCalls: [] };
+  };
+  const asked: Array<Record<string, unknown>> = [];
+
+  const result = await runChatToolLoop({
+    system: "你是文献助手。",
+    messages: [{ role: "user", content: "查询相关文献" }],
+    catalog,
+    complete: fn,
+    callTool: async (_tool, args) => {
+      asked.push(args);
+      return mcpResult("1. Real Paper · OpenAlex");
+    },
+    onProgress: (item) => progress.push(item)
+  });
+
+  assert.equal(calls[1].toolChoice, "required");
+  assert.match(String(calls[2].system ?? ""), /本轮强制要求/);
+  assert.equal(result.forcedToolCall, true);
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].ok, true);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].search, "查询相关文献");
+  assert.match(result.content, /检索结果/);
+  assert.deepEqual(
+    progress.map((item) => item.stage),
+    ["running", "done"]
+  );
+});
+
+test("模型完全不配合时，兜底优先转交给对口的专项智能体", async () => {
+  const catalog = [
+    ...pluginCatalog(),
+    ...buildDelegationCatalog([
+      {
+        id: "ytz-literature",
+        name: "文献阅读Agent",
+        version: 4,
+        role: "文献阅读",
+        prompt: "你是文献阅读导师。",
+        tools: [],
+        model: "platform-default",
+        capabilities: [],
+        memory: {},
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        description: "检索、精读、综述"
+      }
+    ])
+  ];
+  const calls: CompleteToolChatOptions[] = [];
+  let step = 0;
+  const fn = async (options: CompleteToolChatOptions): Promise<ToolChatResult> => {
+    calls.push(options);
+    step += 1;
+    if (step === 1) return { content: "《编的文献》Nature 2024", toolCalls: [] };
+    if (step === 2) throw new Error("required not supported");
+    return { content: "我直接回答。", toolCalls: [] };
+  };
+  const asked: Array<{ tool: string; args: Record<string, unknown> }> = [];
+
+  const result = await runChatToolLoop({
+    system: "你是科研导师。",
+    messages: [{ role: "user", content: "帮我查询相关文献" }],
+    catalog,
+    complete: fn,
+    callTool: async (tool, args) => {
+      asked.push({ tool: tool.id, args });
+      return mcpResult("1. Real Paper · OpenAlex");
+    }
+  });
+
+  assert.equal(result.forcedToolCall, true);
+  // 兜底选的是「转交给文献阅读Agent」，不是导师自己去查插件。
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].tool, "agent://ytz-literature");
+  assert.equal(asked[0].args.question, "帮我查询相关文献");
+  assert.equal(result.calls[0].toolId, "agent://ytz-literature");
+});
+
+test("闲聊不会被硬塞一次检索", async () => {
+  const catalog = pluginCatalog();
+  const { fn, calls } = scriptedComplete([{ content: "你好，有什么可以帮你？", toolCalls: [] }]);
+  let executed = 0;
+
+  const result = await runChatToolLoop({
+    messages: [{ role: "user", content: "你好" }],
+    catalog,
+    complete: fn,
+    callTool: async () => {
+      executed += 1;
+      return mcpResult("不该被调用");
+    }
+  });
+
+  assert.equal(executed, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(result.forcedToolCall, false);
+  assert.equal(result.content, "你好，有什么可以帮你？");
 });

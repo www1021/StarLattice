@@ -19,6 +19,8 @@ export type SharedChatAgentSeed = {
   memory?: Record<string, unknown>;
   config?: Record<string, unknown>;
   enabled?: boolean;
+  /** 共享资产的版本；高于库里旧行时同步提示词与工具绑定，避免新代码配老数据。 */
+  version?: number;
 };
 
 function load(): SharedChatAgentSeed[] {

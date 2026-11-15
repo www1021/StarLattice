@@ -14,7 +14,8 @@ import {
   type ModelProviderConfig,
   type QwenToolCall,
   type QwenToolDefinition,
-  type ToolChatMessage
+  type ToolChatMessage,
+  type ToolChatResult
 } from "../../qwenOpenAiClient.js";
 import type { McpCallResult, ToolRecord } from "../types.js";
 
@@ -24,6 +25,8 @@ export type ChatToolDescriptor = {
   toolId: string;
   tool: ToolRecord;
   definition: QwenToolDefinition;
+  /** tool = 真正查数据；delegation = 把问题转交给另一个智能体。 */
+  kind?: "tool" | "delegation";
 };
 
 export type ChatToolTrace = {
@@ -37,24 +40,107 @@ export type ChatToolTrace = {
   summary: string;
 };
 
-/** 工具调用进度，用来在对话里显示「正在调用 / 已调用」。 */
+/** 工具调用进度，用来在对话里显示「正在调用 / 已调用 / 未调用」。 */
 export type ChatToolProgress = {
-  stage: "running" | "done";
+  stage: "running" | "done" | "skipped";
   toolId: string;
   name: string;
   ok?: boolean;
   summary?: string;
   latencyMs?: number;
+  /** 界面上把「转交给某个智能体」和「调用插件」区分开。 */
+  kind?: "tool" | "delegation";
 };
 
 export type ChatToolLoopResult = {
   content: string;
   rounds: number;
   calls: ChatToolTrace[];
+  /** 模型始终不肯调用工具时，是否由后端兜底强制执行过一次。 */
+  forcedToolCall: boolean;
 };
 
 const DEFAULT_MAX_ROUNDS = 4;
 const MAX_TOOL_RESULT_CHARS = 6000;
+
+/**
+ * 用户明显在要外部资料时，才允许后端强制/兜底调用工具。
+ * 闲聊（「你好」「谢谢」）不该被硬塞一次检索。
+ */
+const EXTERNAL_EVIDENCE_PATTERN =
+  /文献|论文|检索|搜索|查询|查找|查一下|找几篇|资料|数据|最新|现状|进展|引用|DOI|doi|期刊|年份|事实|统计|报告|新闻|知识库|证据|来源|参考|有哪些研究|研究现状/;
+
+export function needsExternalEvidence(text: string): boolean {
+  return EXTERNAL_EVIDENCE_PATTERN.test(text);
+}
+
+/** 上游不支持 tool_choice=required 时，用这段话把「必须调用」钉进 system。 */
+const FORCE_TOOL_SYSTEM_HINT = [
+  "【本轮强制要求】用户的问题需要外部真实资料。",
+  "你必须先调用一个可用工具取得结果，再基于工具返回的内容作答。",
+  "没有工具结果时，禁止给出具体文献条目、DOI、期刊名、年份、数字或链接；禁止声称已经检索过或已经启动过某个 Agent。",
+  "工具查不到或调用失败就如实说明，不要用记忆里的内容补齐。"
+].join("\n");
+
+/**
+ * 最后一道兜底：模型完全不支持 function calling 时，直接按用户输入构造一次真实调用。
+ * 只在「明显需要外部资料 + 有可用工具」时启用，避免把闲聊也变成一次无谓的检索。
+ */
+function buildForcedToolCall(
+  messages: ToolChatMessage[],
+  catalog: ChatToolDescriptor[],
+  round: number
+): QwenToolCall | null {
+  const lastUser = [...messages].reverse().find((message) => message.role === "user");
+  if (!lastUser || !needsExternalEvidence(lastUser.content)) {
+    return null;
+  }
+  // 配了转交工具时先转给对口的专项智能体：它带着自己的检索工具和领域提示词，
+  // 比主智能体临时客串检索更准，也符合「导师不亲自查库」的分工。
+  const match = (pool: ChatToolDescriptor[]) =>
+    pool.find((item) =>
+      /检索|搜索|查询|文献|查找|资料|研究现状|search|query/i.test(
+        `${item.tool.name} ${item.tool.description || ""}`
+      )
+    );
+  const delegations = catalog.filter((item) => item.kind === "delegation");
+  const descriptor =
+    match(delegations) ?? match(catalog) ?? delegations[0] ?? catalog[0];
+  if (!descriptor) {
+    return null;
+  }
+  return {
+    id: `forced-${round}-${descriptor.functionName}`,
+    type: "function",
+    function: {
+      name: descriptor.functionName,
+      arguments: JSON.stringify(forcedToolArguments(descriptor, lastUser.content))
+    }
+  };
+}
+
+/** 按工具 schema 找出最像「检索词」的字符串参数，把用户原话填进去。 */
+function forcedToolArguments(descriptor: ChatToolDescriptor, query: string): Record<string, unknown> {
+  const parameters = descriptor.definition.function.parameters as {
+    properties?: Record<string, { type?: string }>;
+  };
+  const properties = parameters?.properties ?? {};
+  const preferred = [
+    "query",
+    "keyword",
+    "keywords",
+    "q",
+    "search",
+    "text",
+    "topic",
+    "title",
+    "question"
+  ];
+  const name =
+    preferred.find((key) => properties[key]) ??
+    Object.keys(properties).find((key) => properties[key]?.type === "string");
+  return name ? { [name]: query.trim().slice(0, 300) } : {};
+}
 
 /**
  * 轮次上限：模型偶尔会反复查同一个工具，掐住上限比事后计费更省事。
@@ -140,6 +226,8 @@ export async function runChatToolLoop(input: {
   temperature?: number;
   maxRounds?: number;
   signal?: AbortSignal;
+  /** 关掉后完全依赖模型自觉，主要用于回归测试与特殊模型。 */
+  forceToolsForExternalEvidence?: boolean;
   onProgress?: (progress: ChatToolProgress) => void;
 }): Promise<ChatToolLoopResult> {
   const complete = input.complete ?? completeQwenToolChat;
@@ -149,19 +237,70 @@ export async function runChatToolLoop(input: {
   const calls: ChatToolTrace[] = [];
   let content = "";
   let rounds = 0;
+  let forcedToolCall = false;
+  let forceAttempted = false;
 
   for (let round = 1; round <= maxRounds; round += 1) {
     rounds = round;
-    const response = await complete({
+    const base = {
       system: input.system,
-      messages,
       model: input.model,
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       provider: input.provider,
       tools,
       signal: input.signal
-    });
+    };
+    let response = await complete({ ...base, messages });
+
+    // 首轮模型一个工具都不调、而用户明显在要真实资料时，逐级兜底：
+    // required → 强制提示词 → 后端直接构造一次调用。这样「挂了插件却像纯 AI 回答」不会再发生。
+    if (
+      round === 1 &&
+      !forceAttempted &&
+      response.toolCalls.length === 0 &&
+      tools.length > 0 &&
+      input.forceToolsForExternalEvidence !== false
+    ) {
+      const lastUser = [...messages].reverse().find((message) => message.role === "user");
+      if (lastUser && needsExternalEvidence(lastUser.content)) {
+        forceAttempted = true;
+        let retried: ToolChatResult | undefined;
+        try {
+          retried = await complete({ ...base, messages, toolChoice: "required" });
+        } catch {
+          // 部分 OpenAI 兼容端点不接受 tool_choice=required，交给下一级处理。
+        }
+        if (!retried?.toolCalls.length) {
+          try {
+            retried = await complete({
+              ...base,
+              system: [input.system, FORCE_TOOL_SYSTEM_HINT].filter(Boolean).join("\n\n"),
+              messages
+            });
+          } catch {
+            retried = undefined;
+          }
+        }
+        if (retried?.toolCalls.length) {
+          // 重试前模型可能已经编了一段「文献清单」，别让它进入上下文当依据。
+          response = { ...retried, content: "" };
+        } else {
+          const forced = buildForcedToolCall(messages, input.catalog, round);
+          if (forced) {
+            forcedToolCall = true;
+            response = { content: "", toolCalls: [forced] };
+          } else {
+            input.onProgress?.({
+              stage: "skipped",
+              toolId: "tool-call-skipped",
+              name: "未调用工具",
+              summary: "模型没有调用任何工具，本轮回答未经外部检索，请核对其中的文献与数据。"
+            });
+          }
+        }
+      }
+    }
 
     if (response.toolCalls.length === 0) {
       content = response.content;
@@ -204,7 +343,7 @@ export async function runChatToolLoop(input: {
     throw new UpstreamModelError("智能体调用工具后没有给出答复，请换个问法再试一次。");
   }
 
-  return { content, rounds, calls };
+  return { content, rounds, calls, forcedToolCall };
 }
 
 async function executeToolCall(
@@ -235,7 +374,8 @@ async function executeToolCall(
   onProgress?.({
     stage: "running",
     toolId: descriptor.toolId,
-    name: displayName
+    name: displayName,
+    kind: descriptor.kind
   });
 
   try {
@@ -257,7 +397,8 @@ async function executeToolCall(
       name: displayName,
       ok: trace.ok,
       summary,
-      latencyMs: result.latencyMs
+      latencyMs: result.latencyMs,
+      kind: descriptor.kind
     });
     return { content: text, trace };
   } catch (error) {

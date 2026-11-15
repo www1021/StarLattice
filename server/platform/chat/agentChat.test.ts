@@ -127,6 +127,39 @@ test("播种的共享智能体对全员可见，部署者可改且保持共享�
   });
 });
 
+test("系统提示词：有工具必须先调用，没工具不许编文献也不能假装启动子 Agent", () => {
+  const agent = {
+    id: "test-agent",
+    name: "测试智能体",
+    role: "文献导师",
+    description: "",
+    prompt: "回答问题。",
+    tools: [],
+    model: "platform-default"
+  } as unknown as AgentRecord;
+
+  const withTools = buildAgentChatSystemPrompt(agent, { toolNames: ["文献检索（OpenAlex）"] });
+  assert.match(withTools, /必须先调用合适的工具/);
+  assert.match(withTools, /本轮可调用的工具：文献检索/);
+  assert.match(withTools, /工具结果是外部事实的唯一来源/);
+
+  const withoutTools = buildAgentChatSystemPrompt(agent);
+  assert.match(withoutTools, /不要编造具体的论文条目/);
+  assert.match(withoutTools, /不要声称「已为你启动/);
+  assert.match(withoutTools, /建议用户切换到挂有相应工具的专项智能体/);
+  assert.doesNotMatch(withoutTools, /本轮可调用的工具/);
+
+  // 有转交工具时，协议从「建议用户切换」改成「真的转过去」。
+  const withDelegation = buildAgentChatSystemPrompt(agent, {
+    toolNames: ["转交给文献阅读Agent"],
+    delegationTargets: ["文献阅读Agent"]
+  });
+  assert.match(withDelegation, /本轮可以转交的专项智能体：文献阅读Agent/);
+  assert.match(withDelegation, /转交是真实执行/);
+  assert.match(withDelegation, /先调用转交工具把问题交给对应专项智能体/);
+  assert.doesNotMatch(withDelegation, /建议用户切换到挂有相应工具的专项智能体/);
+});
+
 test("内置 Agent 只读，自建的可以改也可以删", () => {
   withStore((store) => {
     const builtin = BUILTIN_AGENTS[0];

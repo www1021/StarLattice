@@ -69,11 +69,17 @@ import {
   trimMessagesByTurns
 } from "./platform/chat/agentChat.js";
 import {
-  buildChatToolCatalog,
+  needsExternalEvidence,
   runChatToolLoop,
   toToolChatMessages,
   type ChatToolTrace
 } from "./platform/chat/agentTools.js";
+import {
+  buildChatToolsWithDelegation,
+  delegationTargetId,
+  isDelegationToolId,
+  runAgentDelegation
+} from "./platform/chat/agentDelegation.js";
 import { AuthStore } from "./auth/store.js";
 import { registerAuth, resolveRequestAuth } from "./auth/routes.js";
 import {
@@ -1947,12 +1953,19 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       // 智能体引用的工具只认注册中心里「已启用 + 可执行」的那几条，
       // 配置里写了但工具被停用时，宁可不告诉模型有这件武器。
       const chatToolCatalog = chatAgent
-        ? buildChatToolCatalog(chatAgent.tools, (id) => platformStore.getTool(id))
+        ? buildChatToolsWithDelegation({
+            agent: chatAgent,
+            getAgent: (id) => platformStore.getAgent(id),
+            getTool: (id) => platformStore.getTool(id)
+          })
         : [];
       const systemPrompt = chatAgent
         ? buildAgentChatSystemPrompt(chatAgent, {
             variables: agentVariables,
-            toolNames: chatToolCatalog.map((item) => item.tool.name || item.toolId)
+            toolNames: chatToolCatalog.map((item) => item.tool.name || item.toolId),
+            delegationTargets: chatToolCatalog
+              .filter((item) => item.kind === "delegation")
+              .map((item) => item.tool.name.replace(/^转交给/, ""))
           })
         : assistantMode === "office"
           ? buildOfficeAssistantSystemPrompt()
@@ -1966,7 +1979,23 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
           system: systemPrompt,
           messages: toToolChatMessages(modelMessages),
           catalog: chatToolCatalog,
-          callTool: (tool, args) => platformMcp.callToolRecord(tool, args),
+          callTool: async (tool, args) => {
+            if (isDelegationToolId(tool.id) && chatAgent) {
+              const question = typeof args.question === "string" ? args.question : "";
+              return runAgentDelegation({
+                host: chatAgent,
+                targetId: delegationTargetId(tool.id),
+                question,
+                getAgent: (id) => platformStore.getAgent(id),
+                getTool: (id) => platformStore.getTool(id),
+                callTool: (childTool, childArgs) => platformMcp.callToolRecord(childTool, childArgs),
+                // 子智能体用自己的模型；它没配就用主持有者的模型，免得直接掉回默认。
+                resolveModel: (id) => resolveChatModel(id || picked.model || ""),
+                signal: abortController.signal
+              });
+            }
+            return platformMcp.callToolRecord(tool, args);
+          },
           model: picked.model,
           provider: picked.provider,
           maxTokens: chatAgent?.chatConfig?.maxTokens ?? undefined,
@@ -1979,7 +2008,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               stage: progress.stage,
               ok: progress.ok,
               summary: progress.summary,
-              latencyMs: progress.latencyMs
+              latencyMs: progress.latencyMs,
+              kind: progress.kind
             });
           }
         });
@@ -1987,6 +2017,21 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         assistantContent = toolRun.content;
         writeSse(response, "delta", { content: toolRun.content });
       } else {
+        // 智能体没绑定可用工具、用户却在要文献/数据时，先说清楚「本轮不会调用插件」，
+        // 否则模型会顺着提示词演一句「我为你启动 XX Agent」，再凭记忆编一串带 DOI 的文献。
+        if (chatAgent) {
+          const lastUser = [...modelMessages].reverse().find((message) => message.role === "user");
+          const lastText = lastUser && typeof lastUser.content === "string" ? lastUser.content : "";
+          if (needsExternalEvidence(lastText)) {
+            writeSse(response, "tool", {
+              toolId: "no-tool-bound",
+              name: "当前智能体未绑定检索工具",
+              stage: "skipped",
+              summary:
+                "这个智能体没有可用的检索或数据工具，本轮不会调用插件；需要真实文献请切换到挂了插件的专项智能体。"
+            });
+          }
+        }
         const streamResult = await streamQwenChat({
           system: systemPrompt,
           messages: modelMessages,

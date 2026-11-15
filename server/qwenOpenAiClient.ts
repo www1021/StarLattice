@@ -99,6 +99,8 @@ export type CompleteToolChatOptions = {
   maxTokens?: number;
   temperature?: number;
   tools?: QwenToolDefinition[];
+  /** 默认 auto；模型不肯调用工具时，可以提到 required 要求它必须选一个。 */
+  toolChoice?: "auto" | "required";
   onThinking?: (content: string) => void;
   signal?: AbortSignal;
   provider?: ModelProviderConfig;
@@ -463,6 +465,7 @@ export async function completeQwenToolChat({
   maxTokens = 2048,
   temperature = 0.2,
   tools = [],
+  toolChoice = "auto",
   onThinking,
   signal,
   provider
@@ -516,7 +519,7 @@ export async function completeQwenToolChat({
               ...(system ? [{ role: "system" as const, content: system }] : []),
               ...messages
             ],
-            ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {})
+            ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {})
           }),
           signal: requestSignal(signal)
         });
