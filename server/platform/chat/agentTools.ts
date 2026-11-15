@@ -27,6 +27,8 @@ export type ChatToolDescriptor = {
   definition: QwenToolDefinition;
   /** tool = 真正查数据；delegation = 把问题转交给另一个智能体。 */
   kind?: "tool" | "delegation";
+  /** delegation 专用：被转交的智能体，界面直接用它当这轮回复的署名。 */
+  targetAgent?: { id: string; name: string; avatar?: string };
 };
 
 export type ChatToolTrace = {
@@ -38,6 +40,11 @@ export type ChatToolTrace = {
   ok: boolean;
   latencyMs: number;
   summary: string;
+  /** 存档用：重开历史时还能分清「调插件」和「转交智能体」。 */
+  kind?: "tool" | "delegation";
+  /** 存档用：界面显示成「服务器/工具」。 */
+  serverName?: string;
+  toolName?: string;
 };
 
 /** 工具调用进度，用来在对话里显示「正在调用 / 已调用 / 未调用」。 */
@@ -50,6 +57,12 @@ export type ChatToolProgress = {
   latencyMs?: number;
   /** 界面上把「转交给某个智能体」和「调用插件」区分开。 */
   kind?: "tool" | "delegation";
+  /** 工具所属的服务器（MCP 连接名 / 插件名），界面显示成「服务器/工具」。 */
+  serverName?: string;
+  /** 工具的真实函数名，界面显示成「服务器/工具」。 */
+  toolName?: string;
+  /** 转交目标：界面直接把署名换成它，不显示「正在转交」这种过程文案。 */
+  targetAgent?: { id: string; name: string; avatar?: string };
 };
 
 export type ChatToolLoopResult = {
@@ -391,7 +404,7 @@ async function executeToolCall(
   const startedAt = Date.now();
 
   if (!descriptor) {
-    return failed(call, call.function.name, `模型请求了未声明的工具「${call.function.name}」。`, startedAt);
+    return failed(call, `模型请求了未声明的工具「${call.function.name}」。`, startedAt, undefined, onProgress);
   }
 
   const displayName = descriptor.tool.name || lastSegment(descriptor.toolId);
@@ -399,10 +412,10 @@ async function executeToolCall(
   if (!parsed.ok) {
     return failed(
       call,
-      displayName,
       `工具参数不是合法 JSON 对象：${parsed.error}`,
       startedAt,
-      descriptor.toolId
+      descriptor,
+      onProgress
     );
   }
 
@@ -410,13 +423,17 @@ async function executeToolCall(
     stage: "running",
     toolId: descriptor.toolId,
     name: displayName,
-    kind: descriptor.kind
+    kind: descriptor.kind,
+    targetAgent: descriptor.targetAgent
   });
 
   try {
     const result = await callTool(descriptor.tool, parsed.value);
     const text = truncate(result.text.trim() || "（工具没有返回文本内容）", MAX_TOOL_RESULT_CHARS);
     const summary = `${result.serverName} · ${result.tool}（${result.latencyMs} ms）`;
+    // 「平台插件」这类通用名对用户没信息量，用工具自己的名字更清楚。
+    const serverName = result.serverName === "平台插件" ? undefined : result.serverName;
+    const toolName = prettyToolName(result.tool, descriptor);
     const trace: ChatToolTrace = {
       id: call.id,
       toolId: descriptor.toolId,
@@ -424,7 +441,10 @@ async function executeToolCall(
       arguments: parsed.value,
       ok: !result.isError,
       latencyMs: result.latencyMs,
-      summary
+      summary,
+      kind: descriptor.kind,
+      serverName,
+      toolName
     };
     onProgress?.({
       stage: "done",
@@ -433,40 +453,62 @@ async function executeToolCall(
       ok: trace.ok,
       summary,
       latencyMs: result.latencyMs,
-      kind: descriptor.kind
+      kind: descriptor.kind,
+      targetAgent: descriptor.targetAgent,
+      serverName,
+      toolName
     });
     return { content: text, trace, delegated: result.delegatedAnswer };
   } catch (error) {
-    const message = describe(error);
-    return failed(call, displayName, message, startedAt, descriptor.toolId, parsed.value, onProgress);
+    return failed(call, describe(error), startedAt, descriptor, onProgress, parsed.value);
   }
 }
 
 function failed(
   call: QwenToolCall,
-  name: string,
   message: string,
   startedAt: number,
-  toolId = "",
-  args: Record<string, unknown> | string = call.function.arguments,
-  onProgress?: (progress: ChatToolProgress) => void
+  descriptor: ChatToolDescriptor | undefined,
+  onProgress?: (progress: ChatToolProgress) => void,
+  args: Record<string, unknown> | string = call.function.arguments
 ): { content: string; trace: ChatToolTrace } {
   const latencyMs = Date.now() - startedAt;
+  const name = descriptor?.tool.name || call.function.name;
   const summary = `工具调用失败：${truncate(message, 160)}`;
-  if (toolId) {
+  if (descriptor) {
     onProgress?.({
       stage: "done",
-      toolId,
+      toolId: descriptor.toolId,
       name,
       ok: false,
       summary,
-      latencyMs
+      latencyMs,
+      kind: descriptor.kind,
+      targetAgent: descriptor.targetAgent
     });
   }
   return {
     content: JSON.stringify({ error: message }),
-    trace: { id: call.id, toolId, name, arguments: args, ok: false, latencyMs, summary }
+    trace: {
+      id: call.id,
+      toolId: descriptor?.toolId ?? "",
+      name,
+      arguments: args,
+      ok: false,
+      latencyMs,
+      summary,
+      kind: descriptor?.kind
+    }
   };
+}
+
+/** 工具函数名：内置插件的 result.tool 是工具记录 id，取末段才是真名。 */
+function prettyToolName(raw: string, descriptor: ChatToolDescriptor): string {
+  const name = raw.trim();
+  if (!name || name.startsWith("plugin.") || name.startsWith("builtin.")) {
+    return lastSegment(descriptor.toolId);
+  }
+  return name;
 }
 
 export function parseToolArguments(raw: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {  const text = raw.trim();

@@ -425,6 +425,7 @@ test("预设路由直接执行转交，转交成功后不再叫主智能体改�
     }
   ]);
   const { fn, calls } = scriptedComplete([]);
+  const progress: ChatToolProgress[] = [];
 
   const result = await runChatToolLoop({
     system: "你是科研导师。",
@@ -440,6 +441,7 @@ test("预设路由直接执行转交，转交成功后不再叫主智能体改�
     },
     stopAfterDelegation: true,
     complete: fn,
+    onProgress: (item) => progress.push(item),
     callTool: async () =>
       mcpResult("（给模型看的版本）", {
         delegatedAnswer: {
@@ -456,4 +458,41 @@ test("预设路由直接执行转交，转交成功后不再叫主智能体改�
   assert.equal(result.calls[0].toolId, "agent://ytz-literature");
   assert.equal(result.delegatedAnswer?.agentName, "文献阅读Agent");
   assert.match(result.delegatedAnswer?.answer ?? "", /关键词金字塔/);
+  // 转交一开始就把目标智能体告诉前端：界面直接署名给文献阅读Agent，不显示「正在转交」。
+  const running = progress.find((item) => item.stage === "running");
+  assert.equal(running?.kind, "delegation");
+  assert.equal(running?.targetAgent?.name, "文献阅读Agent");
+});
+
+test("工具条拿到「服务器/工具」，平台插件这种通用名不往前端送", async () => {
+  const catalog = pluginCatalog();
+  const { fn } = scriptedComplete([
+    {
+      content: "",
+      toolCalls: [
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "literature", arguments: JSON.stringify({ search: "uav" }) }
+        }
+      ]
+    },
+    { content: "查到 1 篇。", toolCalls: [] }
+  ]);
+  const progress: ChatToolProgress[] = [];
+
+  await runChatToolLoop({
+    system: "你是文献助手。",
+    messages: [{ role: "user", content: "帮我查询无人机相关文献" }],
+    catalog,
+    complete: fn,
+    onProgress: (item) => progress.push(item),
+    // 内置插件统一报「平台插件」，这个名字对用户没信息量。
+    callTool: async () =>
+      mcpResult("1. UAV Pest Detection", { serverName: "平台插件", tool: "plugin.literature" })
+  });
+
+  const done = progress.find((item) => item.stage === "done");
+  assert.equal(done?.serverName, undefined);
+  assert.equal(done?.toolName, "literature");
 });

@@ -30,7 +30,7 @@
         "query": [
           {
             "name": "search",
-            "description": "检索关键词（标题/摘要/全文）",
+            "description": "检索关键词（标题/摘要/全文）。OpenAlex 以英文文献为主，请传英文关键词，例如 artificial intelligence",
             "type": "string",
             "required": true,
             "default": "",

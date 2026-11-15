@@ -31,8 +31,11 @@ export const DELEGATION_TOOL_PREFIX = "agent://";
 const MAX_QUESTION_CHARS = 1600;
 /** 回灌给主智能体的结果上限，和普通工具的结果上限保持同一量级。 */
 const MAX_RESULT_CHARS = 6000;
-/** 子智能体自己的工具轮次：2 轮够「检索一次 + 补充一次」，再多就是嵌套失控。 */
-const CHILD_MAX_ROUNDS = 2;
+/**
+ * 子智能体自己的工具轮次：3 轮刚好够「检索一次 → 结果不理想换英文关键词再查 → 作答」。
+ * 之前是 2 轮，中文查英文库那一下就把预算用光，只能拿垃圾结果硬答。
+ */
+const CHILD_MAX_ROUNDS = 3;
 
 export function isDelegationToolId(toolId: string): boolean {
   return toolId.startsWith(DELEGATION_TOOL_PREFIX);
@@ -84,6 +87,7 @@ export function buildDelegationCatalog(
       toolId: tool.id,
       tool,
       kind: "delegation",
+      targetAgent: { id: target.id, name: target.name, avatar: target.avatar },
       definition: {
         type: "function",
         function: {

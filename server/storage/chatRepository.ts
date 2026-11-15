@@ -24,6 +24,11 @@ export type StoredToolNote = {
   ok: boolean;
   latencyMs: number;
   summary?: string;
+  /** 存档用：区分「调插件」和「转交智能体」，历史里不要显示成转交过程。 */
+  kind?: "tool" | "delegation";
+  /** 存档用：界面显示成「服务器/工具」。 */
+  serverName?: string;
+  toolName?: string;
 };
 
 export type StoredArtifact = {

@@ -153,7 +153,19 @@ type ToolNote = {
   latencyMs?: number;
   /** delegation = 把问题转交给了另一个智能体，界面上用「转交」而不是「调用」。 */
   kind?: "tool" | "delegation";
+  /** 工具所属服务器（MCP 连接名 / 插件名），界面显示成「服务器/工具」。 */
+  serverName?: string;
+  /** 工具的真实函数名。 */
+  toolName?: string;
+  /** 转交目标：界面直接把署名换成它。 */
+  targetAgent?: { id: string; name: string; avatar?: string };
 };
+
+/** 工具条上的名字：「MCP 连接名 / 工具函数名」，没有服务器名时退回工具中文名。 */
+function toolLabelOf(note: ToolNote): string {
+  const tool = note.toolName || note.name;
+  return note.serverName ? `${note.serverName}/${tool}` : tool;
+}
 
 type GenerationThinkingStep = {
   id: string;
@@ -649,12 +661,18 @@ type ConversationDetail = ConversationSummary & {
   messages: Array<{
     role: "user" | "assistant";
     content: string;
+    /** 实际作答的智能体（转交后是专项智能体），历史里优先用它署名。 */
+    agentName?: string;
+    agentAvatar?: string;
     toolNotes?: Array<{
       toolId: string;
       name: string;
       ok: boolean;
       latencyMs: number;
       summary?: string;
+      kind?: "tool" | "delegation";
+      serverName?: string;
+      toolName?: string;
     }>;
   }>;
   artifacts: ChatArtifact[];
@@ -2253,7 +2271,7 @@ function Conversation({
                     <AgentAvatar
                       name={message.agentName}
                       avatar={message.agentAvatar}
-                      size={15}
+                      size={20}
                     />
                     {message.agentName}
                     {message.durationMs ? (
@@ -2280,35 +2298,32 @@ function Conversation({
                     ) : null}
                   </span>
                 ))}
-                {message.toolNotes?.map((note, index) => (
-                  <span
-                    className={`message-tool-row is-${note.stage} ${
-                      note.ok === false ? "is-failed" : ""
-                    }`}
-                    key={`${note.toolId}-${index}`}
-                    title={note.summary ?? note.name}
-                  >
-                    <Wrench size={11} strokeWidth={2.2} />
-                    <span>{note.name}</span>
-                    <small>
-                      {note.stage === "running"
-                        ? note.kind === "delegation"
-                          ? "正在转交"
-                          : "正在调用"
-                        : note.stage === "skipped"
-                          ? "未调用"
-                          : note.ok === false
-                            ? note.kind === "delegation"
-                              ? "转交失败"
-                              : "调用失败"
-                            : note.latencyMs
-                              ? `${(note.latencyMs / 1000).toFixed(1)}s`
-                              : note.kind === "delegation"
-                                ? "已转交"
-                                : "已返回"}
-                    </small>
-                  </span>
-                ))}
+                {message.toolNotes
+                  // 转交已经体现在署名上，不再单独显示一条「转交给 XX」的过程条。
+                  ?.filter((note) => note.kind !== "delegation")
+                  .map((note, index) => (
+                    <span
+                      className={`message-tool-row is-${note.stage} ${
+                        note.ok === false ? "is-failed" : ""
+                      }`}
+                      key={`${note.toolId}-${index}`}
+                      title={note.summary ?? note.name}
+                    >
+                      <Wrench size={12} strokeWidth={2.2} />
+                      <span>{toolLabelOf(note)}</span>
+                      <small>
+                        {note.stage === "running"
+                          ? "执行中"
+                          : note.stage === "skipped"
+                            ? "未调用"
+                            : note.ok === false
+                              ? "执行失败"
+                              : note.latencyMs
+                                ? `工具执行 · ${(note.latencyMs / 1000).toFixed(3)}s`
+                                : "工具执行"}
+                      </small>
+                    </span>
+                  ))}
               </div>
             ) : null}
             {message.lessonPlanState && message.lessonPlanState.phase !== "collecting" ? (
@@ -7097,6 +7112,9 @@ function handleChatStreamEvent(
     summary?: string;
     latencyMs?: number;
     kind?: "tool" | "delegation";
+    serverName?: string;
+    toolName?: string;
+    targetAgent?: { id?: string; name?: string; avatar?: string };
     workflowName?: string;
     agentId?: string;
     agentName?: string;
@@ -7188,7 +7206,17 @@ function handleChatStreamEvent(
       ok: payload.ok,
       summary: payload.summary,
       latencyMs: payload.latencyMs,
-      kind: payload.kind ?? (payload.toolId.startsWith("agent://") ? "delegation" : "tool")
+      kind: payload.kind ?? (payload.toolId.startsWith("agent://") ? "delegation" : "tool"),
+      serverName: typeof payload.serverName === "string" ? payload.serverName : undefined,
+      toolName: typeof payload.toolName === "string" ? payload.toolName : undefined,
+      targetAgent:
+        payload.targetAgent && typeof payload.targetAgent.name === "string"
+          ? {
+              id: String(payload.targetAgent.id ?? ""),
+              name: payload.targetAgent.name,
+              avatar: payload.targetAgent.avatar
+            }
+          : undefined
     });
   }
 
@@ -9200,34 +9228,45 @@ function App() {
         setActiveSection("counseling");
         return;
       }
-      const restoredMessages = conversation.messages.map((message, index) => ({
-        id: createId(`restored-${index}`),
-        role: message.role,
-        content: message.content,
-        status: "done" as const,
-        sourcePrompt: conversation.title,
-        // 历史里也标上是谁回答的，不然回看时只剩一大段无主文本。
-        agentName:
-          message.role === "assistant"
-            ? chatAgents.find((agent) => agent.id === conversation.agentId)?.name
-            : undefined,
-        agentAvatar:
-          message.role === "assistant"
-            ? chatAgents.find((agent) => agent.id === conversation.agentId)?.avatar
-            : undefined,
-        toolNotes: message.toolNotes?.map((note) => ({
-          toolId: note.toolId,
-          name: note.name,
-          stage: "done" as const,
-          ok: note.ok,
-          latencyMs: note.latencyMs,
-          summary: note.summary,
-          kind: note.toolId.startsWith("agent://") ? ("delegation" as const) : ("tool" as const)
-        })),
-        artifacts:
-          message.role === "assistant" && index === conversation.messages.length - 1
-            ? conversation.artifacts
-            : undefined,
+      const restoredMessages = conversation.messages.map((message, index) => {
+        // 历史里也标上是谁回答的。存档里记了成功的转交记录（toolId=agent://xxx），
+        // 说明那一轮是专项智能体答的，署名要还给它；否则退回会话绑定的智能体。
+        const delegatedNote = message.toolNotes?.find(
+          (note) => note.ok && (note.kind === "delegation" || note.toolId.startsWith("agent://"))
+        );
+        const delegatedName = delegatedNote?.name.replace(/^转交给/, "");
+        const conversationAgent = chatAgents.find((agent) => agent.id === conversation.agentId);
+        return {
+          id: createId(`restored-${index}`),
+          role: message.role,
+          content: message.content,
+          status: "done" as const,
+          sourcePrompt: conversation.title,
+          agentName:
+            message.role === "assistant"
+              ? message.agentName || delegatedName || conversationAgent?.name
+              : undefined,
+          agentAvatar:
+            message.role === "assistant"
+              ? message.agentAvatar || (delegatedName ? undefined : conversationAgent?.avatar)
+              : undefined,
+          toolNotes: message.toolNotes?.map((note) => ({
+            toolId: note.toolId,
+            name: note.name,
+            stage: "done" as const,
+            ok: note.ok,
+            latencyMs: note.latencyMs,
+            summary: note.summary,
+            serverName: note.serverName,
+            toolName: note.toolName,
+            kind:
+              note.kind ??
+              (note.toolId.startsWith("agent://") ? ("delegation" as const) : ("tool" as const))
+          })),
+          artifacts:
+            message.role === "assistant" && index === conversation.messages.length - 1
+              ? conversation.artifacts
+              : undefined,
         citations:
           message.role === "assistant" && index === conversation.messages.length - 1
             ? conversation.citations
@@ -9236,7 +9275,8 @@ function App() {
           message.role === "assistant" && index === conversation.messages.length - 1
             ? conversation.latestEvaluation
             : undefined
-      }));
+        };
+      });
       setConversationId(conversation.id);
       setMessages(restoredMessages);
       // 回到当初那个智能体，否则接着聊会突然换人格。
@@ -11058,6 +11098,27 @@ function App() {
           visibleTextStreamer.enqueue(content);
         },
         onTool(note) {
+          // 转交不单独占一行：直接把这条回复的署名换成目标 Agent，
+          // 学生看到的始终是「谁在答」，而不是「导师说要转给谁」。
+          if (note.kind === "delegation") {
+            const target = note.targetAgent;
+            const failed = note.stage === "done" && note.ok === false;
+            setMessages((current) =>
+              current.map((item) => {
+                if (item.id !== assistantId) {
+                  return item;
+                }
+                if (failed) {
+                  // 转交失败还是导师在答，署名得退回原来的智能体。
+                  return { ...item, agentName: activeAgent?.name, agentAvatar: activeAgent?.avatar };
+                }
+                return target
+                  ? { ...item, agentName: target.name, agentAvatar: target.avatar }
+                  : item;
+              })
+            );
+            return;
+          }
           setMessages((current) =>
             current.map((item) => {
               if (item.id !== assistantId) {

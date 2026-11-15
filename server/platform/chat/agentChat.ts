@@ -241,14 +241,19 @@ export function buildAgentChatSystemPrompt(
   }
   const toolNames = (options.toolNames ?? []).filter((item) => item.trim() !== "");
   if (toolNames.length > 0) {
-    parts.push(
-      [
-        `本轮可调用的工具：${toolNames.join("、")}。`,
-        "用户的问题需要真实文献、资料、数据或业务记录时，必须先调用合适的工具，再依据工具返回的内容作答；不能跳过工具直接给出具体条目。",
-        "工具结果是外部事实的唯一来源：查不到就直说查不到，不要用记忆里的内容顶上；工具报错时说明失败原因，不要假装成功。",
-        "拿到工具结果后，回答里要说明结论来自检索结果。"
-      ].join("\n")
-    );
+    const lines = [
+      `本轮可调用的工具：${toolNames.join("、")}。`,
+      "用户的问题需要真实文献、资料、数据或业务记录时，必须先调用合适的工具，再依据工具返回的内容作答；不能跳过工具直接给出具体条目。",
+      "工具结果是外部事实的唯一来源：查不到就直说查不到，不要用记忆里的内容顶上；工具报错时说明失败原因，不要假装成功。",
+      "拿到工具结果后，回答里要说明结论来自检索结果。"
+    ];
+    // 外文库不认中文关键词：原样把「人工智能」塞给 OpenAlex，回来的是一堆低质量条目甚至空结果。
+    if (toolNames.some((name) => /文献|检索|学术|OpenAlex|paper|search/i.test(name))) {
+      lines.push(
+        "检索外文文献库时，先把中文关键词翻成英文再传参（例如「人工智能」→ artificial intelligence、「大语言模型」→ large language model）。中文原样检索通常命中很少且质量差；结果为空或明显不相关时，换同义词或更宽的关键词再检索一次，仍然查不到再如实说明。"
+      );
+    }
+    parts.push(lines.join("\n"));
   }
   return parts.join("\n\n");
 }

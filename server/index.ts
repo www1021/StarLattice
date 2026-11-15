@@ -152,6 +152,7 @@ import { McpManager } from "./platform/mcp/mcpManager.js";
 import { runWorkflowTool, syncWorkflowTools } from "./platform/mcp/workflowTools.js";
 import { PluginService } from "./platform/plugins/pluginService.js";
 import { PLUGIN_TOOL_ENDPOINT_PREFIX, syncPluginTools } from "./platform/plugins/pluginTools.js";
+import { buildPluginResultText } from "./platform/plugins/resultText.js";
 import type { McpCallResult, ToolRecord } from "./platform/types.js";
 
 /** 插件/工具结果里文本字段的最大长度，超长截断（对话侧还有 6000 上限兜底）。 */
@@ -707,14 +708,19 @@ async function executeBuiltinTool(
   args: Record<string, unknown>
 ): Promise<McpCallResult> {
   const startedAt = Date.now();
-  const reply = (data: unknown, text?: string, isError = false) => {
+  const reply = (
+    data: unknown,
+    text?: string,
+    isError = false,
+    meta?: { serverName?: string; tool?: string }
+  ) => {
     const message =
       text ??
       (typeof data === "string" ? data : JSON.stringify(data, null, 2)).slice(0, MAX_TOOL_TEXT_LENGTH);
     return {
       serverId: "builtin",
-      serverName: "平台插件",
-      tool: tool.id,
+      serverName: meta?.serverName ?? "平台插件",
+      tool: meta?.tool ?? tool.id,
       latencyMs: Date.now() - startedAt,
       isError,
       content: [{ type: "text" as const, text: message }],
@@ -825,13 +831,31 @@ async function executeBuiltinTool(
         if (endpoint.startsWith(PLUGIN_TOOL_ENDPOINT_PREFIX)) {
           const pluginId = endpoint.slice(PLUGIN_TOOL_ENDPOINT_PREFIX.length);
           const result = await platformPlugins.test(pluginId, args);
-          const text = result.ok
-            ? result.preview?.trim() || "（插件执行成功，但没有返回文本）"
-            : `插件执行失败：${result.error ?? "未知错误"}`;
+          const plugin = platformPlugins.get(pluginId);
+          const pluginLabel = plugin?.name ?? tool.name.replace(/^插件：/, "");
+          const toolName =
+            typeof plugin?.config?.toolName === "string" && plugin.config.toolName.trim()
+              ? plugin.config.toolName.trim()
+              : "run";
+          if (!result.ok) {
+            const text = `插件执行失败：${result.error ?? "未知错误"}`;
+            return reply(text, text.slice(0, MAX_TOOL_TEXT_LENGTH), true, {
+              serverName: pluginLabel,
+              tool: toolName
+            });
+          }
+          // 不要把原始 JSON 的前 1200 字截断稿直接交给模型：字段会被拦腰砍断，
+          // 模型只能回一句「内容被截断了」。这里按题录字段投影，条数按预算取。
+          const text = buildPluginResultText({
+            detail: result.detail,
+            preview: result.preview,
+            query: readPluginQuery(args)
+          });
           return reply(
-            result.ok ? { preview: result.preview, detail: result.detail, request: result.request } : text,
+            { preview: result.preview, detail: result.detail, request: result.request },
             text.slice(0, MAX_TOOL_TEXT_LENGTH),
-            !result.ok
+            false,
+            { serverName: pluginLabel, tool: toolName }
           );
         }
         // 课堂与谈心系列直接复用训练工具的确定性入口。
@@ -845,6 +869,20 @@ async function executeBuiltinTool(
   } catch (error) {
     return reply(error instanceof Error ? error.message : String(error), undefined, true);
   }
+}
+
+/**
+ * 插件调用里的检索词：参数名由用户在插件编辑器里定，常见的几种都认一下，
+ * 用来判断「中文查英文库」并提醒模型换关键词。
+ */
+function readPluginQuery(args: Record<string, unknown>): string {
+  for (const key of ["search", "query", "q", "keyword", "keywords", "term"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
 }
 
 /**
@@ -2016,7 +2054,10 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               ok: progress.ok,
               summary: progress.summary,
               latencyMs: progress.latencyMs,
-              kind: progress.kind
+              kind: progress.kind,
+              serverName: progress.serverName,
+              toolName: progress.toolName,
+              targetAgent: progress.targetAgent
             });
           }
         });
@@ -2109,6 +2150,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         role: "assistant",
         content: assistantContent,
         // 留痕：重开这段会话时，气泡上方还能看到「查了哪些工具」。
+        // 转交记录也在里面（toolId 是 agent://xxx），前端据此把署名还给专项智能体。
         ...(chatToolCalls.length > 0
           ? {
               toolNotes: chatToolCalls.map((call) => ({
@@ -2116,7 +2158,10 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 name: call.name,
                 ok: call.ok,
                 latencyMs: call.latencyMs,
-                summary: call.summary
+                summary: call.summary,
+                kind: call.kind,
+                serverName: call.serverName,
+                toolName: call.toolName
               }))
             }
           : {})
