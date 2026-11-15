@@ -7,6 +7,7 @@ import {
   buildDelegationCatalog,
   delegationTargetId,
   isDelegationToolId,
+  pickDelegationRoute,
   runAgentDelegation
 } from "./agentDelegation.js";
 
@@ -156,6 +157,10 @@ test("转交真的会用目标智能体跑一次，并把结果回灌给主智�
   assert.equal(result.isError, false);
   assert.equal(result.tool, "文献阅读Agent");
   assert.match(result.text, /UAV Pest Detection/);
+  // 原话单独留一份，上层直接拿它当本轮回复，不再让主智能体改写。
+  assert.equal(result.delegatedAnswer?.agentName, "文献阅读Agent");
+  assert.equal(result.delegatedAnswer?.agentId, "ytz-literature");
+  assert.match(result.delegatedAnswer?.answer ?? "", /UAV Pest Detection/);
   // 子智能体拿到的是自己的提示词，不是主智能体的。
   assert.match(String(calls[0].system ?? ""), /文献阅读导师/);
   assert.match(calls[0].messages[0].content, /无人机病虫害识别/);
@@ -228,8 +233,7 @@ test("目标不存在、已停用、转给自己或没给问题时都返回失�
   assert.match(empty.text, /没有给出问题/);
 });
 
-test("子智能体抛错时把原因带回去，主智能体不会以为查过了", async () => {
-  const literature = agentRecord({ id: "ytz-literature", name: "文献阅读Agent" });
+test("子智能体抛错时把原因带回去，主智能体不会以为查过了", async () => {  const literature = agentRecord({ id: "ytz-literature", name: "文献阅读Agent" });
   const result = await runAgentDelegation({
     host: agentRecord(),
     targetId: "ytz-literature",
@@ -246,4 +250,78 @@ test("子智能体抛错时把原因带回去，主智能体不会以为查过�
   assert.equal(result.isError, true);
   assert.match(result.text, /上游模型 429/);
   assert.match(result.text, /不要.*编造/);
+});
+
+/** 研途引航那套五个专项，名字和定位照抄共享注册表。 */
+function researchTeam() {
+  return buildDelegationCatalog([
+    agentRecord({
+      id: "ytz-planning",
+      name: "科研规划Agent",
+      role: "科研规划",
+      description: "制定科研计划、拆解任务、安排进度、选题"
+    }),
+    agentRecord({
+      id: "ytz-literature",
+      name: "文献阅读Agent",
+      role: "文献阅读",
+      description: "阅读论文、分析文献、寻找研究现状与空白"
+    }),
+    agentRecord({
+      id: "ytz-experiment",
+      name: "实验设计Agent",
+      role: "实验设计",
+      description: "设计实验方案、确定变量与评价指标"
+    }),
+    agentRecord({
+      id: "ytz-defense",
+      name: "开题答辩Agent",
+      role: "开题答辩",
+      description: "开题报告、模拟导师提问、答辩应对"
+    }),
+    agentRecord({
+      id: "ytz-growth",
+      name: "科研成长Agent",
+      role: "科研成长",
+      description: "成长计划、心态调整、能力分析"
+    })
+  ]);
+}
+
+test("问文献这类归属明确的问题，直接路由给文献阅读Agent", () => {
+  const route = pickDelegationRoute("查询机械设计相关文献", researchTeam());
+
+  assert.ok(route);
+  assert.equal(route.descriptor.toolId, "agent://ytz-literature");
+  assert.equal(route.call.function.name, "delegate_ytz-literature");
+  assert.deepEqual(JSON.parse(route.call.function.arguments), {
+    question: "查询机械设计相关文献"
+  });
+});
+
+test("五类专项各按领域词路由，工具名与目标一一对应", () => {
+  const team = researchTeam();
+  const cases: Array<[string, string]> = [
+    ["下周要开题答辩，导师会问什么", "agent://ytz-defense"],
+    ["实验里的变量和对照组怎么定", "agent://ytz-experiment"],
+    ["我很焦虑，好几次想放弃科研", "agent://ytz-growth"],
+    ["帮我做个这学期的科研计划", "agent://ytz-planning"]
+  ];
+
+  for (const [question, expected] of cases) {
+    const route = pickDelegationRoute(question, team);
+    assert.equal(route?.descriptor.toolId, expected, question);
+  }
+});
+
+test("归属不明、只有背景词或者两边打平时不硬猜，交回模型", () => {
+  const team = researchTeam();
+
+  assert.equal(pickDelegationRoute("你好", team), undefined);
+  assert.equal(pickDelegationRoute("随便聊聊", team), undefined);
+  // 只有「科研」这个背景词，没落到任何一类任务上。
+  assert.equal(pickDelegationRoute("我想做科研但不知道怎么开始", team), undefined);
+  // 文献和答辩都命中，硬猜不如让模型判断。
+  assert.equal(pickDelegationRoute("开题要查文献", team), undefined);
+  assert.equal(pickDelegationRoute("查询机械设计相关文献", []), undefined);
 });

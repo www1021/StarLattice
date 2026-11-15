@@ -13,7 +13,8 @@
 
 import {
   completeQwenToolChat,
-  type ModelProviderConfig
+  type ModelProviderConfig,
+  type QwenToolCall
 } from "../../qwenOpenAiClient.js";
 import type { AgentRecord, McpCallResult, ToolRecord } from "../types.js";
 import { buildAgentChatSystemPrompt } from "./agentChat.js";
@@ -121,6 +122,127 @@ export function buildChatToolsWithDelegation(input: {
   return [...base, ...buildDelegationCatalog(targets)];
 }
 
+/**
+ * 问题归属判定：明显属于某个专项的问题，由后端直接路由过去。
+ *
+ * 只靠提示词让模型「记得转交」并不可靠——它会先追问年级、专业、方向，
+ * 把一句「查询机械设计相关文献」拖成好几轮信息收集。这里用目标智能体的名字
+ * 算一次归属分，够高就直接转交；不够高才交回模型判断。
+ */
+const DELEGATION_DOMAIN_HINTS: Array<{ scope: string[]; words: string[] }> = [
+  {
+    scope: ["文献", "论文", "综述", "阅读"],
+    words: [
+      "文献",
+      "论文",
+      "综述",
+      "检索",
+      "参考文献",
+      "引文",
+      "期刊",
+      "DOI",
+      "doi",
+      "研究现状",
+      "研究空白",
+      "看不懂",
+      "读不懂"
+    ]
+  },
+  {
+    scope: ["规划", "选题", "计划"],
+    words: ["规划", "计划", "时间线", "进度", "里程碑", "选题", "排期", "怎么安排", "研究什么"]
+  },
+  {
+    scope: ["实验"],
+    words: ["实验", "变量", "对照", "样本", "指标", "数据分析", "验证假设", "复现"]
+  },
+  {
+    scope: ["开题", "答辩"],
+    words: ["开题", "答辩", "评委", "PPT", "ppt", "汇报", "质疑", "模拟"]
+  },
+  {
+    scope: ["成长", "心态"],
+    words: ["焦虑", "心态", "放弃", "坚持", "成长", "习惯", "沟通", "导师不管", "发论文", "投稿"]
+  }
+];
+
+/** 命中一个领域词算 3 分，名字里的双字词命中算 2 分；没有领域词就一律不路由。 */
+const DELEGATION_ROUTE_THRESHOLD = 3;
+
+export type DelegationRoute = {
+  descriptor: ChatToolDescriptor;
+  /** 已经构造好的工具调用，直接当首轮请求用，不用再问模型。 */
+  call: QwenToolCall;
+};
+
+/**
+ * 给这句话找一个对口的专项智能体。找不到或两个专项分数打平时返回 undefined，
+ * 交给模型自己判断——横跨两边的硬猜比如实说「我不确定」更糟。
+ */
+export function pickDelegationRoute(
+  question: string,
+  catalog: ChatToolDescriptor[]
+): DelegationRoute | undefined {
+  const text = question.trim();
+  if (text.length < 2) {
+    return undefined;
+  }
+
+  const scored = catalog
+    .filter((item) => item.kind === "delegation")
+    .map((item) => ({ item, ...scoreDelegationFit(item, text) }))
+    // 只有名字撞上（比如都带「科研」）不算数：那多半是背景词，不是任务归属。
+    .filter((entry) => entry.domainHits > 0 && entry.score >= DELEGATION_ROUTE_THRESHOLD)
+    .sort((left, right) => right.score - left.score);
+  if (scored.length === 0) {
+    return undefined;
+  }
+  if (scored.length > 1 && scored[1].score === scored[0].score) {
+    return undefined;
+  }
+
+  const { item } = scored[0];
+  return {
+    descriptor: item,
+    call: {
+      id: `route-${item.functionName}`,
+      type: "function",
+      function: {
+        name: item.functionName,
+        arguments: JSON.stringify({ question: text.slice(0, MAX_QUESTION_CHARS) })
+      }
+    }
+  };
+}
+
+/** 只用智能体名字判断归属：描述里人人都写着「论文、规划、实验」，拿它判分会互相串台。 */
+function scoreDelegationFit(
+  descriptor: ChatToolDescriptor,
+  question: string
+): { score: number; domainHits: number } {
+  const name = descriptor.tool.name.replace(/^转交给/, "");
+  let domainHits = 0;
+  for (const hint of DELEGATION_DOMAIN_HINTS) {
+    if (!hint.scope.some((keyword) => name.includes(keyword))) {
+      continue;
+    }
+    domainHits += hint.words.filter((word) => question.includes(word)).length;
+  }
+  const nameHits = cjkBigrams(name).filter((token) => question.includes(token)).length;
+  return { score: domainHits * 3 + nameHits * 2, domainHits };
+}
+
+function cjkBigrams(text: string): string[] {
+  const tokens: string[] = [];
+  for (let index = 0; index < text.length - 1; index += 1) {
+    const pair = text.slice(index, index + 2);
+    if (/^[\u4e00-\u9fa5]{2}$/.test(pair)) {
+      tokens.push(pair);
+    }
+  }
+  return tokens;
+}
+
 /** 执行一次转交，返回和普通工具一致的 McpCallResult，方便直接回灌。 */
 export async function runAgentDelegation(input: {
   host: AgentRecord;
@@ -192,7 +314,14 @@ export async function runAgentDelegation(input: {
       latencyMs: Date.now() - startedAt,
       isError: false,
       content: [{ type: "text", text }],
-      text: `${text}${toolNote}`
+      text: `${text}${toolNote}`,
+      // 原话单独留一份：主智能体改写只会把专业答复磨成导师腔，直接用它当回复更对。
+      delegatedAnswer: {
+        agentId: target.id,
+        agentName: target.name,
+        avatar: target.avatar,
+        answer: text
+      }
     };
   } catch (error) {
     return fail(

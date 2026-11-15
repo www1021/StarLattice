@@ -78,6 +78,7 @@ import {
   buildChatToolsWithDelegation,
   delegationTargetId,
   isDelegationToolId,
+  pickDelegationRoute,
   runAgentDelegation
 } from "./platform/chat/agentDelegation.js";
 import { AuthStore } from "./auth/store.js";
@@ -1975,10 +1976,16 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       if (chatToolCatalog.length > 0) {
         // 挂了工具就不走流式：工具执行期间没有正文可吐，
         // 「先调完工具、再一次性给结论」比「先吐一半、回头再补」更可信。
+        // 归属明确的问题（比如问文献）先做一次路由，直接交给对口专项智能体，
+        // 不给模型「先反问年级专业」的机会。
+        const route = pickDelegationRoute(getLastUserText(modelMessages), chatToolCatalog);
         const toolRun = await runChatToolLoop({
           system: systemPrompt,
           messages: toToolChatMessages(modelMessages),
           catalog: chatToolCatalog,
+          presetToolCall: route?.call,
+          // 转交成功后由专项智能体作答，主智能体不再二次改写。
+          stopAfterDelegation: true,
           callTool: async (tool, args) => {
             if (isDelegationToolId(tool.id) && chatAgent) {
               const question = typeof args.question === "string" ? args.question : "";
@@ -2014,21 +2021,32 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
           }
         });
         chatToolCalls = toolRun.calls;
-        assistantContent = toolRun.content;
-        writeSse(response, "delta", { content: toolRun.content });
+        if (toolRun.delegatedAnswer) {
+          // 正文用专项智能体的原话，徽标也换成它：学生问文献，看到的就是文献阅读Agent的答复。
+          assistantContent = toolRun.delegatedAnswer.answer;
+          writeSse(response, "delegated", {
+            agentId: toolRun.delegatedAnswer.agentId,
+            agentName: toolRun.delegatedAnswer.agentName,
+            agentAvatar: toolRun.delegatedAnswer.avatar
+          });
+        } else {
+          assistantContent = toolRun.content;
+        }
+        writeSse(response, "delta", { content: assistantContent });
       } else {
-        // 智能体没绑定可用工具、用户却在要文献/数据时，先说清楚「本轮不会调用插件」，
+        // 智能体真的一个工具都没配、用户却在要文献/数据时，先说清楚「本轮不会调用插件」，
         // 否则模型会顺着提示词演一句「我为你启动 XX Agent」，再凭记忆编一串带 DOI 的文献。
-        if (chatAgent) {
+        // 配了工具但目标不可用（比如子 Agent 被停用）不算这一种，别误报「未绑定」。
+        if (chatAgent && chatAgent.tools.length === 0) {
           const lastUser = [...modelMessages].reverse().find((message) => message.role === "user");
           const lastText = lastUser && typeof lastUser.content === "string" ? lastUser.content : "";
           if (needsExternalEvidence(lastText)) {
             writeSse(response, "tool", {
               toolId: "no-tool-bound",
-              name: "当前智能体未绑定检索工具",
+              name: "未配置检索工具",
               stage: "skipped",
               summary:
-                "这个智能体没有可用的检索或数据工具，本轮不会调用插件；需要真实文献请切换到挂了插件的专项智能体。"
+                "这个智能体没有可用的检索或数据工具，本轮回答不是查出来的；需要真实文献请换到绑了检索工具的智能体。"
             });
           }
         }
@@ -4211,6 +4229,7 @@ function writeSse(
     | "citation"
     | "evaluation"
     | "tool"
+    | "delegated"
     | "done"
     | "error",
   data: unknown

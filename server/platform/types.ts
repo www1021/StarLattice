@@ -990,6 +990,16 @@ export type McpCallResult = {
   content: unknown[];
   text: string;
   structuredContent?: unknown;
+  /**
+   * 智能体转交专有：目标智能体的独立答复。
+   * text 是给模型看的（带工具备注），answer 是原话，可以直接当本轮回复。
+   */
+  delegatedAnswer?: {
+    agentId: string;
+    agentName: string;
+    avatar?: string;
+    answer: string;
+  };
 };
 
 export type PluginType = "api" | "code";

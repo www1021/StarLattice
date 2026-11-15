@@ -58,6 +58,19 @@ export type ChatToolLoopResult = {
   calls: ChatToolTrace[];
   /** 模型始终不肯调用工具时，是否由后端兜底强制执行过一次。 */
   forcedToolCall: boolean;
+  /**
+   * 本轮由专项智能体直接作答：上层拿它当回复，不再让主智能体二次改写。
+   * 有值时 content 可能为空。
+   */
+  delegatedAnswer?: DelegatedAnswer;
+};
+
+/** 专项智能体的独立答复。 */
+export type DelegatedAnswer = {
+  agentId: string;
+  agentName: string;
+  avatar?: string;
+  answer: string;
 };
 
 const DEFAULT_MAX_ROUNDS = 4;
@@ -228,6 +241,13 @@ export async function runChatToolLoop(input: {
   signal?: AbortSignal;
   /** 关掉后完全依赖模型自觉，主要用于回归测试与特殊模型。 */
   forceToolsForExternalEvidence?: boolean;
+  /**
+   * 首轮不问模型，直接执行这次调用。
+   * 问题明显属于某个专项智能体时由后端路由，省一次往返，也不给模型「先反问一通」的机会。
+   */
+  presetToolCall?: QwenToolCall;
+  /** 转交成功后立刻收尾，把这轮交给专项智能体作答。 */
+  stopAfterDelegation?: boolean;
   onProgress?: (progress: ChatToolProgress) => void;
 }): Promise<ChatToolLoopResult> {
   const complete = input.complete ?? completeQwenToolChat;
@@ -239,6 +259,7 @@ export async function runChatToolLoop(input: {
   let rounds = 0;
   let forcedToolCall = false;
   let forceAttempted = false;
+  let delegatedAnswer: DelegatedAnswer | undefined;
 
   for (let round = 1; round <= maxRounds; round += 1) {
     rounds = round;
@@ -251,11 +272,16 @@ export async function runChatToolLoop(input: {
       tools,
       signal: input.signal
     };
-    let response = await complete({ ...base, messages });
+    const preset = round === 1 ? input.presetToolCall : undefined;
+    let response: ToolChatResult = preset
+      ? { content: "", toolCalls: [preset] }
+      : await complete({ ...base, messages });
 
     // 首轮模型一个工具都不调、而用户明显在要真实资料时，逐级兜底：
     // required → 强制提示词 → 后端直接构造一次调用。这样「挂了插件却像纯 AI 回答」不会再发生。
+    // 预设调用不需要这套兜底：那本来就绕过了模型。
     if (
+      !preset &&
       round === 1 &&
       !forceAttempted &&
       response.toolCalls.length === 0 &&
@@ -321,10 +347,19 @@ export async function runChatToolLoop(input: {
         tool_call_id: execution.trace.id,
         content: execution.content
       });
+      // 转交成功就不再让主智能体重写：学生问到文献，答复就该是文献阅读Agent的说法。
+      if (execution.delegated && input.stopAfterDelegation) {
+        delegatedAnswer = execution.delegated;
+        break;
+      }
+    }
+
+    if (delegatedAnswer) {
+      break;
     }
   }
 
-  if (!content.trim()) {
+  if (!content.trim() && !delegatedAnswer) {
     // 撞到轮次上限还只有 tool_calls：关掉工具再要一次结论，避免空响应。
     const final = await complete({
       system: input.system,
@@ -339,11 +374,11 @@ export async function runChatToolLoop(input: {
     content = final.content;
   }
 
-  if (!content.trim()) {
+  if (!content.trim() && !delegatedAnswer) {
     throw new UpstreamModelError("智能体调用工具后没有给出答复，请换个问法再试一次。");
   }
 
-  return { content, rounds, calls, forcedToolCall };
+  return { content, rounds, calls, forcedToolCall, delegatedAnswer };
 }
 
 async function executeToolCall(
@@ -351,7 +386,7 @@ async function executeToolCall(
   catalog: ChatToolDescriptor[],
   callTool: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>,
   onProgress?: (progress: ChatToolProgress) => void
-): Promise<{ content: string; trace: ChatToolTrace }> {
+): Promise<{ content: string; trace: ChatToolTrace; delegated?: DelegatedAnswer }> {
   const descriptor = catalog.find((item) => item.functionName === call.function.name);
   const startedAt = Date.now();
 
@@ -400,7 +435,7 @@ async function executeToolCall(
       latencyMs: result.latencyMs,
       kind: descriptor.kind
     });
-    return { content: text, trace };
+    return { content: text, trace, delegated: result.delegatedAnswer };
   } catch (error) {
     const message = describe(error);
     return failed(call, displayName, message, startedAt, descriptor.toolId, parsed.value, onProgress);

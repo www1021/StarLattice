@@ -137,6 +137,13 @@ type TraceAgent = {
   agentId?: string;
 };
 
+/** 后端把问题转交给专项智能体后，告诉前端这轮到底是谁在说话。 */
+type DelegatedAnswerInfo = {
+  agentId?: string;
+  agentName: string;
+  agentAvatar?: string;
+};
+
 type ToolNote = {
   toolId: string;
   name: string;
@@ -6968,6 +6975,8 @@ async function readChatStream(
     onTool?: (note: ToolNote) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
+    /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
+    onDelegated?: (delegated: DelegatedAnswerInfo) => void;
     onDone: (payload: StreamDonePayload) => void;
     onError: (message: string) => void;
   }
@@ -7035,6 +7044,8 @@ function handleChatStreamEvent(
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
+    /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
+    onDelegated?: (delegated: DelegatedAnswerInfo) => void;
     onDone: (payload: StreamDonePayload) => void;
     onError: (message: string) => void;
   }
@@ -7087,6 +7098,9 @@ function handleChatStreamEvent(
     latencyMs?: number;
     kind?: "tool" | "delegation";
     workflowName?: string;
+    agentId?: string;
+    agentName?: string;
+    agentAvatar?: string;
     trace?: {
       agents?: Array<{
         name?: string;
@@ -7147,6 +7161,18 @@ function handleChatStreamEvent(
         latencyMs: item.latencyMs
       }));
     handlers.onTrace?.({ agents, tools });
+  }
+
+  if (
+    streamEvent.event === "delegated" &&
+    typeof payload.agentName === "string" &&
+    payload.agentName.trim()
+  ) {
+    handlers.onDelegated?.({
+      agentId: payload.agentId,
+      agentName: payload.agentName.trim(),
+      agentAvatar: payload.agentAvatar
+    });
   }
 
   if (
@@ -11070,6 +11096,20 @@ function App() {
             current.map((message) =>
               message.id === assistantId && !message.agentName
                 ? { ...message, agentName: workflowName }
+                : message
+            )
+          );
+        },
+        onDelegated(delegated) {
+          // 这一轮是专项智能体在说话：徽标换成它，别让导师占功。
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    agentName: delegated.agentName,
+                    agentAvatar: delegated.agentAvatar
+                  }
                 : message
             )
           );

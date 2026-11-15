@@ -405,3 +405,55 @@ test("闲聊不会被硬塞一次检索", async () => {
   assert.equal(result.forcedToolCall, false);
   assert.equal(result.content, "你好，有什么可以帮你？");
 });
+
+test("预设路由直接执行转交，转交成功后不再叫主智能体改写", async () => {
+  const catalog = buildDelegationCatalog([
+    {
+      id: "ytz-literature",
+      name: "文献阅读Agent",
+      version: 5,
+      role: "文献阅读",
+      prompt: "你是文献阅读导师。",
+      tools: [],
+      model: "platform-default",
+      capabilities: [],
+      memory: {},
+      enabled: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      description: "检索、精读、综述"
+    }
+  ]);
+  const { fn, calls } = scriptedComplete([]);
+
+  const result = await runChatToolLoop({
+    system: "你是科研导师。",
+    messages: [{ role: "user", content: "查询机械设计相关文献" }],
+    catalog,
+    presetToolCall: {
+      id: "route-delegate_ytz-literature",
+      type: "function",
+      function: {
+        name: "delegate_ytz-literature",
+        arguments: JSON.stringify({ question: "查询机械设计相关文献" })
+      }
+    },
+    stopAfterDelegation: true,
+    complete: fn,
+    callTool: async () =>
+      mcpResult("（给模型看的版本）", {
+        delegatedAnswer: {
+          agentId: "ytz-literature",
+          agentName: "文献阅读Agent",
+          answer: "先建关键词金字塔，再按综述种子法往下追。"
+        }
+      })
+  });
+
+  // 路由命中就不该再问模型一次，省掉一轮往返和它那段「你大几」。
+  assert.equal(calls.length, 0);
+  assert.equal(result.content, "");
+  assert.equal(result.calls[0].toolId, "agent://ytz-literature");
+  assert.equal(result.delegatedAnswer?.agentName, "文献阅读Agent");
+  assert.match(result.delegatedAnswer?.answer ?? "", /关键词金字塔/);
+});

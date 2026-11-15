@@ -127,6 +127,34 @@ test("播种的共享智能体对全员可见，部署者可改且保持共享�
   });
 });
 
+test("共享智能体版本提高时同步提示词与工具绑定，不改本地展示字段", () => {
+  withStore((store) => {
+    const seed = {
+      id: "ytz-guide",
+      name: "研途引航",
+      description: "共享示例",
+      role: "科研导师",
+      prompt: "旧提示词",
+      model: "platform-default",
+      tools: [] as string[],
+      enabled: true,
+      version: 2
+    };
+    store.seedSharedChatAgents([seed]);
+
+    // 代码里升到 v5：旧库必须跟着换提示词和转交工具，否则新逻辑永远跑在旧配置上。
+    store.seedSharedChatAgents([
+      { ...seed, prompt: "新提示词", tools: ["agent://ytz-literature"], version: 5 }
+    ]);
+
+    const agent = store.getAgent("ytz-guide");
+    assert.equal(agent?.version, 5);
+    assert.equal(agent?.prompt, "新提示词");
+    assert.deepEqual(agent?.tools, ["agent://ytz-literature"]);
+    assert.equal(agent?.name, "研途引航");
+  });
+});
+
 test("系统提示词：有工具必须先调用，没工具不许编文献也不能假装启动子 Agent", () => {
   const agent = {
     id: "test-agent",
