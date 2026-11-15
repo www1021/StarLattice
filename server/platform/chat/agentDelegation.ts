@@ -20,8 +20,11 @@ import type { AgentRecord, McpCallResult, ToolRecord } from "../types.js";
 import { buildAgentChatSystemPrompt } from "./agentChat.js";
 import {
   buildChatToolCatalog,
+  buildSearchToolCall,
+  needsExternalEvidence,
   runChatToolLoop,
-  type ChatToolDescriptor
+  type ChatToolDescriptor,
+  type ChatToolProgress
 } from "./agentTools.js";
 
 /** 转交工具在配置里的写法：agent://ytz-literature。 */
@@ -258,6 +261,8 @@ export async function runAgentDelegation(input: {
   resolveModel: (id: string) => { model?: string; provider?: ModelProviderConfig };
   complete?: typeof completeQwenToolChat;
   signal?: AbortSignal;
+  /** 把子智能体的工具进度也发到前端，否则文献检索这条链路全程看不到工具调用。 */
+  onProgress?: (progress: ChatToolProgress) => void;
 }): Promise<McpCallResult> {
   const startedAt = Date.now();
   const question = input.question.trim().slice(0, MAX_QUESTION_CHARS);
@@ -290,10 +295,25 @@ export async function runAgentDelegation(input: {
   // 子智能体只拿自己的工具：这里把 agent:// 过滤掉，转交只有一层。
   const childToolIds = target.tools.filter((id) => !isDelegationToolId(id));
   const childCatalog = buildChatToolCatalog(childToolIds, input.getTool);
-  const system = buildAgentChatSystemPrompt(target, {
+  const baseSystem = buildAgentChatSystemPrompt(target, {
     toolNames: childCatalog.map((item) => item.tool.name || item.toolId)
   });
+  // 中文问题若让模型自己决定，它常先用中文原话查 -> 命中差 -> 换英文重查，白跑一轮（OpenAlex 国外站，一轮好几秒）。
+  // 直接把「先用英文检索词」钉进 system，确保第一轮就查对，从链路上砍掉重试。
+  const system = /[\u4e00-\u9fa5]/.test(question)
+    ? `${baseSystem}\n\n【检索语言硬要求】检索工具只接受英文关键词。调用前必须先把用户问题里的中文翻成标准英文学术术语（例如「无人机视觉监控」→ UAV visual surveillance），直接用翻译后的英文检索，禁止把中文原话塞进检索词。`
+    : baseSystem;
   const picked = input.resolveModel(target.model);
+
+  // 英文检索词可以直接 preset 首查，省掉「模型决定调哪个工具」的一整轮往返。
+  // 中文不能这么做：OpenAlex 以英文为主，中文原话直接查命中很差，得先让模型翻译——
+  // 那种情况保留原来的模型决策路径，结果文本里也已有「换英文」提示。
+  const presetSearch =
+    needsExternalEvidence(question) &&
+    !/[\u4e00-\u9fa5]/.test(question) &&
+    childCatalog.length > 0
+      ? buildSearchToolCall(question, childCatalog, "child-preset")
+      : null;
 
   try {
     const result = await runChatToolLoop({
@@ -305,7 +325,9 @@ export async function runAgentDelegation(input: {
       model: picked.model,
       provider: picked.provider,
       maxRounds: CHILD_MAX_ROUNDS,
-      signal: input.signal
+      signal: input.signal,
+      presetToolCall: presetSearch ?? undefined,
+      onProgress: input.onProgress
     });
     const text = truncate(result.content.trim(), MAX_RESULT_CHARS);
     const toolNote = result.calls.length

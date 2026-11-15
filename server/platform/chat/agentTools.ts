@@ -94,7 +94,7 @@ const MAX_TOOL_RESULT_CHARS = 6000;
  * 闲聊（「你好」「谢谢」）不该被硬塞一次检索。
  */
 const EXTERNAL_EVIDENCE_PATTERN =
-  /文献|论文|检索|搜索|查询|查找|查一下|找几篇|资料|数据|最新|现状|进展|引用|DOI|doi|期刊|年份|事实|统计|报告|新闻|知识库|证据|来源|参考|有哪些研究|研究现状/;
+  /文献|论文|检索|搜索|查询|查找|查一下|找几篇|资料|数据|最新|现状|进展|引用|期刊|年份|事实|统计|报告|新闻|知识库|证据|来源|参考|有哪些研究|研究现状|\bpapers?\b|\bliterature\b|\barticles?\b|\bsearch\b|\bquer(?:y|ies)\b|\bcitations?\b|\bpublications?\b|related work|state[- ]of[- ]the[- ]art|doi/i;
 
 export function needsExternalEvidence(text: string): boolean {
   return EXTERNAL_EVIDENCE_PATTERN.test(text);
@@ -109,6 +109,42 @@ const FORCE_TOOL_SYSTEM_HINT = [
 ].join("\n");
 
 /**
+ * 从工具目录里挑出最像「检索」的工具，把 query 填进它的检索词参数，直接构造一次调用。
+ *
+ * 两处复用：
+ * - 模型不肯调工具时的兜底（见 buildForcedToolCall）；
+ * - 转交后子智能体首轮直接检索，省掉「模型决定调哪个工具」的一次完整模型往返。
+ *
+ * 配了转交工具时优先转给对口专项智能体：它带自己的检索工具和领域提示词，
+ * 比主智能体临时客串检索更准。子智能体的目录里没有转交工具，自然退回到它自己的检索工具。
+ */
+export function buildSearchToolCall(
+  query: string,
+  catalog: ChatToolDescriptor[],
+  callIdPrefix: string
+): QwenToolCall | null {
+  const match = (pool: ChatToolDescriptor[]) =>
+    pool.find((item) =>
+      /检索|搜索|查询|文献|查找|资料|研究现状|search|query/i.test(
+        `${item.tool.name} ${item.tool.description || ""}`
+      )
+    );
+  const delegations = catalog.filter((item) => item.kind === "delegation");
+  const descriptor = match(delegations) ?? match(catalog) ?? delegations[0] ?? catalog[0];
+  if (!descriptor) {
+    return null;
+  }
+  return {
+    id: `${callIdPrefix}-${descriptor.functionName}`,
+    type: "function",
+    function: {
+      name: descriptor.functionName,
+      arguments: JSON.stringify(forcedToolArguments(descriptor, query))
+    }
+  };
+}
+
+/**
  * 最后一道兜底：模型完全不支持 function calling 时，直接按用户输入构造一次真实调用。
  * 只在「明显需要外部资料 + 有可用工具」时启用，避免把闲聊也变成一次无谓的检索。
  */
@@ -121,28 +157,7 @@ function buildForcedToolCall(
   if (!lastUser || !needsExternalEvidence(lastUser.content)) {
     return null;
   }
-  // 配了转交工具时先转给对口的专项智能体：它带着自己的检索工具和领域提示词，
-  // 比主智能体临时客串检索更准，也符合「导师不亲自查库」的分工。
-  const match = (pool: ChatToolDescriptor[]) =>
-    pool.find((item) =>
-      /检索|搜索|查询|文献|查找|资料|研究现状|search|query/i.test(
-        `${item.tool.name} ${item.tool.description || ""}`
-      )
-    );
-  const delegations = catalog.filter((item) => item.kind === "delegation");
-  const descriptor =
-    match(delegations) ?? match(catalog) ?? delegations[0] ?? catalog[0];
-  if (!descriptor) {
-    return null;
-  }
-  return {
-    id: `forced-${round}-${descriptor.functionName}`,
-    type: "function",
-    function: {
-      name: descriptor.functionName,
-      arguments: JSON.stringify(forcedToolArguments(descriptor, lastUser.content))
-    }
-  };
+  return buildSearchToolCall(lastUser.content, catalog, `forced-${round}`);
 }
 
 /** 按工具 schema 找出最像「检索词」的字符串参数，把用户原话填进去。 */

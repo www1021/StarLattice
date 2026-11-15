@@ -128,20 +128,21 @@ test("转交真的会用目标智能体跑一次，并把结果回灌给主智�
     tools: ["plugin.pl-1"]
   });
   const tools = new Map([["plugin.pl-1", toolRecord()]]);
+  // 中文问题留给模型先翻英文再查：第一轮调用工具，第二轮拿题录作答。
   const { fn, calls } = scriptedComplete([
-    { content: "", toolCalls: [] },
     {
       content: "",
       toolCalls: [
         {
           id: "child-call-1",
           type: "function",
-          function: { name: "pl-1", arguments: JSON.stringify({ search: "无人机病虫害识别" }) }
+          function: { name: "pl-1", arguments: JSON.stringify({ search: "UAV pest detection" }) }
         }
       ]
     },
     { content: "找到 3 篇：UAV Pest Detection（2023）等。", toolCalls: [] }
   ]);
+  const toolCalls: Array<{ tool: string; args: Record<string, unknown> }> = [];
 
   const result = await runAgentDelegation({
     host: agentRecord(),
@@ -149,7 +150,10 @@ test("转交真的会用目标智能体跑一次，并把结果回灌给主智�
     question: "帮我查无人机病虫害识别的文献",
     getAgent: (id) => (id === literature.id ? literature : undefined),
     getTool: (id) => tools.get(id),
-    callTool: async () => mcpResult("1. UAV Pest Detection · 2023"),
+    callTool: async (tool, args) => {
+      toolCalls.push({ tool: tool.name, args });
+      return mcpResult("1. UAV Pest Detection · 2023");
+    },
     resolveModel: () => ({}),
     complete: fn
   });
@@ -164,9 +168,73 @@ test("转交真的会用目标智能体跑一次，并把结果回灌给主智�
   // 子智能体拿到的是自己的提示词，不是主智能体的。
   assert.match(String(calls[0].system ?? ""), /文献阅读导师/);
   assert.match(calls[0].messages[0].content, /无人机病虫害识别/);
-  // 子智能体有检索工具时，用户问文献会被要求先查一次。
-  assert.equal(calls[1].toolChoice, "required");
   assert.match(result.text, /文献检索（OpenAlex）/);
+
+  // 中文问题：system 里钉死「先翻英文再查」，避免中文原话命中差多跑一轮。
+  assert.match(String(calls[0].system ?? ""), /英文关键词/);
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0].args.search, "UAV pest detection");
+});
+
+test("英文检索词首轮直接 preset 检索，省掉一次模型往返", async () => {
+  const literature = agentRecord({
+    id: "ytz-literature",
+    name: "文献阅读Agent",
+    tools: ["plugin.pl-1"]
+  });
+  const tools = new Map([["plugin.pl-1", toolRecord()]]);
+  const { fn, calls } = scriptedComplete([{ content: "找到 2 篇英文文献。", toolCalls: [] }]);
+  const toolCalls: Array<{ args: Record<string, unknown> }> = [];
+
+  await runAgentDelegation({
+    host: agentRecord(),
+    targetId: "ytz-literature",
+    question: "find papers about UAV visual surveillance",
+    getAgent: (id) => (id === literature.id ? literature : undefined),
+    getTool: (id) => tools.get(id),
+    callTool: async (_tool, args) => {
+      toolCalls.push({ args });
+      return mcpResult("1. UAV Surveillance · 2024");
+    },
+    resolveModel: () => ({}),
+    complete: fn
+  });
+
+  assert.equal(calls.length, 1, "英文问题模型只被调用一次（作答），检索在首轮直接发出");
+  assert.equal(toolCalls[0].args.search, "find papers about UAV visual surveillance");
+  // 英文问题不需要注入中文翻译硬要求。
+  assert.doesNotMatch(String(calls[0].system ?? ""), /英文关键词/);
+});
+
+test("子智能体的检索进度会透传给前端，工具条不再全程空白", async () => {
+  const literature = agentRecord({
+    id: "ytz-literature",
+    name: "文献阅读Agent",
+    tools: ["plugin.pl-1"]
+  });
+  const tools = new Map([["plugin.pl-1", toolRecord()]]);
+  const { fn } = scriptedComplete([{ content: "找到 2 篇。", toolCalls: [] }]);
+  const progress: Array<{ stage: string; toolId: string; name: string }> = [];
+
+  await runAgentDelegation({
+    host: agentRecord(),
+    targetId: "ytz-literature",
+    question: "帮我查无人机视觉监控的文献",
+    getAgent: (id) => (id === literature.id ? literature : undefined),
+    getTool: (id) => tools.get(id),
+    callTool: async () => mcpResult("1. UAV Visual Surveillance · 2024"),
+    resolveModel: () => ({}),
+    complete: fn,
+    onProgress: (item) => progress.push({ stage: item.stage, toolId: item.toolId, name: item.name })
+  });
+
+  assert.deepEqual(
+    progress.map((item) => item.stage),
+    ["running", "done"],
+    "检索工具先 running 再 done，界面能显示出整条工具调用"
+  );
+  assert.equal(progress[0].toolId, "plugin.pl-1");
+  assert.match(progress[0].name, /文献检索/);
 });
 
 test("子智能体会过滤掉 agent://，转交只有一层不会互相踢皮球", async () => {

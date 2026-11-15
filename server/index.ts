@@ -2036,7 +2036,22 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 callTool: (childTool, childArgs) => platformMcp.callToolRecord(childTool, childArgs),
                 // 子智能体用自己的模型；它没配就用主持有者的模型，免得直接掉回默认。
                 resolveModel: (id) => resolveChatModel(id || picked.model || ""),
-                signal: abortController.signal
+                signal: abortController.signal,
+                // 子智能体调用检索工具的进度也要发到前端，否则整条链路看不到工具条。
+                onProgress(progress) {
+                  writeSse(response, "tool", {
+                    toolId: progress.toolId,
+                    name: progress.name,
+                    stage: progress.stage,
+                    ok: progress.ok,
+                    summary: progress.summary,
+                    latencyMs: progress.latencyMs,
+                    kind: progress.kind,
+                    serverName: progress.serverName,
+                    toolName: progress.toolName,
+                    targetAgent: progress.targetAgent
+                  });
+                }
               });
             }
             return platformMcp.callToolRecord(tool, args);
