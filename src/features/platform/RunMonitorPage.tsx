@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  Ellipsis,
   History,
   Loader2,
   RefreshCw,
@@ -48,6 +49,7 @@ const NODE_KIND_LABELS: Record<NodeKind, string> = {
   agent: "Agent",
   llm: "模型思考",
   clarify: "意图澄清",
+  extract: "参数提取",
   knowledge: "知识检索",
   tool: "工具",
   http: "HTTP 请求",
@@ -128,8 +130,13 @@ export function RunMonitorPage({
   const [workerBusy, setWorkerBusy] = useState(false);
   const [whatIf, setWhatIf] = useState<WhatIfResponse>();
   const [whatIfBusy, setWhatIfBusy] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [reviewer, setReviewer] = useState("实训用户");
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [filterWorkflow, setFilterWorkflow] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "succeeded" | "failed" | "cancelled">("all");
+  const [detailTab, setDetailTab] = useState<"overview" | "timeline" | "advanced">("overview");
+  const [onlyFailedSteps, setOnlyFailedSteps] = useState(false);
   const [interactionValues, setInteractionValues] = useState<
     Record<string, Record<string, string | boolean>>
   >({});
@@ -141,6 +148,34 @@ export function RunMonitorPage({
     () => new Map(workflows.map((workflow) => [workflow.id, workflow.name])),
     [workflows]
   );
+  const filteredRuns = useMemo(() => {
+    return runs.filter((run) => {
+      if (filterWorkflow && run.workflowId !== filterWorkflow) {
+        return false;
+      }
+      if (filterStatus === "active") {
+        return isActiveRun(run.status);
+      }
+      if (filterStatus !== "all" && run.status !== filterStatus) {
+        return false;
+      }
+      return true;
+    });
+  }, [runs, filterWorkflow, filterStatus]);
+  const failedStepCount =
+    trace?.steps.filter((step) => step.status === "failed").length ?? 0;
+  const visibleSteps = useMemo(() => {
+    if (!trace) {
+      return [];
+    }
+    return onlyFailedSteps
+      ? trace.steps.filter((step) => step.status === "failed" || step.error)
+      : trace.steps;
+  }, [trace, onlyFailedSteps]);
+  const workflowsWithRuns = useMemo(() => {
+    const ids = new Set(runs.map((run) => run.workflowId));
+    return workflows.filter((workflow) => ids.has(workflow.id));
+  }, [runs, workflows]);
   const active =
     Boolean(trace && isActiveRun(trace.run.status)) ||
     runs.some((run) => isActiveRun(run.status));
@@ -545,7 +580,7 @@ export function RunMonitorPage({
       <div className="platform-page">
         <div className="platform-loading">
           <Loader2 size={18} className="is-spinning" />
-          正在加载运行台账…
+          正在加载运行记录…
         </div>
       </div>
     );
@@ -555,15 +590,11 @@ export function RunMonitorPage({
     <div className="platform-page monitor-page">
       <header className="platform-head">
         <div className="platform-head-main">
-          <span className="platform-eyebrow">
-            运行监控台
-            {active && <em>实时刷新中</em>}
-          </span>
           <h1>
-            运行台账
+            运行记录
             <span className="platform-version">{runs.length} 次运行</span>
           </h1>
-          <p>按运行查看时间线、单步输入输出与错误堆栈；失败步骤可单步重跑，整单可按键重放。</p>
+          <p className="platform-head-meta">按运行查看时间线、单步输入输出与错误堆栈；失败步骤可单步重跑，整单可按键重放。</p>
         </div>
         <div className="platform-head-actions">
           <span className={`monitor-live ${active ? "is-active" : ""}`}>
@@ -590,13 +621,50 @@ export function RunMonitorPage({
         <aside className="monitor-list" aria-label="运行记录">
           <header>
             <span>运行记录</span>
-            <strong>{runs.length}</strong>
+            <strong>{filteredRuns.length}</strong>
           </header>
+          <div className="monitor-filters">
+            <select
+              value={filterWorkflow}
+              aria-label="按工作流筛选"
+              onChange={(event) => setFilterWorkflow(event.target.value)}
+            >
+              <option value="">全部工作流</option>
+              {workflowsWithRuns.map((workflow) => (
+                <option key={workflow.id} value={workflow.id}>
+                  {workflow.name}
+                </option>
+              ))}
+            </select>
+            <div className="monitor-filter-chips" role="group" aria-label="按状态筛选">
+              {(
+                [
+                  ["all", "全部"],
+                  ["active", "进行中"],
+                  ["succeeded", "成功"],
+                  ["failed", "失败"],
+                  ["cancelled", "已取消"]
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`monitor-filter-chip${filterStatus === value ? " is-on" : ""}`}
+                  onClick={() => setFilterStatus(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="monitor-list-scroll">
             {runs.length === 0 && (
               <p className="monitor-list-empty">还没有运行记录，去「编排画布」跑一次。</p>
             )}
-            {runs.map((run) => (
+            {runs.length > 0 && filteredRuns.length === 0 && (
+              <p className="monitor-list-empty">没有符合筛选条件的运行，试试放宽条件。</p>
+            )}
+            {filteredRuns.map((run) => (
               <button
                 key={run.id}
                 type="button"
@@ -605,9 +673,9 @@ export function RunMonitorPage({
               >
                 <span className={`monitor-run-dot is-${runStatusTone(run.status)}`} />
                 <span className="monitor-run-main">
-                  <strong>{shortId(run.id)}</strong>
+                  <strong>{workflowNames.get(run.workflowId) ?? run.workflowId}</strong>
                   <small>
-                    {workflowNames.get(run.workflowId) ?? run.workflowId} · {run.stepCount} 步
+                    {formatTime(run.startedAt)} · {run.stepCount} 步 · {formatDuration(run.durationMs)}
                     {SESSION_WORKFLOW_IDS.has(run.workflowId) && (
                       <em className="monitor-run-tag">交互链路</em>
                     )}
@@ -617,9 +685,7 @@ export function RunMonitorPage({
                   <span className={`platform-run-status is-${runStatusTone(run.status)}`}>
                     {runStatusLabel(run.status)}
                   </span>
-                  <small>
-                    {formatTime(run.startedAt)} · {run.durationMs ?? 0} ms
-                  </small>
+                  <small>#{shortId(run.id)}</small>
                 </span>
               </button>
             ))}
@@ -647,7 +713,7 @@ export function RunMonitorPage({
                   </h2>
                   <p>
                     {formatDateTime(trace.run.startedAt)} 启动 · {trace.run.mode === "stub" ? "确定性 stub" : "真实 Agent"} ·
-                    {" "}用时 {trace.run.durationMs ?? 0} ms
+                    {" "}用时 {formatDuration(trace.run.durationMs)}
                     {(trace.run.priorityClass ?? 0) > 0 && ` · 优先级分层 ${trace.run.priorityClass}`}
                     {(trace.run.resumeCount ?? 0) > 0 && ` · 已续跑 ${trace.run.resumeCount} 次`}
                     {trace.run.cancelRequestedAt && " · 已收到取消请求"}
@@ -661,53 +727,13 @@ export function RunMonitorPage({
                   {sessionTarget && onOpenSession && (
                     <button
                       type="button"
-                      className="platform-button is-primary"
+                      className="platform-button is-ghost"
                       onClick={() => onOpenSession(sessionTarget)}
                       title="回到这条运行对应的课堂或谈话会话"
                     >
                       打开会话
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="platform-button is-ghost"
-                    onClick={() => void refreshAll()}
-                  >
-                    <RefreshCw size={14} />
-                    刷新
-                  </button>
-                  <button
-                    type="button"
-                    className="platform-button is-ghost"
-                    onClick={() => void handleCancelRun()}
-                    disabled={busy !== undefined || !isActiveRun(trace.run.status)}
-                    title="停止后续节点，已完成的步骤保留在 trace 中"
-                  >
-                    {busy === "cancel" ? (
-                      <Loader2 size={14} className="is-spinning" />
-                    ) : (
-                      <XCircle size={14} />
-                    )}
-                    取消运行
-                  </button>
-                  <button
-                    type="button"
-                    className="platform-button is-ghost"
-                    onClick={() => void handleResumeRun()}
-                    disabled={
-                      busy !== undefined ||
-                      isActiveRun(trace.run.status) ||
-                      (trace.checkpoints?.length ?? 0) === 0
-                    }
-                    title="按最近检查点续跑：已完成节点直接回放，只执行未完成节点"
-                  >
-                    {busy === "resume" ? (
-                      <Loader2 size={14} className="is-spinning" />
-                    ) : (
-                      <History size={14} />
-                    )}
-                    从检查点恢复
-                  </button>
                   <button
                     type="button"
                     className="platform-button is-primary"
@@ -722,6 +748,63 @@ export function RunMonitorPage({
                     )}
                     整单重跑
                   </button>
+                  <div className="platform-more">
+                    <button
+                      type="button"
+                      className="platform-icon-button"
+                      aria-label="更多运行操作"
+                      aria-expanded={moreOpen}
+                      onClick={() => setMoreOpen((value) => !value)}
+                    >
+                      <Ellipsis size={16} />
+                    </button>
+                    {moreOpen && (
+                      <div className="platform-more-menu" role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setMoreOpen(false);
+                            void refreshAll();
+                          }}
+                        >
+                          <RefreshCw size={13} />
+                          刷新轨迹
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={
+                            busy !== undefined ||
+                            isActiveRun(trace.run.status) ||
+                            (trace.checkpoints?.length ?? 0) === 0
+                          }
+                          title="按最近检查点续跑：已完成节点直接回放，只执行未完成节点"
+                          onClick={() => {
+                            setMoreOpen(false);
+                            void handleResumeRun();
+                          }}
+                        >
+                          <History size={13} />
+                          从检查点恢复
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="is-danger"
+                          disabled={busy !== undefined || !isActiveRun(trace.run.status)}
+                          title="停止后续节点，已完成的步骤保留在 trace 中"
+                          onClick={() => {
+                            setMoreOpen(false);
+                            void handleCancelRun();
+                          }}
+                        >
+                          <XCircle size={13} />
+                          取消运行
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </header>
 
@@ -831,6 +914,9 @@ export function RunMonitorPage({
                     {interaction.fields.map((field) => {
                       const value = interactionValue(interaction, field);
                       const wide = field.type === "textarea" || field.type === "select";
+                      const options = field.options ?? [];
+                      // 选了预置之外的内容（用户自己填的）就不再高亮任何按钮。
+                      const customValue = options.includes(String(value)) ? "" : String(value);
                       return (
                         <label key={field.key} className={wide ? "is-wide" : ""}>
                           <span>
@@ -847,18 +933,39 @@ export function RunMonitorPage({
                               }
                             />
                           ) : field.type === "select" ? (
-                            <select
-                              value={String(value)}
-                              onChange={(event) =>
-                                updateInteractionValue(interaction.id, field.key, event.target.value)
-                              }
-                            >
-                              {(field.options ?? []).map((option) => (
-                                <option key={option} value={option}>
-                                  {option}
-                                </option>
+                            <div className="monitor-choice">
+                              {options.map((option, index) => (
+                                <button
+                                  key={option}
+                                  type="button"
+                                  className={`monitor-choice-item${
+                                    String(value) === option ? " is-on" : ""
+                                  }`}
+                                  onClick={() =>
+                                    updateInteractionValue(interaction.id, field.key, option)
+                                  }
+                                >
+                                  <span className="monitor-choice-index">
+                                    {String(index + 1).padStart(2, "0")}
+                                  </span>
+                                  <span className="monitor-choice-text">{option}</span>
+                                </button>
                               ))}
-                            </select>
+                              {/* 兜底：选项都不合适就自己写，提交后走「其他」分支。 */}
+                              <span className="monitor-choice-other">
+                                <input
+                                  value={customValue}
+                                  placeholder="其他：不在上面选项里就填这里"
+                                  onChange={(event) =>
+                                    updateInteractionValue(
+                                      interaction.id,
+                                      field.key,
+                                      event.target.value
+                                    )
+                                  }
+                                />
+                              </span>
+                            </div>
                           ) : field.type === "boolean" ? (
                             <input
                               type="checkbox"
@@ -900,6 +1007,39 @@ export function RunMonitorPage({
                 </section>
               ))}
 
+              <div className="monitor-tabs" role="tablist" aria-label="详情分区">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === "overview"}
+                  className={detailTab === "overview" ? "is-on" : ""}
+                  onClick={() => setDetailTab("overview")}
+                >
+                  概览
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === "timeline"}
+                  className={detailTab === "timeline" ? "is-on" : ""}
+                  onClick={() => setDetailTab("timeline")}
+                >
+                  执行时间线
+                  {failedStepCount > 0 && <em>{failedStepCount} 失败</em>}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === "advanced"}
+                  className={detailTab === "advanced" ? "is-on" : ""}
+                  onClick={() => setDetailTab("advanced")}
+                >
+                  高级信息
+                </button>
+              </div>
+
+              {detailTab === "overview" && (
+              <>
               <div className="monitor-summary">
                 <div>
                   <span>步骤</span>
@@ -919,7 +1059,7 @@ export function RunMonitorPage({
                 </div>
                 <div>
                   <span>总耗时</span>
-                  <strong>{trace.run.durationMs ?? 0} ms</strong>
+                  <strong>{formatDuration(trace.run.durationMs)}</strong>
                 </div>
               </div>
 
@@ -956,8 +1096,10 @@ export function RunMonitorPage({
                   </div>
                 </section>
               )}
+              </>
+              )}
 
-              {trace.run.plan && trace.run.plan.decisions.length + trace.run.plan.unassigned.length > 0 && (
+              {detailTab === "advanced" && trace.run.plan && trace.run.plan.decisions.length + trace.run.plan.unassigned.length > 0 && (
                 <section className="monitor-section">
                   <div className="monitor-section-head">
                     <h3>运行前调度计划</h3>
@@ -1013,7 +1155,7 @@ export function RunMonitorPage({
                 </section>
               )}
 
-              {trace.queue && trace.queue.length > 0 && (
+              {detailTab === "advanced" && trace.queue && trace.queue.length > 0 && (
                 <section className="monitor-section">
                   <div className="monitor-section-head">
                     <h3>运行时调度队列</h3>
@@ -1028,7 +1170,7 @@ export function RunMonitorPage({
                           <em>{QUEUE_STATUS_LABELS[entry.status]}</em>
                         </div>
                         <small>
-                          排队 {entry.waitMs ?? 0} ms{entry.reason ? ` · ${entry.reason}` : ""}
+                          排队 {formatDuration(entry.waitMs)}{entry.reason ? ` · ${entry.reason}` : ""}
                         </small>
                       </article>
                     ))}
@@ -1036,6 +1178,7 @@ export function RunMonitorPage({
                 </section>
               )}
 
+              {detailTab === "advanced" && (
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>调度 Worker</h3>
@@ -1108,7 +1251,10 @@ export function RunMonitorPage({
                   {reclaimer?.lastTickAt ? ` · 上次巡检 ${formatDateTime(reclaimer.lastTickAt)}` : ""}
                 </p>
               </section>
+              )}
 
+
+              {detailTab === "advanced" && (
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>检查点</h3>
@@ -1133,7 +1279,10 @@ export function RunMonitorPage({
                   ))}
                 </div>
               </section>
+              )}
 
+
+              {detailTab === "advanced" && (
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>策略沙盒（离线回放）</h3>
@@ -1159,8 +1308,8 @@ export function RunMonitorPage({
                       <article className="monitor-queue-row" key={metrics.policy}>
                         <div className="monitor-queue-head">
                           <code>{REPLAY_POLICY_LABELS[metrics.policy] ?? metrics.policy}</code>
-                          <span>完工跨度 {metrics.makespanMs} ms</span>
-                          <span>等待 P95 {metrics.waitP95Ms} ms</span>
+                          <span>完工跨度 {formatDuration(metrics.makespanMs)}</span>
+                          <span>等待 P95 {formatDuration(metrics.waitP95Ms)}</span>
                         </div>
                         <small>
                           截止违约 {metrics.deadlineMisses} · 优先级倒挂 {metrics.priorityInversions} ·
@@ -1176,17 +1325,32 @@ export function RunMonitorPage({
                   </p>
                 )}
               </section>
+              )}
 
+
+              {detailTab === "timeline" && (
               <section className="monitor-section">
                 <div className="monitor-section-head">
                   <h3>执行时间线</h3>
-                  <span>
-                    {trace.steps.length} 条记录 · 失败 {trace.steps.filter((step) => step.status === "failed").length}
+                  <span className="monitor-timeline-head">
+                    {trace.steps.length} 条记录 · 失败 {failedStepCount}
+                    <button
+                      type="button"
+                      className={`monitor-filter-chip${onlyFailedSteps ? " is-on" : ""}`}
+                      disabled={failedStepCount === 0}
+                      onClick={() => setOnlyFailedSteps((value) => !value)}
+                    >
+                      只看失败
+                    </button>
                   </span>
                 </div>
                 <div className="monitor-timeline">
-                  {trace.steps.length === 0 && <p className="monitor-hint">尚未产生步骤记录。</p>}
-                  {trace.steps.map((step) => {
+                  {visibleSteps.length === 0 && (
+                    <p className="monitor-hint">
+                      {onlyFailedSteps ? "没有失败步骤，试试关掉过滤。" : "尚未产生步骤记录。"}
+                    </p>
+                  )}
+                  {visibleSteps.map((step) => {
                     const isExpanded = expanded.has(step.id);
                     const depth = step.path.split("/").length - 1;
                     const reschedule =
@@ -1212,7 +1376,7 @@ export function RunMonitorPage({
                               )}
                               <small>
                                 #{step.sequence} · {NODE_KIND_LABELS[step.nodeKind] ?? step.nodeKind} ·{" "}
-                                {step.durationMs ?? 0} ms · {formatTime(step.startedAt)}
+                                {formatDuration(step.durationMs)} · {formatTime(step.startedAt)}
                                 {(step.attempts ?? 1) > 1 && ` · 尝试 ${step.attempts} 次`}
                               </small>
                             </div>
@@ -1221,7 +1385,15 @@ export function RunMonitorPage({
                             </span>
                           </div>
 
-                          {step.error && <pre className="monitor-step-error">{step.error}</pre>}
+                          {step.error && (
+                            <pre
+                              className={`monitor-step-error${
+                                step.status === "succeeded" ? " is-degraded" : ""
+                              }`}
+                            >
+                              {step.error}
+                            </pre>
+                          )}
 
                           {reschedule && (
                             <p className="monitor-step-reschedule">
@@ -1273,7 +1445,10 @@ export function RunMonitorPage({
                   })}
                 </div>
               </section>
+              )}
 
+              {detailTab === "overview" && (
+              <>
               {trace.verifyResults.length > 0 && (
                 <section className="monitor-section">
                   <div className="monitor-section-head">
@@ -1418,6 +1593,8 @@ export function RunMonitorPage({
                   <pre className="monitor-json">{pretty(trace.run.output)}</pre>
                 </section>
               )}
+              </>
+              )}
             </>
           )}
         </section>
@@ -1472,6 +1649,20 @@ function approvalStatusLabel(status: ApprovalRecord["status"]): string {
 
 function shortId(id: string): string {
   return id.replace(/^run_/, "").slice(0, 8);
+}
+
+/** 把毫秒换算成可读时长：1s 以内保留 ms，1 分钟以内保留一位小数秒，更长换算分钟。 */
+function formatDuration(ms?: number | null): string {
+  const value = ms ?? 0;
+  if (value < 1000) {
+    return `${Math.round(value)} ms`;
+  }
+  if (value < 60_000) {
+    return `${(value / 1000).toFixed(1)} s`;
+  }
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1000);
+  return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
 }
 
 function checkpointNodeCount(state: Record<string, unknown>): number {

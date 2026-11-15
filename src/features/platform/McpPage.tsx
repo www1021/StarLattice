@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { accountSessionStorage } from "../auth/accountStorage";
 import {
   Boxes,
   Cable,
@@ -256,7 +257,7 @@ export function McpPage({ onOpenCanvas }: { onOpenCanvas?: () => void }) {
 
   function addToCanvas(tool: ToolRecord) {
     try {
-      sessionStorage.setItem(
+      accountSessionStorage.setItem(
         PENDING_NODE_KEY,
         JSON.stringify({
           title: displayNameOf(tool),
@@ -510,6 +511,9 @@ export function McpPage({ onOpenCanvas }: { onOpenCanvas?: () => void }) {
                 <div className="mcp-card-meta">
                   <span className={`mcp-badge is-transport`}>{transportLabel(server.transport)}</span>
                   <span className={`mcp-badge ${statusClass(server)}`}>{statusLabel(server)}</span>
+                  <span className="mcp-badge is-owner">
+                    {server.source === "custom" ? "我的" : "内置"}
+                  </span>
                   <span>{server.toolCount} 工具</span>
                   {server.lastLatencyMs !== undefined && <span>{formatMs(server.lastLatencyMs)}</span>}
                 </div>

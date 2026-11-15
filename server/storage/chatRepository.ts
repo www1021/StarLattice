@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { ownerScope, ownerValue } from "../auth/context.js";
+import { ensureOwnerColumnsFor, PERSONAL_TABLES } from "../auth/ownership.js";
 
 export type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
 
@@ -12,6 +14,16 @@ export type ConversationKind = TrainingType | "通用对话";
 export type StoredChatMessage = {
   role: "user" | "assistant";
   content: string;
+  /** 这一轮调用过的工具；重开历史时也要能看出结论是查出来的。 */
+  toolNotes?: StoredToolNote[];
+};
+
+export type StoredToolNote = {
+  toolId: string;
+  name: string;
+  ok: boolean;
+  latencyMs: number;
+  summary?: string;
 };
 
 export type StoredArtifact = {
@@ -62,6 +74,11 @@ export type ConversationSaveInput = {
   attachmentNames: string[];
   artifacts: StoredArtifact[];
   citations: StoredCitation[];
+  /** 工作流会话：记录本会话绑定的工作流与最近一次 run，用于恢复上下文。 */
+  workflowId?: string;
+  lastRunId?: string;
+  /** 自建智能体会话：回到这条历史时要切回对应智能体。 */
+  agentId?: string;
 };
 
 export type ConversationSummary = {
@@ -78,6 +95,11 @@ export type ConversationSummary = {
   lastMessage?: string;
   createdAt: string;
   updatedAt: string;
+  /** 非空表示这是绑定了工作流的对话会话，恢复时要还原工作流选择器。 */
+  workflowId?: string;
+  lastRunId?: string;
+  /** 非空表示这条会话属于某个自建智能体。 */
+  agentId?: string;
 };
 
 export type EducationConversationSummary = ConversationSummary & {
@@ -187,6 +209,9 @@ type ConversationRow = {
   title: string;
   training_type: ConversationKind;
   assistant_mode?: string;
+  workflow_id?: string | null;
+  last_run_id?: string | null;
+  agent_id?: string | null;
   knowledge_base_ids: string;
   attachment_names: string;
   artifact_count: number;
@@ -200,6 +225,7 @@ type ConversationRow = {
 type MessageRow = {
   role: "user" | "assistant";
   content: string;
+  tool_notes?: string | null;
 };
 
 type ArtifactRow = StoredArtifact;
@@ -261,29 +287,52 @@ export class SQLiteChatRepository implements ChatRepository {
     this.initialize();
   }
 
+  /** 关闭底层连接；测试用完临时库时调用，避免 Windows 上文件被占用。 */
+  close() {
+    if (this.db.open) {
+      this.db.close();
+    }
+  }
+
   async saveConversation(input: ConversationSaveInput) {
     const now = new Date().toISOString();
+    const ownerId = ownerValue();
+    const owner = ownerScope("conversations");
+    // 会话 id 属于别人时直接拒绝，不能靠 ON CONFLICT 悄悄改掉他的内容。
+    if (ownerId) {
+      const claimed = this.db
+        .prepare("SELECT owner_id FROM conversations WHERE id = ?")
+        .get(input.conversationId) as { owner_id: string | null } | undefined;
+      if (claimed && claimed.owner_id !== ownerId) {
+        throw new Error("无权修改该会话");
+      }
+    }
     const existing = this.db
-      .prepare("SELECT created_at FROM conversations WHERE id = ?")
-      .get(input.conversationId) as { created_at: string } | undefined;
+      .prepare(`SELECT created_at FROM conversations WHERE id = ?${owner.and}`)
+      .get(input.conversationId, ...owner.params) as { created_at: string } | undefined;
 
     const transaction = this.db.transaction(() => {
       this.db
         .prepare(
           `
           INSERT INTO conversations
-            (id, title, training_type, assistant_mode, knowledge_base_ids, attachment_names,
-             artifact_count, citation_count, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, title, training_type, assistant_mode, workflow_id, last_run_id, agent_id,
+             knowledge_base_ids, attachment_names,
+             artifact_count, citation_count, created_at, updated_at, owner_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             training_type = excluded.training_type,
             assistant_mode = excluded.assistant_mode,
+            workflow_id = excluded.workflow_id,
+            last_run_id = excluded.last_run_id,
+            agent_id = excluded.agent_id,
             knowledge_base_ids = excluded.knowledge_base_ids,
             attachment_names = excluded.attachment_names,
             artifact_count = excluded.artifact_count,
             citation_count = excluded.citation_count,
             updated_at = excluded.updated_at
+          ${ownerId ? "WHERE conversations.owner_id = excluded.owner_id" : ""}
           `
         )
         .run(
@@ -291,12 +340,16 @@ export class SQLiteChatRepository implements ChatRepository {
           input.title,
           input.trainingType,
           input.assistantMode ?? "education",
+          input.workflowId ?? null,
+          input.lastRunId ?? null,
+          input.agentId ?? null,
           JSON.stringify(input.knowledgeBaseIds),
           JSON.stringify(input.attachmentNames),
           input.artifacts.length,
           input.citations.length,
           existing?.created_at || now,
-          now
+          now,
+          ownerId
         );
 
       this.db
@@ -312,8 +365,8 @@ export class SQLiteChatRepository implements ChatRepository {
       const insertMessage = this.db.prepare(
         `
         INSERT INTO conversation_messages
-          (id, conversation_id, role, content, message_index, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+          (id, conversation_id, role, content, message_index, created_at, owner_id, tool_notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `
       );
       input.messages.forEach((message, index) => {
@@ -323,15 +376,17 @@ export class SQLiteChatRepository implements ChatRepository {
           message.role,
           message.content,
           index,
-          now
+          now,
+          ownerId,
+          message.toolNotes?.length ? JSON.stringify(message.toolNotes) : null
         );
       });
 
       const insertArtifact = this.db.prepare(
         `
         INSERT INTO conversation_artifacts
-          (id, conversation_id, name, type, url, size, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (id, conversation_id, name, type, url, size, created_at, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `
       );
       for (const artifact of input.artifacts) {
@@ -342,7 +397,8 @@ export class SQLiteChatRepository implements ChatRepository {
           artifact.type,
           artifact.url,
           artifact.size,
-          now
+          now,
+          ownerId
         );
       }
 
@@ -350,8 +406,8 @@ export class SQLiteChatRepository implements ChatRepository {
         `
         INSERT INTO conversation_citations
           (id, conversation_id, knowledge_base_id, knowledge_base_name,
-           document_id, document_name, snippet, source, score, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           document_id, document_name, snippet, source, score, created_at, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
       );
       input.citations.forEach((citation, index) => {
@@ -365,7 +421,8 @@ export class SQLiteChatRepository implements ChatRepository {
           citation.snippet,
           citation.source,
           citation.score,
-          now
+          now,
+          ownerId
         );
       });
     });
@@ -374,6 +431,7 @@ export class SQLiteChatRepository implements ChatRepository {
   }
 
   listConversations() {
+    const owner = ownerScope("conversations");
     const rows = this.db
       .prepare(
         `
@@ -390,19 +448,21 @@ export class SQLiteChatRepository implements ChatRepository {
         FROM conversations
         LEFT JOIN conversation_messages
           ON conversation_messages.conversation_id = conversations.id
+        WHERE ${owner.condition}
         GROUP BY conversations.id
         ORDER BY conversations.updated_at DESC
         `
       )
-      .all() as ConversationRow[];
+      .all(...owner.params) as ConversationRow[];
 
     return rows.map((row) => this.rowToSummary(row));
   }
 
   getConversation(conversationId: string) {
+    const owner = ownerScope("conversations");
     const row = this.db
-      .prepare("SELECT * FROM conversations WHERE id = ?")
-      .get(conversationId) as ConversationRow | undefined;
+      .prepare(`SELECT * FROM conversations WHERE id = ?${owner.and}`)
+      .get(conversationId, ...owner.params) as ConversationRow | undefined;
 
     if (!row) {
       return undefined;
@@ -411,7 +471,7 @@ export class SQLiteChatRepository implements ChatRepository {
     const messages = this.db
       .prepare(
         `
-        SELECT role, content
+        SELECT role, content, tool_notes
         FROM conversation_messages
         WHERE conversation_id = ?
         ORDER BY message_index ASC
@@ -455,7 +515,13 @@ export class SQLiteChatRepository implements ChatRepository {
         message_count: messages.length,
         last_message: messages.at(-1)?.content
       }),
-      messages,
+      messages: messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+        ...(message.tool_notes
+          ? { toolNotes: parseJsonValue<StoredToolNote[]>(message.tool_notes, []) }
+          : {})
+      })),
       artifacts,
       citations: citations.map(rowToCitation)
     };
@@ -471,8 +537,8 @@ export class SQLiteChatRepository implements ChatRepository {
           `
           INSERT INTO training_evaluations
             (id, conversation_id, training_type, overall_score, dimensions_json,
-             diagnosis_json, suggestions_json, next_task, citations_json, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             diagnosis_json, suggestions_json, next_task, citations_json, created_at, owner_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
@@ -485,7 +551,8 @@ export class SQLiteChatRepository implements ChatRepository {
           JSON.stringify(evaluation.suggestions),
           evaluation.nextTask,
           JSON.stringify(evaluation.citations),
-          evaluation.createdAt
+          evaluation.createdAt,
+          ownerValue()
         );
     });
 
@@ -493,68 +560,79 @@ export class SQLiteChatRepository implements ChatRepository {
   }
 
   async saveSpeakTrainingSession(conversationId: string, snapshotJson: string) {
+    const ownerId = ownerValue();
     this.db
       .prepare(
         `
         INSERT INTO speak_training_sessions
-          (conversation_id, snapshot_json, updated_at)
-        VALUES (?, ?, ?)
+          (conversation_id, snapshot_json, updated_at, owner_id)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
           snapshot_json = excluded.snapshot_json,
           updated_at = excluded.updated_at
+        ${ownerId ? "WHERE speak_training_sessions.owner_id = excluded.owner_id" : ""}
         `
       )
-      .run(conversationId, snapshotJson, new Date().toISOString());
+      .run(conversationId, snapshotJson, new Date().toISOString(), ownerId);
   }
 
   getSpeakTrainingSession(conversationId: string) {
+    const owner = ownerScope("speak_training_sessions");
     const row = this.db
       .prepare(
-        "SELECT snapshot_json FROM speak_training_sessions WHERE conversation_id = ?"
+        `SELECT snapshot_json FROM speak_training_sessions WHERE conversation_id = ?${owner.and}`
       )
-      .get(conversationId) as { snapshot_json: string } | undefined;
+      .get(conversationId, ...owner.params) as { snapshot_json: string } | undefined;
 
     return row?.snapshot_json;
   }
 
   saveCounselingSession(id: string, snapshot: string) {
-    this.db.prepare(`INSERT INTO counseling_sessions (id, snapshot_json, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at`)
-      .run(id, snapshot, new Date().toISOString());
+    const ownerId = ownerValue();
+    this.db.prepare(`INSERT INTO counseling_sessions (id, snapshot_json, updated_at, owner_id) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at
+      ${ownerId ? "WHERE counseling_sessions.owner_id = excluded.owner_id" : ""}`)
+      .run(id, snapshot, new Date().toISOString(), ownerId);
   }
 
   getCounselingSession(id: string): string | undefined {
-    const row = this.db.prepare("SELECT snapshot_json FROM counseling_sessions WHERE id = ?").get(id) as { snapshot_json: string } | undefined;
+    const owner = ownerScope("counseling_sessions");
+    const row = this.db.prepare(
+      `SELECT snapshot_json FROM counseling_sessions WHERE id = ?${owner.and}`
+    ).get(id, ...owner.params) as { snapshot_json: string } | undefined;
     return row?.snapshot_json;
   }
 
   getEvaluation(conversationId: string) {
+    const owner = ownerScope("training_evaluations");
     const row = this.db
       .prepare(
         `
         SELECT *
         FROM training_evaluations
-        WHERE conversation_id = ?
+        WHERE conversation_id = ?${owner.and}
         ORDER BY created_at DESC
         LIMIT 1
         `
       )
-      .get(conversationId) as EvaluationRow | undefined;
+      .get(conversationId, ...owner.params) as EvaluationRow | undefined;
 
     return row ? rowToEvaluation(row) : undefined;
   }
 
   listEvaluations(limit = 60) {
+    const owner = ownerScope("training_evaluations");
     const rows = this.db
       .prepare(
         `
         SELECT *
         FROM training_evaluations
+        WHERE ${owner.condition}
         ORDER BY created_at DESC
         LIMIT ?
         `
       )
-      .all(limit) as EvaluationRow[];
+      .all(...owner.params, limit) as EvaluationRow[];
 
     return rows.map(rowToEvaluation);
   }
@@ -635,9 +713,9 @@ export class SQLiteChatRepository implements ChatRepository {
   saveGrowthSnapshot(summary: GrowthSummary) {
     this.db
       .prepare(
-        "INSERT INTO growth_snapshots (id, summary_json, created_at) VALUES (?, ?, ?)"
+        "INSERT INTO growth_snapshots (id, summary_json, created_at, owner_id) VALUES (?, ?, ?, ?)"
       )
-      .run(`snapshot_${randomUUID()}`, JSON.stringify(summary), new Date().toISOString());
+      .run(`snapshot_${randomUUID()}`, JSON.stringify(summary), new Date().toISOString(), ownerValue());
   }
 
   private initialize() {
@@ -652,6 +730,9 @@ export class SQLiteChatRepository implements ChatRepository {
         title TEXT NOT NULL,
         training_type TEXT NOT NULL,
         assistant_mode TEXT NOT NULL DEFAULT 'education',
+        workflow_id TEXT,
+        last_run_id TEXT,
+        agent_id TEXT,
         knowledge_base_ids TEXT NOT NULL,
         attachment_names TEXT NOT NULL,
         artifact_count INTEGER NOT NULL DEFAULT 0,
@@ -667,6 +748,7 @@ export class SQLiteChatRepository implements ChatRepository {
         content TEXT NOT NULL,
         message_index INTEGER NOT NULL,
         created_at TEXT NOT NULL,
+        tool_notes TEXT,
         FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
       );
 
@@ -732,6 +814,26 @@ export class SQLiteChatRepository implements ChatRepository {
         "ALTER TABLE conversations ADD COLUMN assistant_mode TEXT NOT NULL DEFAULT 'education'"
       );
     }
+    // 工作流会话字段：旧库按列存在与否逐条补，重复启动不会报错。
+    if (!conversationColumns.some((column) => column.name === "workflow_id")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN workflow_id TEXT");
+    }
+    if (!conversationColumns.some((column) => column.name === "last_run_id")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN last_run_id TEXT");
+    }
+    // 自建智能体会话：老库补列即可，不用重建表。
+    if (!conversationColumns.some((column) => column.name === "agent_id")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN agent_id TEXT");
+    }
+    ensureOwnerColumnsFor(this.db, PERSONAL_TABLES.training);
+
+    // 工具调用留痕：老库补一列，历史消息没有这条记录就是空的。
+    const messageColumns = this.db
+      .prepare("PRAGMA table_info(conversation_messages)")
+      .all() as Array<{ name: string }>;
+    if (!messageColumns.some((column) => column.name === "tool_notes")) {
+      this.db.exec("ALTER TABLE conversation_messages ADD COLUMN tool_notes TEXT");
+    }
   }
 
   private buildAgentOperationStats(conversations: ConversationSummary[]) {
@@ -783,7 +885,10 @@ export class SQLiteChatRepository implements ChatRepository {
       latestEvaluation: this.getEvaluation(row.id),
       lastMessage: row.last_message,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      workflowId: row.workflow_id ?? undefined,
+      lastRunId: row.last_run_id ?? undefined,
+      agentId: row.agent_id ?? undefined
     };
   }
 }

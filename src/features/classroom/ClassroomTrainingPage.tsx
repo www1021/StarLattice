@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { accountStorage } from "../auth/accountStorage";
 import {
   AlertCircle,
   Bot,
@@ -721,7 +722,7 @@ type ClassroomSnapshot = { runId: string; classroom: ClassroomState };
 
 function cacheClassroom(runId: string, classroom: ClassroomState) {
   try {
-    window.localStorage.setItem(
+    accountStorage.setItem(
       classroomSnapshotKey,
       JSON.stringify({ runId, classroom } satisfies ClassroomSnapshot)
     );
@@ -732,7 +733,7 @@ function cacheClassroom(runId: string, classroom: ClassroomState) {
 
 function clearCachedClassroom() {
   try {
-    window.localStorage.removeItem(classroomSnapshotKey);
+    accountStorage.removeItem(classroomSnapshotKey);
   } catch {
     // Local storage can be unavailable in restricted browser contexts.
   }
@@ -740,7 +741,7 @@ function clearCachedClassroom() {
 
 function readCachedClassroom(): ClassroomSnapshot | undefined {
   try {
-    const raw = window.localStorage.getItem(classroomSnapshotKey);
+    const raw = accountStorage.getItem(classroomSnapshotKey);
 
     if (!raw) {
       return undefined;

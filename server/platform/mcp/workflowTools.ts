@@ -43,15 +43,19 @@ export function syncWorkflowTools(store: PlatformStateStore): ToolRecord[] {
       continue;
     }
     tools.push(
-      store.saveTool({
-        id,
-        name: `工作流：${definition.name}`,
-        type: "mcp",
-        schema,
-        endpoint,
-        description,
-        enabled: true
-      })
+      store.saveTool(
+        {
+          id,
+          name: `工作流：${definition.name}`,
+          type: "mcp",
+          schema,
+          endpoint,
+          description,
+          enabled: true
+        },
+        // 工具跟着工作流走：内置流程的工具全员可用，自建流程的工具只有主人能用。
+        summary.ownerId ?? null
+      )
     );
   }
   return tools;

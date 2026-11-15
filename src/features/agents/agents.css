@@ -1,0 +1,916 @@
+/* 自建智能体：头像、编辑弹窗、聊天页选择器 */
+
+.agent-avatar {
+  display: block;
+  object-fit: cover;
+  flex: none;
+  background: var(--surf-99);
+}
+
+.agent-avatar.is-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  user-select: none;
+}
+
+.agent-editor-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(var(--rgb-shadow), 0.34);
+  backdrop-filter: blur(2px);
+}
+
+.agent-editor {
+  display: flex;
+  flex-direction: column;
+  width: min(840px, 100%);
+  max-height: 88vh;
+  border: 1px solid rgba(var(--rgb-surface), 0.6);
+  border-radius: 20px;
+  background: var(--surf-99);
+  box-shadow: 0 26px 64px rgba(var(--rgb-shadow), 0.26);
+  font-family: var(--font-ui);
+  color: var(--n-12);
+  overflow: hidden;
+}
+
+.agent-editor > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--liquid-line);
+}
+
+.agent-editor > header > div > span {
+  color: var(--n-48);
+  font-size: 11.5px;
+}
+
+.agent-editor-heading {
+  min-width: 0;
+}
+
+.agent-editor-aside {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: none;
+}
+
+.agent-avatar-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-editor-aside .agent-link {
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.agent-editor > header h2 {
+  margin: 3px 0 0;
+  font-size: 16.5px;
+  font-weight: 600;
+}
+
+.agent-editor > header small {
+  display: block;
+  margin-top: 4px;
+  color: var(--n-42);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.agent-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+.agent-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-section h3 {
+  margin: 0;
+  color: var(--n-60);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.agent-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--n-60);
+  font-size: 12px;
+}
+
+/* 主体字段（名称 / 模型 / 描述 / 提示词）不在 section 里，样式要能覆盖到 body 直系。 */
+.agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--n-60);
+  font-size: 12px;
+}
+
+.agent-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--n-60);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.agent-label > span:first-child,
+.agent-label > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+/* 必填星号：截图里是红色花体，这里只用颜色区分，不加粗。 */
+.agent-label em {
+  color: #d94b3d;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.agent-label small {
+  color: var(--n-42);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+/* 提示词这行的标题与右侧动作按钮分居两端 */
+.agent-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-prompt-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-prompt-actions .agent-chip-button {
+  margin-left: 0;
+}
+
+.agent-chip-button.is-accent {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.agent-chip-button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.agent-template-wrap {
+  position: relative;
+}
+
+.agent-template-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 10px;
+  background: var(--surf-99);
+  box-shadow: 0 12px 28px rgba(var(--rgb-shadow), 0.18);
+}
+
+.agent-template-menu button {
+  padding: 6px 9px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--n-12);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-template-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 字数计数：贴着输入框右下角，超限变红 */
+.agent-counter {
+  margin-left: auto;
+  color: var(--n-38, var(--n-42));
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-counter.is-over {
+  color: #d94b3d;
+}
+
+.agent-field-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.agent-field-foot .agent-counter {
+  flex: none;
+}
+
+.agent-editor-body input,
+.agent-editor-body select,
+.agent-editor-body textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 10px;
+  background: rgba(var(--rgb-surface), 0.5);
+  color: var(--n-12);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.agent-editor-body input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+}
+
+.agent-editor-body input:focus,
+.agent-editor-body select:focus,
+.agent-editor-body textarea:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  background: var(--surf-99);
+}
+
+.agent-section textarea.agent-prompt,
+.agent-editor-body textarea.agent-prompt {
+  min-height: 210px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.agent-avatar-pick {
+  position: relative;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.agent-avatar-pick > span {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border: 2px solid var(--surf-99);
+  border-radius: 50%;
+  background: var(--n-12);
+  color: var(--surf-99);
+}
+
+.agent-link {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--n-48);
+  font-family: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.agent-link:hover {
+  color: var(--n-12);
+}
+
+.agent-hint {
+  margin: 0;
+  color: var(--n-42);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.agent-hint code,
+.agent-variables-head code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(var(--rgb-surface), 0.7);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.agent-variables {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--liquid-line);
+  border-radius: 12px;
+}
+
+.agent-variables-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.agent-variables-head strong {
+  font-weight: 600;
+}
+
+.agent-variables-head span {
+  color: var(--n-42);
+  font-size: 11.5px;
+}
+
+.agent-chip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 8px;
+  background: rgba(var(--rgb-surface), 0.6);
+  color: var(--n-60);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.agent-chip-button:hover {
+  color: var(--n-12);
+  border-color: var(--accent-line);
+}
+
+.agent-variable-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-variable-row input {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.agent-variable-required {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.agent-variable-required input {
+  width: auto;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.agent-switch {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-60);
+  font-size: 12px;
+}
+
+.agent-switch input {
+  width: auto;
+}
+
+.agent-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: none;
+  color: var(--n-48);
+  cursor: pointer;
+}
+
+.agent-icon-button:hover {
+  border-color: var(--liquid-line);
+  background: rgba(var(--rgb-surface), 0.6);
+  color: var(--n-12);
+}
+
+.agent-icon-button.is-small {
+  width: 24px;
+  height: 24px;
+}
+
+/* 工具：已选的挂在提示词下面，没选的点开面板挑 */
+.agent-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-section-head h3 {
+  margin: 0;
+}
+
+.agent-tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.agent-tool-chip.is-missing {
+  border-color: var(--danger-line, rgba(220, 60, 60, 0.4));
+  background: rgba(220, 60, 60, 0.08);
+  color: #c0392b;
+}
+
+.agent-tool-chip > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(var(--rgb-shadow), 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.agent-tool-chip > button:hover {
+  background: rgba(var(--rgb-shadow), 0.18);
+}
+
+.agent-tool-picker {
+  border: 1px solid var(--liquid-line);
+  border-radius: 12px;
+  background: var(--surf-99);
+  overflow: hidden;
+}
+
+.agent-tool-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--liquid-line);
+  color: var(--n-42);
+}
+
+.agent-tool-picker-head input,
+.agent-tool-picker-head input:focus {
+  flex: 1;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+}
+
+.agent-tool-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 236px;
+  padding: 6px;
+  overflow: auto;
+}
+
+.agent-tool-group-head {
+  margin: 8px 4px 2px;
+  color: var(--n-46);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.agent-tool-option {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: none;
+  color: var(--n-12);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-tool-option:hover {
+  border-color: var(--liquid-line);
+  background: rgba(var(--rgb-surface), 0.6);
+}
+
+.agent-tool-option.is-picked {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.agent-tool-option-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.agent-tool-option small {
+  color: var(--n-48);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* 高级设置：默认收起，只有配过非默认项时才展开 */
+.agent-advanced {
+  padding-top: 12px;
+  border-top: 1px dashed var(--liquid-line);
+}
+
+.agent-advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-60);
+  font-size: 12.5px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.agent-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-advanced > summary svg {
+  transition: transform 0.15s ease;
+}
+
+.agent-advanced[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.agent-advanced > summary small {
+  color: var(--n-42);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.agent-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.agent-advanced-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--n-60);
+  font-size: 12px;
+}
+
+.agent-error {
+  margin: 0 20px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-line, rgba(220, 60, 60, 0.4));
+  border-radius: 10px;
+  background: rgba(220, 60, 60, 0.08);
+  color: #c0392b;
+  font-size: 12px;
+}
+
+.agent-editor > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--liquid-line);
+}
+
+/* 聊天页：智能体选择与变量填写 */
+.agent-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-self: center;
+  width: min(100%, 860px);
+  margin: 16px 0 0;
+}
+
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px 5px 7px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 999px;
+  background: rgba(var(--rgb-surface), 0.5);
+  color: var(--n-42);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.agent-pill:first-child {
+  padding-left: 12px;
+}
+
+.agent-pill:hover:not(:disabled) {
+  color: var(--n-12);
+  border-color: var(--accent-line);
+}
+
+.agent-pill.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agent-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.agent-variable-fill {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-self: center;
+  width: min(100%, 860px);
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--liquid-line);
+  border-radius: 14px;
+  background: rgba(var(--rgb-surface), 0.4);
+}
+
+.agent-variable-fill-title {
+  flex-basis: 100%;
+  align-self: flex-start;
+  color: var(--n-48);
+  font-size: 12px;
+}
+
+.agent-variable-fill label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 148px;
+  flex: 1;
+  color: var(--n-42);
+  font-size: 11.5px;
+}
+
+.agent-variable-fill label span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-variable-fill em {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.agent-variable-fill input {
+  padding: 6px 9px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 9px;
+  background: var(--surf-99);
+  color: var(--n-12);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.agent-variable-fill input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+/* 会话进行中的顶部条 */
+.agent-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 18px;
+  padding: 7px 14px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 14px;
+  background: rgba(var(--rgb-surface), 0.5);
+  font-size: 12px;
+}
+
+.agent-chat-bar-name {
+  color: var(--n-12);
+  font-weight: 600;
+}
+
+.agent-chat-bar-hint {
+  color: var(--n-42);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46ch;
+}
+
+.agent-chat-bar-switch {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 8px;
+  background: none;
+  color: var(--n-48);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.agent-chat-bar-switch:hover:not(:disabled) {
+  color: var(--n-12);
+  border-color: var(--accent-line);
+}
+
+.agent-chat-bar-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 对话里：这条回复走了哪个智能体、调用了哪些工具，都用小字排在正文上方 */
+.message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+  color: var(--n-42);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.message-agent-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-48);
+  font-weight: 600;
+}
+
+.message-agent-tag small {
+  color: var(--n-42);
+  font-weight: 400;
+}
+
+.message-tool-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--n-42);
+}
+
+.message-tool-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-tool-row small {
+  color: var(--n-42);
+  font-size: 11px;
+}
+
+.message-tool-row svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.message-tool-row.is-running {
+  color: var(--accent);
+}
+
+.message-tool-row.is-failed {
+  color: #c0392b;
+}
+
+.message-tool-row.is-failed svg {
+  color: #c0392b;
+}
+
+/* 工作流会话：这轮真的走了哪个智能体/子流程节点，跟在回复徽标后的小字标签 */
+.message-agent-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 999px;
+  color: var(--n-48);
+}
+
+.message-agent-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.message-agent-row small {
+  color: var(--n-42);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.message-agent-row svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.message-agent-row.is-llm svg {
+  color: var(--n-42);
+}
+
+.message-agent-row.is-subworkflow svg {
+  color: #8e6bd1;
+}

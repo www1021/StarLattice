@@ -26,6 +26,9 @@ import type {
   McpServerWrite,
   MetricsReport,
   ModelProfileView,
+  ModelProbeResult,
+  RemoteModelList,
+  ModelWrite,
   NodeTypesResponse,
   PlatformIssue,
   RegistryOverview,
@@ -49,6 +52,58 @@ import type {
   WorkflowDetail,
   WorkflowSummary
 } from "./types";
+
+export type PluginType = "api" | "code";
+export type PluginStatus = "active" | "draft" | "error";
+
+/** 与后端 PluginView 字段一一对应，前端统一以它为唯一来源。 */
+export type Plugin = {
+  id: string;
+  name: string;
+  type: PluginType;
+  description: string;
+  official: boolean;
+  status: PluginStatus;
+  domain?: string;
+  runtime?: string;
+  endpoint?: string;
+  method?: string;
+  calls: number;
+  tools: number;
+  references: number;
+  version: string;
+  updatedAt: string;
+  config?: Record<string, unknown>;
+};
+
+export type PluginWrite = {
+  name: string;
+  type: PluginType;
+  description?: string;
+  domain?: string;
+  runtime?: string;
+  endpoint?: string;
+  method?: string;
+  status?: PluginStatus;
+  config?: Record<string, unknown>;
+};
+
+export type PluginInvokeResult = {
+  ok: boolean;
+  kind: PluginType;
+  status?: number;
+  latencyMs: number;
+  preview?: string;
+  error?: string;
+  detail?: unknown;
+  request?: { method: string; url: string };
+};
+
+export type PluginListResponse = {
+  plugins: Plugin[];
+  total: number;
+  official: number;
+};
 
 export class PlatformApiError extends Error {
   constructor(message: string, readonly issues: PlatformIssue[] = [], readonly status = 0) {
@@ -105,6 +160,101 @@ function knowledgeRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return requestFrom<T>(`/api/knowledge${path}`, init);
 }
 
+export type DebugChatEvent = {
+  event: string;
+  data: Record<string, unknown>;
+};
+
+export type DebugChatOptions = {
+  signal?: AbortSignal;
+  /** 兼容旧调用方：跳过意图分类，本轮强制执行工作流；调试面板已改用 strictRun。 */
+  forceRun?: boolean;
+  /** 画布调试面板：每轮都跑工作流，跑前校验、失败返回结构化详情，不走模型兜底。 */
+  strictRun?: boolean;
+  /** 画布当前定义（可能还没保存）：调试跑的就是眼前这张图。 */
+  definition?: unknown;
+};
+
+/** 调试助手 SSE：逐帧解析 event/data，交给面板累积文字与运行详情。 */
+export async function streamDebugChat(
+  workflowId: string,
+  message: string,
+  input: Record<string, unknown>,
+  onEvent: (event: DebugChatEvent) => void,
+  options: DebugChatOptions = {}
+): Promise<void> {
+  const response = await fetch(
+    `/api/platform/workflows/${encodeURIComponent(workflowId)}/debug/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        input,
+        forceRun: options.forceRun === true,
+        strictRun: options.strictRun === true,
+        ...(options.definition === undefined ? {} : { definition: options.definition })
+      }),
+      signal: options.signal
+    }
+  );
+  if (!response.ok) {
+    const raw = await response.text();
+    let detail = `请求失败（${response.status}）`;
+    try {
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof payload.message === "string") {
+        detail = payload.message;
+      }
+    } catch {
+      // 错误体不是 JSON 时保留默认提示
+    }
+    throw new PlatformApiError(detail, [], response.status);
+  }
+  if (!response.body) {
+    throw new PlatformApiError("服务端未返回流式响应", [], response.status);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const emit = (frame: string) => {
+    let event = "message";
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        data += line.slice(5).trim();
+      }
+    }
+    if (!data) {
+      return;
+    }
+    try {
+      onEvent({ event, data: JSON.parse(data) as Record<string, unknown> });
+    } catch {
+      // 单个坏帧不影响整条流
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      emit(frame);
+    }
+  }
+  if (buffer.trim()) {
+    emit(buffer);
+  }
+}
+
 export const platformApi = {
   nodeTypes: () => request<NodeTypesResponse>("/node-types"),
 
@@ -124,6 +274,9 @@ export const platformApi = {
       method: "POST",
       body: JSON.stringify({ dsl })
     }),
+
+  /** 调试助手对话流：提问由模型直接流式回答，显式跑流程时才下发节点数据。 */
+  debugChat: streamDebugChat,
 
   startRun: (workflowId: string, input: Record<string, unknown>, stopAfter?: string) =>
     request<{ run: RunRecord }>("/runs", {
@@ -231,13 +384,60 @@ export const platformApi = {
       body: JSON.stringify({ values, ...(actor ? { actor } : {}) })
     }),
 
-  listModels: () => request<{ models: ModelProfileView[]; total: number }>("/models"),
-  listAgents: () => request<{ agents: AgentRecord[]; total: number }>("/agents"),
+  listModels: () =>
+    request<{ models: ModelProfileView[]; total: number; defaultModelId: string }>("/models"),
+
+  saveModel: (input: ModelWrite) =>
+    request<{ model: ModelProfileView | null; defaultModelId: string }>("/models", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  deleteModel: (id: string) =>
+    request<{ deleted: boolean; defaultModelId: string }>(`/models/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    }),
+
+  setDefaultModel: (id: string) =>
+    request<{ defaultModelId: string }>(`/models/${encodeURIComponent(id)}/default`, {
+      method: "POST",
+      body: JSON.stringify({})
+    }),
+
+  testModel: (input: { id?: string; baseUrl?: string; model?: string; apiKey?: string }) =>
+    request<ModelProbeResult>("/models/test", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  listRemoteModels: (input: { id?: string; baseUrl?: string; apiKey?: string }) =>
+    request<RemoteModelList>("/models/remote", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  /** scope=chat 只列自建智能体，聊天页选人格时用。 */
+  listAgents: (scope?: "chat") =>
+    request<{ agents: AgentRecord[]; total: number }>(
+      scope ? `/agents?scope=${scope}` : "/agents"
+    ),
 
   getAgent: (id: string) => request<{ agent: AgentRecord }>(`/agents/${encodeURIComponent(id)}`),
 
-  saveAgent: (agent: Partial<AgentRecord> & { id: string; name: string }) =>
+  saveAgent: (agent: Partial<AgentRecord> & { name: string; id?: string }) =>
     request<SaveAgentResponse>("/agents", { method: "POST", body: JSON.stringify(agent) }),
+
+  /** 一键优化提示词：交给当前账号的模型整理成结构化版本。 */
+  polishPrompt: (input: { prompt: string; name?: string; description?: string; model?: string }) =>
+    request<{ prompt: string; model: string }>("/agents/polish-prompt", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  deleteAgent: (id: string) =>
+    request<{ deleted: boolean; id: string }>(`/agents/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    }),
 
   listAgentVersions: (id: string) =>
     request<AgentVersionsResponse>(`/agents/${encodeURIComponent(id)}/versions`),
@@ -318,6 +518,39 @@ export const platformApi = {
 
   deleteMcpServer: (id: string) =>
     request<{ deleted: boolean }>(`/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // ---- 自定义插件 ----
+  listPlugins: () => request<PluginListResponse>("/plugins"),
+
+  getPlugin: (id: string) => request<{ plugin: Plugin }>(`/plugins/${encodeURIComponent(id)}`),
+
+  createPlugin: (input: PluginWrite) =>
+    request<{ plugin: Plugin; created: boolean }>("/plugins", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  updatePlugin: (id: string, patch: Partial<PluginWrite>) =>
+    request<{ plugin: Plugin }>(`/plugins/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
+
+  deletePlugin: (id: string) =>
+    request<{ deleted: boolean }>(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  testPlugin: (id: string, args: Record<string, unknown> = {}) =>
+    request<{ result: PluginInvokeResult }>(`/plugins/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+      body: JSON.stringify({ args })
+    }),
+
+  /** 创建前验证：用临时记录跑一次真实调用，不落库。body 含完整插件定义与示例参数。 */
+  previewPlugin: (input: Partial<PluginWrite> & { args?: Record<string, unknown> }) =>
+    request<{ result: PluginInvokeResult }>("/plugins/preview", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
 
   listTools: () => request<{ tools: ToolRecord[]; total: number }>("/tools"),
 
