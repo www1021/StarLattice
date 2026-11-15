@@ -2,7 +2,7 @@
   "name": "starlattice",
   "version": "0.2.0",
   "description": "StarLattice · 多 Agent 编排与自进化平台：DSL 编译、负载感知调度、三层验证、Self-Loop 与 MCP 工具接入",
-  "license": "MIT",
+  "license": "CC-BY-NC-SA-4.0",
   "engines": {
     "node": ">=20"
   },
