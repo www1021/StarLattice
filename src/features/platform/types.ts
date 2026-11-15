@@ -4,7 +4,6 @@ export type NodeKind =
   | "agent"
   | "llm"
   | "clarify"
-  | "extract"
   | "knowledge"
   | "tool"
   | "http"
@@ -17,82 +16,16 @@ export type NodeKind =
   | "approve"
   | "human";
 
-/** 参数提取的一个参数：名字会变成下游引用字段，描述与追问话术给模型和用户看。 */
-export type ExtractParam = {
-  name: string;
-  label?: string;
-  description?: string;
-  type?: "string" | "number" | "boolean";
-  required?: boolean;
-  question?: string;
-  defaultValue?: string;
-};
-
-export type NodePortType = "string" | "number" | "boolean" | "object" | "array" | "file";
-export type NodePortSource = "literal" | "reference" | "variable" | "system";
-
-export type NodeInputBinding = {
-  name: string;
-  type: NodePortType;
-  required?: boolean;
-  description?: string;
-  defaultValue?: string | number | boolean;
-  source?: NodePortSource;
-  value?: unknown;
-};
-
-export type NodeOutputProperty = {
-  name: string;
-  type: NodePortType;
-  required?: boolean;
-  description?: string;
-  properties?: NodeOutputProperty[];
-};
-
-export type NodeErrorStrategy = "abort" | "continue" | "fallback";
-
-/** 节点级异常处理；与服务端 types.ts 的 NodeErrorPolicy 保持一致。 */
-export type NodeErrorPolicy = {
-  /** 异常处理总开关：开启后失败不中断，错误写入产物的 Error 分支。 */
-  enabled?: boolean;
-  strategy?: NodeErrorStrategy;
-  retries?: number;
-  retryIntervalMs?: number;
-  timeoutMs?: number;
-  fallbackValue?: unknown;
-};
-
-export type NodePortSpec = {
-  name: string;
-  label: string;
-  type: NodePortType;
-  required?: boolean;
-  description?: string;
-  defaultValue?: unknown;
-};
-
 export type WorkflowNode = {
   id: string;
   kind: NodeKind;
   title?: string;
   description?: string;
-  inputBindings?: NodeInputBinding[];
-  outputSchema?: NodeOutputProperty[];
-  errorPolicy?: NodeErrorPolicy;
-  /** 只有输出节点会把正文打印到调试会话；缺省时回复节点（template）自动视为输出节点。 */
-  emitOutput?: boolean;
-  /** 输出节点是否流式分片显示；缺省为开启。 */
-  streamOutput?: boolean;
   agent?: string;
   agentVersion?: number;
   capabilities?: string[];
   prompt?: string;
   clarifyOn?: "high" | "any" | "never";
-  /** 参数提取：要拿到的参数表；缺必填项会先追问，抽到了才继续。 */
-  params?: ExtractParam[];
-  askPrompt?: string;
-  maxRounds?: number;
-  onMissing?: "fail" | "continue";
   maxQuestions?: number;
   outputFormat?: "text" | "json";
   outputContract?: { required?: string[]; enums?: Record<string, string[]> };
@@ -131,17 +64,10 @@ export type WorkflowNode = {
   timeoutMs?: number;
   submitLabel?: string;
   fields?: HumanField[];
-  /** 选项卡：给用户点的选项；非空时交互卡片渲染成选项列表。 */
-  options?: string[];
-  /** 选项卡：从变量动态拉取选项（引用一个数组），优先于 options。 */
-  optionsFrom?: string;
-  /** 选项卡：选完后据此调用模型生成回复。 */
-  generatePrompt?: string;
   system?: string;
   model?: string;
   thinking?: boolean;
   temperature?: number;
-  topP?: number;
   maxTokens?: number;
   template?: string;
   workflowId?: string;
@@ -155,12 +81,6 @@ export type WorkflowEdge = {
   label?: string;
   /** 可选边条件；为假时该边不激活，下游可能被跳过。 */
   when?: string;
-  /**
-   * 出边绑定的来源端口。选项卡按选项各开一个输出端口（choice:0、choice:1…），
-   * 另有 choice:other 兜底口，用户选的东西不在选项里时走它；
-   * 运行期只走用户选中那条，其余分支不会跟着跑。
-   */
-  fromPort?: string;
 };
 
 export type WorkflowVariable = {
@@ -168,8 +88,6 @@ export type WorkflowVariable = {
   type: "string" | "number" | "boolean" | "object";
   required?: boolean;
   description?: string;
-  /** DSL 里声明的默认值；调试面板用它预填输入映射，避免控制字段被清空。 */
-  defaultValue?: unknown;
 };
 
 export type WorkflowDefinition = {
@@ -196,7 +114,6 @@ export type NodeField = {
   supportsRefs?: boolean;
   options?: string[];
   optionLabels?: Record<string, string>;
-  group?: string;
 };
 
 export type NodeBlock = {
@@ -214,7 +131,6 @@ export type NodeTypeSpec = {
   accent: string;
   fields: NodeField[];
   blocks: NodeBlock[];
-  ports: { inputs: NodePortSpec[]; outputs: NodePortSpec[] };
 };
 
 export type CanvasContract = {
@@ -222,7 +138,6 @@ export type CanvasContract = {
   containers: string;
   edgeScope: string;
   containerEditing: string;
-  nodePorts?: string;
   refSyntax: string;
   operators: string[];
   variableExprForms: string[];
@@ -239,17 +154,6 @@ export type PlatformIssue = {
   code: string;
   path: string;
   message: string;
-  /** 报错归属的节点 ID（含容器嵌套节点）；有值时上方提示可点击跳转到该节点。 */
-  nodeId?: string;
-  /** 落在「参数提取」节点某参数上时的参数下标，跳转后可在检查器里滚到那一行。 */
-  paramIndex?: number;
-  /** 调试门禁诊断用：error 阻断进入调试视图，warning 只提示。 */
-  severity?: "error" | "warning";
-};
-
-export type DiagnoseWorkflowResponse = {
-  ok: boolean;
-  issues: PlatformIssue[];
 };
 
 export type WorkflowSummary = {
@@ -261,12 +165,7 @@ export type WorkflowSummary = {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
-  /** 内置（全员可见）或自建（只有本人可见）。 */
-  source?: OwnershipSource;
 };
-
-/** 资源归属：内置的共享只读，自建的仅本人可见。 */
-export type OwnershipSource = "builtin" | "custom";
 
 export type WorkflowDetail = {
   definition: WorkflowDefinition;
@@ -529,27 +428,6 @@ export type AgentCapability = {
   weight: number;
 };
 
-/** 提示词里可以写 {{变量名}}，聊天时按这里声明的定义填值。 */
-export type AgentVariable = {
-  key: string;
-  label: string;
-  required: boolean;
-  defaultValue: string;
-};
-
-/** 自建智能体的对话行为配置。字段都可缺省，缺省即按默认值走。 */
-export type AgentChatConfig = {
-  welcome?: string;
-  quickPrompts?: string[];
-  /** 带进模型的历史轮数，1～30，默认 6。 */
-  contextTurns?: number;
-  maxTokens?: number | null;
-  temperature?: number | null;
-  /** false 表示攒完整段再一次性出现。 */
-  typewriter?: boolean;
-  variables?: AgentVariable[];
-};
-
 export type AgentRecord = {
   id: string;
   name: string;
@@ -563,12 +441,6 @@ export type AgentRecord = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-  /** builtin = 内置只读；custom = 自建（按账号可见，可改可删）。 */
-  source?: "builtin" | "custom";
-  description?: string;
-  /** 头像 data URL；空表示用名字首字生成。 */
-  avatar?: string;
-  chatConfig?: AgentChatConfig;
 };
 
 export type SaveAgentResponse = {
@@ -616,45 +488,10 @@ export type ModelProfileView = {
   description: string;
   provider: string;
   model: string;
-  /** 接口地址：仅自建模型返回，用于编辑回显；内置模型不返回。 */
-  baseUrl?: string;
   tags: string[];
   costTier: "low" | "medium" | "high";
   configured: boolean;
   custom: boolean;
-  /** 档案来源：设置面板里手动添加的，或历史数据里的内置档案。 */
-  origin: "builtin" | "env" | "user";
-  /** 密钥来源：设置面板里存的，或尚未配置。不携带任何密钥片段。 */
-  keySource: "stored" | "env" | "none";
-  isDefault: boolean;
-};
-
-/** 设置面板里提交的模型配置；apiKey 留空表示沿用已保存的密钥。 */
-export type ModelWrite = {
-  id?: string;
-  label?: string;
-  description?: string;
-  provider?: string;
-  model: string;
-  baseUrl: string;
-  apiKey?: string;
-  tags?: string[];
-  costTier?: "low" | "medium" | "high";
-};
-
-export type ModelProbeResult = {
-  ok: boolean;
-  latencyMs: number;
-  status: number;
-  message: string;
-};
-
-/** 按服务方返回的清单：这把密钥实际能调哪些模型。 */
-export type RemoteModelList = {
-  ok: boolean;
-  status: number;
-  models: string[];
-  message: string;
 };
 
 export type RegistryAgentView = AgentRecord & {
@@ -743,8 +580,6 @@ export type ToolRecord = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-  /** 内置工具全员可见；自建工具（自己连 MCP 同步出来的）只有本人可见。 */
-  source?: OwnershipSource;
 };
 
 export type SaveToolResponse = {
@@ -772,7 +607,6 @@ export type McpServerView = {
   updatedAt: string;
   envKeys: string[];
   toolCount: number;
-  source?: OwnershipSource;
 };
 
 export type McpServerWrite = {

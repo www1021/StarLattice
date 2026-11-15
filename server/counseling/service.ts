@@ -2,15 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { CounselingEvent, CounselingMessage, CounselingServerEvent } from "../../shared/counseling.js";
 import { isQwenConfigured, streamQwenChat } from "../qwenOpenAiClient.js";
 import type { SQLiteChatRepository } from "../storage/chatRepository.js";
-import { currentOwnerId } from "../auth/context.js";
 import { applyTurn, buildReport, CounselingError, createSession, makeCue, publicSession, scenarioReply, type InternalSession } from "./engine.js";
 
 type Emit = (event: CounselingServerEvent) => void;
 export class CounselingService {
   private active = new Map<string, { turnId: string; controller: AbortController }>();
   private sessions = new Map<string, InternalSession>();
-  /** 内存缓存会短路掉落库那层的 owner 条件，所以归属要在这一层单独记一份。 */
-  private sessionOwners = new Map<string, string | null>();
   constructor(private repository: SQLiteChatRepository) {}
 
   create(config: unknown) {
@@ -20,35 +17,21 @@ export class CounselingService {
   }
 
   get(id: string) {
-    this.assertOwned(id);
     let session = this.sessions.get(id);
     if (!session) {
       const raw = this.repository.getCounselingSession(id);
       if (!raw) throw new CounselingError("谈话记录不存在。", 404);
       session = JSON.parse(raw) as InternalSession;
       this.sessions.set(id, session);
-      this.sessionOwners.set(id, currentOwnerId());
     }
     return session;
   }
 
   view(id: string) { return publicSession(this.get(id)); }
 
-  /** 两边都有身份且不相等才拒绝；无身份的后台任务与单元测试保持老行为。 */
-  private assertOwned(id: string) {
-    const recorded = this.sessionOwners.get(id);
-    const ownerId = currentOwnerId();
-    if (recorded && ownerId && recorded !== ownerId) {
-      throw new CounselingError("谈话记录不存在。", 404);
-    }
-  }
-
   private persist(session: InternalSession) {
     this.repository.saveCounselingSession(session.id, JSON.stringify(session));
     this.sessions.set(session.id, session);
-    if (!this.sessionOwners.has(session.id)) {
-      this.sessionOwners.set(session.id, currentOwnerId());
-    }
   }
 
   probe(id: string, text: string, turnId: string, emit: Emit) {
@@ -68,7 +51,6 @@ export class CounselingService {
   }
 
   cancel(id: string, turnId?: string) {
-    this.assertOwned(id);
     const active = this.active.get(id);
     if (active && (!turnId || active.turnId === turnId)) {
       active.controller.abort();
@@ -133,7 +115,6 @@ export class CounselingService {
   }
 
   async finish(id: string) {
-    this.assertOwned(id);
     if (this.active.has(id)) throw new CounselingError("正在收束最后一段发言，请稍后结束。", 409);
     const session = this.get(id);
     session.report ||= buildReport(session);
@@ -150,7 +131,6 @@ export class CounselingService {
   }
 
   async saveDraft(id: string) {
-    this.assertOwned(id);
     if (this.active.has(id)) {
       throw new CounselingError("正在处理最后一段发言，请稍后再保存。", 409);
     }

@@ -2,12 +2,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import type { ElkNode } from "elkjs";
 import type { NodeKind, RunRecord, StepRecord, WorkflowDefinition, WorkflowNode } from "./types";
 
-/**
- * skipped 是「这次运行没轮到它」：上游分支没选中、或条件不成立。
- * 它和「还没跑到」不一样——后者压根没有状态，跳过则要明确标出来，
- * 否则用户会以为节点莫名其妙不干活。
- */
-export type RunNodeStatus = "succeeded" | "failed" | "running" | "skipped";
+export type RunNodeStatus = "succeeded" | "failed" | "running";
 
 const COLUMN_WIDTH = 330;
 const ROW_HEIGHT = 205;
@@ -299,24 +294,6 @@ export function createNode(kind: NodeKind, id: string, defaults: NodeDefaults = 
         maxQuestions: 2,
         inputs: {}
       };
-    case "extract":
-      return {
-        id,
-        kind,
-        title: "新参数提取节点",
-        params: [
-          {
-            name: "title",
-            label: "论文题目",
-            description: "用户要练的那篇论文的完整标题，如《基于深度学习的图像识别研究》",
-            type: "string",
-            required: true
-          }
-        ],
-        maxRounds: 3,
-        onMissing: "fail",
-        inputs: {}
-      };
     case "llm":
       return {
         id,
@@ -410,16 +387,6 @@ export function createLeafNode(kind: NodeKind, id: string): WorkflowNode {
   if (kind === "clarify") {
     return { id, kind, title: "新意图澄清步骤", clarifyOn: "high", maxQuestions: 2 };
   }
-  if (kind === "extract") {
-    return {
-      id,
-      kind,
-      title: "新参数提取步骤",
-      params: [{ name: "title", label: "论文题目", description: "要提取的完整标题", required: true }],
-      maxRounds: 3,
-      onMissing: "fail"
-    };
-  }
   if (kind === "template") {
     return { id, kind, title: "新文本模板步骤", template: "${input.topic}" };
   }
@@ -484,8 +451,6 @@ export function aggregateStatuses(steps: StepRecord[]): Map<string, RunNodeStatu
       }
     } else if (step.status === "succeeded" && !current) {
       statuses.set(root, "succeeded");
-    } else if (step.status === "skipped" && !current) {
-      statuses.set(root, "skipped");
     }
   }
   return statuses;

@@ -4,7 +4,6 @@ import type { CompleteToolChatOptions, ToolChatResult } from "../../qwenOpenAiCl
 import { BUILTIN_AGENTS } from "../registry/agents.js";
 import type { AgentRecord, AgentNode, ClarifyNode, IntentAnalysis, ToolRecord } from "../types.js";
 import { buildAgentSystemPrompt, createPlatformLiveHandlers } from "./liveHandlers.js";
-import { configureTestModel, configureTestModels } from "../../testing/modelFixtures.js";
 
 test("injects registry tools and memory into the agent system prompt", () => {
   const agent = agentRecord("lesson-plan-agent");
@@ -17,8 +16,9 @@ test("injects registry tools and memory into the agent system prompt", () => {
 
 test("tool-calling agent executes model-chosen knowledge and MCP tools before answering", async () => {
   const previousLive = process.env.PLATFORM_LIVE_AGENTS;
+  const previousKey = process.env.QWEN_API_KEY;
   process.env.PLATFORM_LIVE_AGENTS = "1";
-  const restoreModels = configureTestModel();
+  process.env.QWEN_API_KEY = "test-key";
 
   try {
     const searches: Array<{ query: string; knowledgeBaseIds: string[]; topK?: number }> = [];
@@ -135,18 +135,18 @@ test("tool-calling agent executes model-chosen knowledge and MCP tools before an
     assert.match(String(output.summary), /工具调用 4 次/);
   } finally {
     restore("PLATFORM_LIVE_AGENTS", previousLive);
-    restoreModels();
+    restore("QWEN_API_KEY", previousKey);
   }
 });
 
 test("routes fast and reasoning agents to different upstream models", async () => {
   const restoreEnv = withEnv({
     PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_MODEL_REASONING: "strong-model"
   });
-  const restoreModels = configureTestModel();
   try {
     const requested: string[] = [];
     const agents: Record<string, AgentRecord> = {
@@ -177,18 +177,17 @@ test("routes fast and reasoning agents to different upstream models", async () =
     assert.equal(strongOutput.modelSource, "agent");
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });
 
 test("node model overrides the agent model and is recorded in the step output", async () => {
   const restoreEnv = withEnv({
     PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_MODEL_REASONING: "strong-model"
   });
-  const restoreModels = configureTestModel();
   try {
     const requested: string[] = [];
     const handlers = createPlatformLiveHandlers({
@@ -214,16 +213,15 @@ test("node model overrides the agent model and is recorded in the step output", 
     assert.equal(output.modelSource, "node");
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });
 
 test("marks an unknown agent model as fallback instead of silently replacing it", async () => {
   const restoreEnv = withEnv({
     PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model"
   });
-  const restoreModels = configureTestModel();
   try {
     const requested: string[] = [];
     const handlers = createPlatformLiveHandlers({
@@ -245,25 +243,21 @@ test("marks an unknown agent model as fallback instead of silently replacing it"
     assert.equal((output.modelFallback as { requestedModel: string }).requestedModel, "vendor-model-x");
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });
 
 test("downgrades a high-cost model once the run token budget is exhausted", async () => {
   const restoreEnv = withEnv({
-    PLATFORM_LIVE_AGENTS: "1"
+    PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
+    PLATFORM_LIVE_MODEL: "default-model",
+    PLATFORM_MODEL_FAST: "fast-model",
+    PLATFORM_MODEL_REASONING: "strong-model"
   });
-  const restoreModels = configureTestModels(
-    [
-      { id: "strong-agent-model", model: "strong-model", costTier: "high" },
-      { id: "cheap-model", model: "cheap-model", costTier: "low" }
-    ],
-    { defaultId: "strong-agent-model" }
-  );
   try {
     const requested: string[] = [];
     const handlers = createPlatformLiveHandlers({
-      getAgent: () => routedAgent("strong-agent", "strong-agent-model"),
+      getAgent: () => routedAgent("strong-agent", "reasoning"),
       getTool: () => undefined,
       completeChat: async (options) => {
         requested.push(options.model ?? "");
@@ -278,36 +272,26 @@ test("downgrades a high-cost model once the run token budget is exhausted", asyn
       unknown
     >;
 
-    assert.deepEqual(requested, ["cheap-model"]);
+    assert.deepEqual(requested, ["fast-model"]);
     assert.equal(output.modelSource, "budget-downgrade");
-    assert.equal((output.modelDowngraded as { from: string }).from, "strong-agent-model");
+    assert.equal((output.modelDowngraded as { from: string }).from, "reasoning");
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });
 
 test("diagnose prompt lists model directory options for swap_model decisions", () => {
-  // 目录来自当前可用的模型：这里等价于用户在设置里配了快速/推理两条。
-  const restoreModels = configureTestModels([
-    { id: "fast-model", model: "fast-model", tags: ["fast"], costTier: "low" },
-    { id: "strong-model", model: "strong-model", tags: ["reasoning"], costTier: "high" }
-  ]);
-  try {
-    const prompt = buildAgentSystemPrompt(agentRecord("business-diagnostician"), {
-      id: "diagnose",
-      kind: "agent",
-      agent: "business-diagnostician",
-      loopRole: "diagnose",
-      outputFormat: "json"
-    });
+  const prompt = buildAgentSystemPrompt(agentRecord("business-diagnostician"), {
+    id: "diagnose",
+    kind: "agent",
+    agent: "business-diagnostician",
+    loopRole: "diagnose",
+    outputFormat: "json"
+  });
 
-    assert.match(prompt, /可选模型目录/);
-    assert.match(prompt, /strong-model（strong-model，high）/);
-    assert.match(prompt, /swap_model/);
-  } finally {
-    restoreModels();
-  }
+  assert.match(prompt, /可选模型目录/);
+  assert.match(prompt, /reasoning/);
+  assert.match(prompt, /swap_model/);
 });
 
 test("tool-calling prompt requires tool use and contract-compliant final answer", () => {
@@ -404,8 +388,7 @@ function mcpTool(id: string): ToolRecord | undefined {
     description: "经营数据工具",
     enabled: true,
     createdAt: "",
-    updatedAt: "",
-    source: "custom"
+    updatedAt: ""
   };
 }
 
@@ -428,9 +411,9 @@ function restore(name: string, value: string | undefined) {
 test("live clarify analyzes intent, then rewrites the prompt and retries once when a new number leaks in", async () => {
   const restoreEnv = withEnv({
     PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model"
   });
-  const restoreModels = configureTestModel();
   try {
     const systems: string[] = [];
     const rewritePrompts: string[] = [];
@@ -491,16 +474,15 @@ test("live clarify analyzes intent, then rewrites the prompt and retries once wh
     assert.match(systems[0] ?? "", /意图分析器/);
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });
 
 test("live clarify reports leaked numbers when the rewrite retry still violates the guardrail", async () => {
   const restoreEnv = withEnv({
     PLATFORM_LIVE_AGENTS: "1",
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model"
   });
-  const restoreModels = configureTestModel();
   try {
     let rewriteCalls = 0;
     const handlers = createPlatformLiveHandlers({
@@ -537,6 +519,5 @@ test("live clarify reports leaked numbers when the rewrite retry still violates 
     assert.deepEqual(rewrite.guardrail, { ok: false, unexpected: ["45"] });
   } finally {
     restoreEnv();
-    restoreModels();
   }
 });

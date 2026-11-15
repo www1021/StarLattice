@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test, { after, before } from "node:test";
+import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -8,16 +8,7 @@ import path from "node:path";
 import express from "express";
 import { registerPlatform } from "./routes.js";
 import { PlatformStateStore } from "./runtime/stateStore.js";
-import { runWithAuth } from "../auth/context.js";
 import type { WorkflowDefinition } from "./types.js";
-import { configureTestModels } from "../testing/modelFixtures.js";
-
-// 模型密钥只能来自账号设置，环境变量不再兜底：整份用例统一先备好一条可用模型。
-let restoreModels: () => void;
-before(() => {
-  restoreModels = configureTestModels([{ id: "test-model", tags: ["fast", "reasoning"] }]);
-});
-after(() => restoreModels());
 
 test("exposes registry agents and tools as node dropdown options", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
@@ -56,11 +47,11 @@ test("exposes registry agents and tools as node dropdown options", async () => {
 
     assert.equal(field("agent", "agentVersion").type, "select");
 
-    // 模型下拉不再有后端写死的条目：第一项固定是「跟随默认」，其余来自设置里配好的模型。
     const modelField = field("agent", "model");
     assert.equal(modelField.type, "select");
-    assert.equal(modelField.options?.[0], "platform-default");
-    assert.match(modelField.optionLabels?.["platform-default"] ?? "", /跟随默认/);
+    assert.ok(modelField.options?.includes("reasoning"));
+    assert.ok(modelField.options?.includes("verifier"));
+    assert.match(modelField.optionLabels?.reasoning ?? "", /推理/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
@@ -271,11 +262,10 @@ async function waitForPendingInteraction(
   throw new Error("等待待输入交互超时");
 }
 
-test("model list only shows models the user configured, never key material", async () => {
-  const previousDir = process.env.MODEL_SETTINGS_DIR;
+test("exposes the logical model catalog without leaking credentials", async () => {
+  const previousKey = process.env.QWEN_API_KEY;
+  process.env.QWEN_API_KEY = "test-key";
   const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
-  // 独立设置目录，避免读到开发机上真实的模型配置；密钥只能来自这里。
-  process.env.MODEL_SETTINGS_DIR = path.join(directory, "settings");
   const store = new PlatformStateStore(path.join(directory, "platform.db"));
   const app = express();
   app.use(express.json());
@@ -286,38 +276,20 @@ test("model list only shows models the user configured, never key material", asy
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
 
   try {
-    const saved = await fetch(`${base}/models`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        label: "DeepSeek 对话",
-        provider: "deepseek",
-        model: "deepseek-chat",
-        baseUrl: "https://api.deepseek.com/v1",
-        apiKey: "sk-should-never-leave-the-server",
-        costTier: "low"
-      })
-    });
-    assert.equal(saved.status, 200);
-
     const payload = (await fetch(`${base}/models`).then((response) => response.json())) as {
       models: Array<Record<string, unknown>>;
       total: number;
-      defaultModelId: string;
     };
-    // 列表里只有用户配的这一条：内置档案与隐藏兜底都不出现
-    assert.equal(payload.total, 1);
-    assert.equal(payload.defaultModelId, "deepseek-chat");
-
-    const item = payload.models[0];
-    assert.equal(item.id, "deepseek-chat");
-    assert.equal(item.label, "DeepSeek 对话");
-    assert.equal(item.configured, true);
-    assert.equal(item.isDefault, true);
-    assert.equal(item.keySource, "stored");
-    assert.equal("apiKey" in item, false);
-    const serialized = JSON.stringify(payload);
-    assert.equal(serialized.includes("sk-should-never-leave-the-server"), false);
+    assert.ok(payload.total >= 6);
+    const ids = payload.models.map((model) => model.id);
+    for (const id of ["platform-default", "fast", "reasoning", "verifier", "vision", "minimax"]) {
+      assert.ok(ids.includes(id), id);
+    }
+    const fast = payload.models.find((model) => model.id === "fast");
+    assert.equal(fast?.configured, true);
+    assert.equal(fast?.costTier, "low");
+    assert.equal("apiKey" in (fast ?? {}), false);
+    assert.equal("baseUrl" in (fast ?? {}), false);
 
     const agents = (await fetch(`${base}/registry`).then((response) => response.json())) as {
       agents: Array<{ id: string; model?: string; modelProfile?: { id: string; label: string } }>;
@@ -325,7 +297,6 @@ test("model list only shows models the user configured, never key material", asy
     const diagnostician = agents.agents.find((agent) => agent.id === "business-diagnostician");
     assert.equal(diagnostician?.model, "reasoning");
     assert.equal(diagnostician?.modelProfile?.id, "reasoning");
-    // 角色解析到默认模型，标签里带角色名，注册中心仍然可读
     assert.match(diagnostician?.modelProfile?.label ?? "", /推理/);
 
     const rejected = await fetch(`${base}/agents`, {
@@ -335,15 +306,15 @@ test("model list only shows models the user configured, never key material", asy
     });
     assert.equal(rejected.status, 422);
     const error = (await rejected.json()) as { message?: string };
-    assert.match(error.message ?? "", /可用模型/);
+    assert.match(error.message ?? "", /可用逻辑模型/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
     rmSync(directory, { recursive: true, force: true });
-    if (previousDir === undefined) {
-      delete process.env.MODEL_SETTINGS_DIR;
+    if (previousKey === undefined) {
+      delete process.env.QWEN_API_KEY;
     } else {
-      process.env.MODEL_SETTINGS_DIR = previousDir;
+      process.env.QWEN_API_KEY = previousKey;
     }
   }
 });
@@ -399,105 +370,6 @@ test("exposes real scheduler leases and active agent loads", async () => {
       activeLoads: Record<string, { inFlight: number }>;
     };
     assert.deepEqual(afterRelease.activeLoads, {});
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("保存工作流按账号归属拦截：member 不能覆盖共享/他人版本，部署者改共享保持共享", async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-scope-"));
-  const store = new PlatformStateStore(path.join(directory, "platform.db"));
-  const app = express();
-  app.use(express.json());
-  // 测试用身份中间件：x-test-user 头决定请求以哪个账号进入，模拟真实登录。
-  app.use((request, _response, next) => {
-    const userId = request.header("x-test-user");
-    if (userId) {
-      runWithAuth(
-        {
-          userId,
-          username: userId,
-          displayName: userId,
-          role: userId === "deployer" ? "owner" : "member",
-          sessionId: "test"
-        },
-        () => next()
-      );
-      return;
-    }
-    next();
-  });
-  registerPlatform(app, { store });
-  const server = await new Promise<Server>((resolve) => {
-    const listening = app.listen(0, () => resolve(listening));
-  });
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
-  const save = async (user: string | undefined, dsl: unknown) => {
-    const response = await fetch(`${base}/workflows`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(user ? { "x-test-user": user } : {})
-      },
-      body: JSON.stringify({ dsl })
-    });
-    return { status: response.status, payload: (await response.json()) as { message?: string; workflow?: { definition: WorkflowDefinition; ownerId?: string } } };
-  };
-  const probe: WorkflowDefinition = {
-    id: "scope-probe",
-    name: "归属探针",
-    version: 1,
-    inputs: [],
-    nodes: [{ id: "draft", kind: "agent", agent: "lesson-plan-agent", title: "节点" }],
-    edges: []
-  };
-
-  try {
-    // 无身份播种 → 行 owner 为 null（共享），v1。
-    const seeded = await save(undefined, probe);
-    assert.equal(seeded.status, 201);
-
-    // member 改共享流程：明确 403，而不是静默 no-op 后返回空 workflow。
-    const memberHit = await save("member-a", { ...probe, name: "成员改名" });
-    assert.equal(memberHit.status, 403);
-    assert.match(memberHit.payload.message ?? "", /共享/);
-
-    // 部署者改共享流程：通过，且新版本仍然共享（owner null）。
-    const deployerSave = await save("deployer", { ...probe, name: "部署者改名" });
-    assert.equal(deployerSave.status, 201);
-    assert.equal(deployerSave.payload.workflow?.definition.version, 2);
-    const rows = store.listWorkflows();
-    assert.ok(rows.some((row) => row.id === "scope-probe"));
-
-    // 部署者落库的 v2 归属为空（共享），member 能看到 v2。
-    const memberView = await fetch(`${base}/workflows/scope-probe`, {
-      headers: { "x-test-user": "member-a" }
-    }).then((response) => response.json()) as { workflow: { definition: WorkflowDefinition } };
-    assert.equal(memberView.workflow.definition.version, 2);
-    assert.equal(memberView.workflow.definition.name, "部署者改名");
-
-    // member 建自己的流程不受影响。
-    const own: WorkflowDefinition = {
-      id: "member-own",
-      name: "成员自建",
-      version: 1,
-      inputs: [],
-      nodes: [{ id: "draft", kind: "agent", agent: "lesson-plan-agent", title: "节点" }],
-      edges: []
-    };
-    const memberOwn = await save("member-a", own);
-    assert.equal(memberOwn.status, 201);
-    const again = await save("member-a", { ...own, name: "成员自建二" });
-    assert.equal(again.status, 201);
-    assert.equal(again.payload.workflow?.definition.version, 2);
-
-    // 版本号撞上别人看不见的私有行：409 而不是静默 no-op。
-    const collide: WorkflowDefinition = { ...own, id: "member-own", version: 2 };
-    const memberB = await save("member-b", collide);
-    assert.equal(memberB.status, 409);
-    assert.match(memberB.payload.message ?? "", /版本冲突|占用/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();

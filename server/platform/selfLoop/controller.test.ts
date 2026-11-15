@@ -282,7 +282,7 @@ test("model diagnosis can swap to a stronger model from the catalog", () => {
   assert.equal(decision.continue, true);
   assert.equal(decision.action, "swap_model");
   assert.equal(decision.nextModelId, "reasoning");
-  assert.match(decision.nextModelLabel ?? "", /推理/);
+  assert.equal(decision.nextModelLabel, "推理模型");
   assert.equal(decision.decisionSource, "model");
   assert.equal(decision.promptPatch, "当数据含退款时按净销售额核算。");
   assert.ok(decision.changes.some((change) => change.includes("执行模型 fast → reasoning")));
@@ -338,7 +338,7 @@ test("model action aliases normalize to swap_model", () => {
 
 test("heuristic upgrades the model after a stall when profiles resolve to different upstream models", () => {
   const restore = withEnv({
-    PLATFORM_MODEL_FAST: "cheap-model",
+    PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_MODEL_REASONING: "strong-model"
   });
   try {

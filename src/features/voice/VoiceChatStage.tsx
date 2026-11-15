@@ -254,10 +254,10 @@ export function VoiceChatStage({
       ctx.clip();
 
       const base = ctx.createRadialGradient(0, -R * 0.25, R * 0.05, 0, 0, R * 1.05);
-      base.addColorStop(0, "#fffefb");
-      base.addColorStop(0.5, "#f3ecdf");
-      base.addColorStop(0.82, "#e2d2b8");
-      base.addColorStop(1, "#cbb28c");
+      base.addColorStop(0, "#ffffff");
+      base.addColorStop(0.5, "#eef1ff");
+      base.addColorStop(0.82, "#c6d0f6");
+      base.addColorStop(1, "#aab8f0");
       ctx.fillStyle = base;
       ctx.fillRect(-R * 1.4, -R * 1.4, R * 2.8, R * 2.8);
 

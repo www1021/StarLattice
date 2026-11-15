@@ -62,34 +62,6 @@ import {
   type TextContentBlock,
   UpstreamModelError
 } from "./qwenOpenAiClient.js";
-import { resolveModel } from "./platform/models/catalog.js";
-import {
-  buildAgentChatSystemPrompt,
-  contextTurnsOf,
-  trimMessagesByTurns
-} from "./platform/chat/agentChat.js";
-import {
-  buildChatToolCatalog,
-  runChatToolLoop,
-  toToolChatMessages,
-  type ChatToolTrace
-} from "./platform/chat/agentTools.js";
-import { AuthStore } from "./auth/store.js";
-import { registerAuth, resolveRequestAuth } from "./auth/routes.js";
-import {
-  authFromResponse,
-  bindConnectionAuth,
-  currentAuth,
-  resumeAuth,
-  runWithAuth
-} from "./auth/context.js";
-import {
-  backfillOrphanRows,
-  backfillOwnerData,
-  deleteOwnerData,
-  ensureOwnerColumns,
-  quarantineLegacySettings
-} from "./auth/ownership.js";
 import {
   generateMiniMaxLessonPlanDraft,
   generateStreamingMiniMaxLessonPlanDraft,
@@ -143,12 +115,6 @@ import { PlatformStateStore } from "./platform/runtime/stateStore.js";
 import { WorkflowExecutor } from "./platform/runtime/executor.js";
 import { McpManager } from "./platform/mcp/mcpManager.js";
 import { runWorkflowTool, syncWorkflowTools } from "./platform/mcp/workflowTools.js";
-import { PluginService } from "./platform/plugins/pluginService.js";
-import { PLUGIN_TOOL_ENDPOINT_PREFIX, syncPluginTools } from "./platform/plugins/pluginTools.js";
-import type { McpCallResult, ToolRecord } from "./platform/types.js";
-
-/** 插件/工具结果里文本字段的最大长度，超长截断（对话侧还有 6000 上限兜底）。 */
-const MAX_TOOL_TEXT_LENGTH = 6000;
 import {
   isPlatformLiveEnabled
 } from "./platform/runtime/liveHandlers.js";
@@ -171,12 +137,6 @@ type ChatStreamRequest = {
   messages?: unknown;
   trainingType?: unknown;
   assistantMode?: unknown;
-  /** 本轮使用的模型 id；留空表示跟随设置里的默认模型。 */
-  model?: unknown;
-  /** 自建智能体 id；带上就走它的角色、提示词与模型。 */
-  agentId?: unknown;
-  /** 智能体提示词里的 {{变量}} 取值，按会话传。 */
-  variables?: unknown;
 };
 
 type StreamPhaseStep = {
@@ -329,52 +289,16 @@ const supportedImageTypes = new Map([
 ]);
 const supportedTextExtensions = new Set(["txt", "md", "csv", "json"]);
 
-/**
- * 认证必须挂在所有业务路由之前：公开接口先注册，再一个 app.use 兜住其余 /api。
- * 顺序反了会把登录接口自己也锁在外面，或者让业务端点绕过鉴权。
- */
-const authStore = new AuthStore();
-registerAuth(app, {
-  store: authStore,
-  // 这台机器默认允许自助注册：谁都可能是新用户，不该先找所有者要邀请。
-  // 真要收敛成「只允许所有者添加成员」，显式设 AUTH_ALLOW_SIGNUP=0 即可。
-  allowSignup: process.env.AUTH_ALLOW_SIGNUP !== "0",
-  onFirstUser: (userId) => backfillOwnerData(userId, authStore),
-  onDeleteUser: (userId) => deleteOwnerData(userId, path.resolve("generated"))
-});
-
-/**
- * body 解析把请求带出了鉴权建立的异步上下文（见 resumeAuth 的说明），
- * 所有解析器都要在完成回调里把身份接回来，否则后面的业务代码看不见账号。
- */
-const readJsonBody = express.json({ limit: "1mb" });
-app.use((request, response, next) => {
-  readJsonBody(request, response, (error?: unknown) => {
-    resumeAuth(authFromResponse(response), () => next(error as Error | undefined));
-  });
-});
+app.use(express.json({ limit: "1mb" }));
 const counseling = registerCounseling(app, httpServer, chatRepository);
 const counselingService = counseling.service;
 const platformStore = new PlatformStateStore();
-// 三个业务库的表都建好了，再统一补 owner_id 列与索引。
-ensureOwnerColumns();
-// 单账号环境里，账号体系之后才加隔离列的老数据（比如历史运行记录）归属是空的，
-// 直接补给这个账号；多账号时不动，宁可看不见也不乱判给谁。
-if (authStore.countUsers() === 1) {
-  const only = authStore.firstUser();
-  if (only) {
-    backfillOrphanRows(only.id);
-  }
-}
-// 分账号之前留下的全局模型配置已经被首账号接管的话，把根目录那份收进 _legacy，
-// 免得无身份的后台调用落到共享目录、把某个账号的 API Key 当成平台凭据用。
-quarantineLegacySettings();
 seedEvolutionDatasets(platformStore);
 const platformEvolution = new EvolutionService({ store: platformStore });
 const platformLiveEnabled = isPlatformLiveEnabled();
 if (process.env.PLATFORM_LIVE_AGENTS === "1" && !platformLiveEnabled) {
   console.warn(
-    "[platform] PLATFORM_LIVE_AGENTS=1，但所有账号的模型目录里都没有带凭据的模型；平台仍用 stub 执行器。请到「设置 → 模型与密钥」添加模型后重启。"
+    "[platform] PLATFORM_LIVE_AGENTS=1 但未检测到 QWEN_API_KEY/DASHSCOPE_API_KEY，平台继续使用 stub 执行器。"
   );
 }
 const platformMcp = new McpManager(platformStore);
@@ -473,25 +397,6 @@ registerPlatform(app, {
   evolution: platformEvolution,
   mcp: platformMcp,
   reclaimer: schedulerReclaimer,
-  /** 主聊天页的工作流会话复用聊天业务的会话库，平台模块不直接持有 chatRepository。 */
-  persistWorkflowConversation: async (input) => {
-    const conversationId = input.conversationId || randomUUID();
-    const messages: StoredChatMessage[] = input.messages;
-    await chatRepository.saveConversation({
-      conversationId,
-      title: buildConversationTitle(messages),
-      trainingType: "通用对话",
-      assistantMode: "office",
-      messages,
-      knowledgeBaseIds: [],
-      attachmentNames: [],
-      artifacts: [],
-      citations: [],
-      workflowId: input.workflowId,
-      lastRunId: input.runId
-    });
-    return conversationId;
-  },
   knowledge: {
     listBases: () => knowledgeProvider.listBases(),
     createBase: (name) => knowledgeProvider.createBase(name),
@@ -506,12 +411,7 @@ registerPlatform(app, {
 platformMcp.setWorkflowRunner((tool, args) =>
   runWorkflowTool(platformStore, platformExecutor, tool, args)
 );
-// 平台插件（builtin）同样内联执行：知识库检索、课堂/谈心训练、报告与导出等本地服务。
-platformMcp.setBuiltinRunner((tool, args) => executeBuiltinTool(tool, args));
 syncWorkflowTools(platformStore);
-// 插件页的自建插件同步为 Agent 可挂的工具（plugin:// 端点，执行走插件调用器）。
-const platformPlugins = new PluginService();
-syncPluginTools(platformPlugins, platformStore);
 
 /**
  * 内置工作流引用的是示例资料包 id；导入资料包后本地库会生成 kb_ 前缀的新 id。
@@ -692,155 +592,6 @@ async function generateClassroomReportPayload(sessionId: string) {
 }
 
 /**
- * 平台插件（builtin://）的执行分发：把注册表里的插件端点接到本地服务实现。
- * 对话 Agent、工作流 tool 节点与 agent 节点的工具调用共用这一条通路。
- */
-async function executeBuiltinTool(
-  tool: ToolRecord,
-  args: Record<string, unknown>
-): Promise<McpCallResult> {
-  const startedAt = Date.now();
-  const reply = (data: unknown, text?: string, isError = false) => {
-    const message =
-      text ??
-      (typeof data === "string" ? data : JSON.stringify(data, null, 2)).slice(0, MAX_TOOL_TEXT_LENGTH);
-    return {
-      serverId: "builtin",
-      serverName: "平台插件",
-      tool: tool.id,
-      latencyMs: Date.now() - startedAt,
-      isError,
-      content: [{ type: "text" as const, text: message }],
-      text: message,
-      structuredContent: isError ? undefined : data
-    };
-  };
-  try {
-    const endpoint = (tool.endpoint ?? "").replace(/^builtin:\/\//, "");
-    switch (endpoint) {
-      case "knowledge/search": {
-        const query = readToolString(args.query, "query");
-        const citations = await searchKnowledge({
-          query,
-          knowledgeBaseIds: Array.isArray(args.knowledgeBaseIds)
-            ? (args.knowledgeBaseIds as string[])
-            : [],
-          topK: typeof args.topK === "number" ? args.topK : 5
-        });
-        return reply({ query, citationCount: citations.length, citations });
-      }
-      case "classroom/simulate": {
-        // 与 classroom.turn 的差别只在语义：模拟允许不带会话，先用默认班级画像开一间。
-        let sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
-        if (!sessionId) {
-          const created = await classroomService.createClassroom({
-            subject: typeof args.subject === "string" ? args.subject : "综合",
-            grade: typeof args.grade === "string" ? args.grade : "高一",
-            topic: readToolString(args.teacherText ?? args.topic, "teacherText").slice(0, 60),
-            knowledgeBaseIds: Array.isArray(args.knowledgeBaseIds)
-              ? (args.knowledgeBaseIds as string[])
-              : []
-          });
-          sessionId = created.sessionId;
-        }
-        const result = await classroomService.teacherSpeak(
-          sessionId,
-          readToolString(args.teacherText, "teacherText")
-        );
-        return reply({ sessionId, ...result });
-      }
-      case "report/build": {
-        const observer = (args.observer ?? {}) as Record<string, unknown>;
-        const score = typeof args.score === "number" ? args.score : 0;
-        const iterations = typeof args.iterations === "number" ? args.iterations : 0;
-        const passed = score >= 0.8;
-        return reply({
-          summary: `训练完成：${iterations} 轮迭代，综合得分 ${(score * 100).toFixed(0)} 分（${passed ? "达标" : "未达标"}）。`,
-          score,
-          iterations,
-          passed,
-          strengths: Array.isArray(observer.strengths) ? observer.strengths : [],
-          improvements: Array.isArray(observer.improvements) ? observer.improvements : [],
-          generatedAt: new Date().toISOString()
-        });
-      }
-      case "verify/rubric": {
-        const artifactText =
-          typeof args.output === "string"
-            ? args.output
-            : JSON.stringify(args.output ?? {}, null, 2);
-        const rubric = Array.isArray(args.rubric) ? (args.rubric as string[]) : [];
-        const threshold = typeof args.threshold === "number" ? args.threshold : 0.8;
-        // 轻量启发式评分：按维度关键词命中 + 内容充分度打分（与工作流 verify 节点的 stub 层同源思路）。
-        const dimensions = rubric.map((name) => {
-          const tokens = String(name)
-            .split(/[\s、,，/]/)
-            .filter((token) => token.length >= 2);
-          const hit = tokens.some((token) => artifactText.includes(token));
-          const lengthFactor = Math.min(1, artifactText.length / 600);
-          const value = Math.min(1, 0.4 + (hit ? 0.35 : 0) + 0.25 * lengthFactor);
-          return {
-            name,
-            score: Number(value.toFixed(3)),
-            comment: hit ? "内容覆盖了该维度的关键词" : "未明确命中该维度的关键词，建议补充对应论述"
-          };
-        });
-        const score =
-          dimensions.length > 0
-            ? dimensions.reduce((sum, item) => sum + item.score, 0) / dimensions.length
-            : 0;
-        return reply({
-          score: Number(score.toFixed(3)),
-          threshold,
-          passed: score >= threshold,
-          confidence: 0.6,
-          dimensions,
-          note: "插件侧为启发式评分；需要分层验证请使用工作流的 verify 节点。"
-        });
-      }
-      case "export/docx": {
-        const [artifact] = await generateArtifacts([
-          {
-            name: typeof args.name === "string" && args.name.trim() ? args.name : "插件导出",
-            type: "docx",
-            title: typeof args.title === "string" ? args.title : undefined,
-            content: typeof args.content === "string" ? args.content : undefined,
-            sections: Array.isArray(args.sections) ? args.sections : undefined
-          }
-        ]);
-        if (!artifact) {
-          return reply("导出失败：未能生成文档（请检查 name/content 参数）。", undefined, true);
-        }
-        return reply({ id: artifact.id, name: artifact.name, type: artifact.type, url: artifact.url, size: artifact.size });
-      }
-      default: {
-        // 插件页自建插件：plugin:// 端点走插件调用器（api 插件发真实请求，code 插件跑代码）。
-        if (endpoint.startsWith(PLUGIN_TOOL_ENDPOINT_PREFIX)) {
-          const pluginId = endpoint.slice(PLUGIN_TOOL_ENDPOINT_PREFIX.length);
-          const result = await platformPlugins.test(pluginId, args);
-          const text = result.ok
-            ? result.preview?.trim() || "（插件执行成功，但没有返回文本）"
-            : `插件执行失败：${result.error ?? "未知错误"}`;
-          return reply(
-            result.ok ? { preview: result.preview, detail: result.detail, request: result.request } : text,
-            text.slice(0, MAX_TOOL_TEXT_LENGTH),
-            !result.ok
-          );
-        }
-        // 课堂与谈心系列直接复用训练工具的确定性入口。
-        const training = await executeTrainingTool(tool.id, args);
-        if (training !== undefined) {
-          return reply(training);
-        }
-        return reply(`插件「${tool.id}」没有可用的执行实现（端点 ${endpoint || "未声明"}）。`, undefined, true);
-      }
-    }
-  } catch (error) {
-    return reply(error instanceof Error ? error.message : String(error), undefined, true);
-  }
-}
-
-/**
  * 训练工具的确定性入口：课堂与谈心谈话的会话状态仍由原服务维护，
  * 但每次调用都发生在平台工作流节点中，因此运行监控能看到完整会话轨迹。
  */
@@ -963,19 +714,6 @@ function readToolString(value: unknown, key: string) {
 
 app.get("/api/files/:id", (request, response) => {
   const id = path.basename(request.params.id);
-  const context = currentAuth();
-  const owner = authStore.getFileOwner(id);
-  // 随机文件名不构成权限控制；必须核对归属，猜到 id 也不能拿别人的导出件。
-  if (!context || !owner || owner !== context.userId) {
-    authStore.recordEvent({
-      userId: context?.userId ?? null,
-      action: "file.download",
-      target: id,
-      result: "denied"
-    });
-    response.status(404).json({ message: "文件不存在" });
-    return;
-  }
   response.download(getGeneratedFilePath(id));
 });
 
@@ -1493,36 +1231,34 @@ app.get("/api/knowledge/documents/:id/chunks", async (request, response) => {
 });
 
 app.post("/api/knowledge/bases/:id/documents", (request, response) => {
-  upload.single("file")(request, response, (error) =>
-    resumeAuth(authFromResponse(response), async () => {
-      if (error) {
-        respondToUploadError(response, error);
-        return;
-      }
+  upload.single("file")(request, response, async (error) => {
+    if (error) {
+      respondToUploadError(response, error);
+      return;
+    }
 
-      if (!request.file) {
-        response.status(400).json({ message: "file is required" });
-        return;
-      }
+    if (!request.file) {
+      response.status(400).json({ message: "file is required" });
+      return;
+    }
 
-      try {
-        const document = await knowledgeProvider.addDocument(
-          request.params.id,
-          request.file,
-          parseKnowledgeDocumentMetadata(request.body)
-        );
-        response.status(201).json({ document });
-      } catch (knowledgeError) {
-        const status =
-          knowledgeError instanceof KnowledgeError ? knowledgeError.status : 400;
-        const message =
-          knowledgeError instanceof Error
-            ? knowledgeError.message
-            : "知识库文件解析失败";
-        response.status(status).json({ message });
-      }
-    })
-  );
+    try {
+      const document = await knowledgeProvider.addDocument(
+        request.params.id,
+        request.file,
+        parseKnowledgeDocumentMetadata(request.body)
+      );
+      response.status(201).json({ document });
+    } catch (knowledgeError) {
+      const status =
+        knowledgeError instanceof KnowledgeError ? knowledgeError.status : 400;
+      const message =
+        knowledgeError instanceof Error
+          ? knowledgeError.message
+          : "知识库文件解析失败";
+      response.status(status).json({ message });
+    }
+  });
 });
 
 app.post("/api/knowledge/search", async (request, response) => {
@@ -1577,9 +1313,7 @@ app.post("/api/speak-training/oralize-material", async (request, response) => {
   }
 
   if (!isQwenConfigured()) {
-    response.status(503).json({
-      message: "还没有可用的模型。请先到「设置 → 模型与密钥」里添加模型并填入自己的 API Key。"
-    });
+    response.status(503).json({ message: "口语表达生成功能暂不可用，请配置模型服务后重试。" });
     return;
   }
 
@@ -1836,25 +1570,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   const knowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
   const requestedTrainingType = normalizeTrainingType(body.trainingType);
   const assistantMode = body.assistantMode === "office" ? "office" : "education";
-  // 输入框下方选的那条模型；没选就跟随设置里的默认，解析失败时退回默认，不打断对话。
-  const requestedModelId = typeof body.model === "string" ? body.model.trim() : "";
-  // 自建智能体：带了 agentId 就用它的角色、提示词和模型。
-  // 找不到不静默退回默认助手——用户明明选了「文献阅读」，却收到默认人格的回答，
-  // 只会以为「我配的 agent 没生效」，不如直接把原因说清楚。
-  const chatAgentId = typeof body.agentId === "string" ? body.agentId.trim() : "";
-  const chatAgent = chatAgentId ? platformStore.getAgent(chatAgentId) : undefined;
-  if (chatAgentId && !chatAgent) {
-    response.status(404).json({
-      message: "找不到这个智能体，可能已被删除或不属于当前账号。请重新选一个再发。"
-    });
-    return;
-  }
-  const agentVariables = parseAgentVariables(body.variables);
-  // 上下文轮数由智能体配置决定；没配就是默认 6 轮。裁剪放在后端，
-  // 否则客户端改个请求体就能绕过，聊天迟早撞模型上下文上限。
-  const modelInputMessages = chatAgent
-    ? trimMessagesByTurns(messages, contextTurnsOf(chatAgent))
-    : messages;
   const isKnowledgeBaseOverview = isKnowledgeBaseOverviewRequest(
     getLastUserText(messages)
   );
@@ -1885,7 +1600,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
 
   try {
     modelMessages = await attachUploadedFilesToMessages(
-      modelInputMessages,
+      messages,
       getUploadedFiles(request)
     );
     if (!isKnowledgeBaseOverview) {
@@ -1909,7 +1624,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   const abortController = new AbortController();
   let assistantContent = "";
   let thinkingContent = "";
-  let chatToolCalls: ChatToolTrace[] = [];
   let evaluation: TrainingEvaluation | undefined;
   let metricsSent = false;
   const requestStartedAt = Date.now();
@@ -1934,100 +1648,39 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
 
   try {
     let artifactRequests: unknown[] = [];
-    // 关掉逐字回复时，这一轮的文字先攒着，结束后一次性下发。
-    let bufferedContent = "";
 
     if (isKnowledgeBaseOverview) {
       assistantContent = await buildKnowledgeBaseOverview(knowledgeBaseIds);
       writeSse(response, "delta", { content: assistantContent });
     } else {
-      // 智能体的模型优先于输入框里那条：模型是智能体的一部分配置，
-      // 让它被一个全局下拉随手覆盖，用户会觉得「我明明配了却不生效」。
-      const picked = resolveChatModel(chatAgent?.model || requestedModelId);
-      // 智能体引用的工具只认注册中心里「已启用 + 可执行」的那几条，
-      // 配置里写了但工具被停用时，宁可不告诉模型有这件武器。
-      const chatToolCatalog = chatAgent
-        ? buildChatToolCatalog(chatAgent.tools, (id) => platformStore.getTool(id))
-        : [];
-      const systemPrompt = chatAgent
-        ? buildAgentChatSystemPrompt(chatAgent, {
-            variables: agentVariables,
-            toolNames: chatToolCatalog.map((item) => item.tool.name || item.toolId)
-          })
-        : assistantMode === "office"
-          ? buildOfficeAssistantSystemPrompt()
-          : undefined;
-      const typewriter = chatAgent?.chatConfig?.typewriter !== false;
-
-      if (chatToolCatalog.length > 0) {
-        // 挂了工具就不走流式：工具执行期间没有正文可吐，
-        // 「先调完工具、再一次性给结论」比「先吐一半、回头再补」更可信。
-        const toolRun = await runChatToolLoop({
-          system: systemPrompt,
-          messages: toToolChatMessages(modelMessages),
-          catalog: chatToolCatalog,
-          callTool: (tool, args) => platformMcp.callToolRecord(tool, args),
-          model: picked.model,
-          provider: picked.provider,
-          maxTokens: chatAgent?.chatConfig?.maxTokens ?? undefined,
-          temperature: chatAgent?.chatConfig?.temperature ?? undefined,
-          signal: abortController.signal,
-          onProgress(progress) {
-            writeSse(response, "tool", {
-              toolId: progress.toolId,
-              name: progress.name,
-              stage: progress.stage,
-              ok: progress.ok,
-              summary: progress.summary,
-              latencyMs: progress.latencyMs
-            });
+      const streamResult = await streamQwenChat({
+        system: assistantMode === "office" ? buildOfficeAssistantSystemPrompt() : undefined,
+        messages: modelMessages,
+        enableThinking,
+        signal: abortController.signal,
+        onDelta(content) {
+          if (!metricsSent) {
+            metricsSent = true;
+            if (enableThinking) {
+              writeSse(response, "metrics", {
+                thinkingSeconds: roundSeconds(Date.now() - requestStartedAt)
+              });
+            }
           }
-        });
-        chatToolCalls = toolRun.calls;
-        assistantContent = toolRun.content;
-        writeSse(response, "delta", { content: toolRun.content });
-      } else {
-        const streamResult = await streamQwenChat({
-          system: systemPrompt,
-          messages: modelMessages,
-          model: picked.model,
-          provider: picked.provider,
-          enableThinking,
-          maxTokens: chatAgent?.chatConfig?.maxTokens ?? undefined,
-          temperature: chatAgent?.chatConfig?.temperature ?? undefined,
-          signal: abortController.signal,
-          onDelta(content) {
-            if (!metricsSent) {
-              metricsSent = true;
-              if (enableThinking) {
-                writeSse(response, "metrics", {
-                  thinkingSeconds: roundSeconds(Date.now() - requestStartedAt)
-                });
-              }
-            }
 
-            assistantContent += content;
-            if (typewriter) {
-              writeSse(response, "delta", { content });
-            } else {
-              bufferedContent += content;
-            }
-          },
-          onThinkingDelta(content) {
-            if (!enableThinking) {
-              return;
-            }
-
-            thinkingContent += content;
-            writeSse(response, "thinking_delta", { content });
+          assistantContent += content;
+          writeSse(response, "delta", { content });
+        },
+        onThinkingDelta(content) {
+          if (!enableThinking) {
+            return;
           }
-        });
-        artifactRequests = streamResult.artifactRequests;
-      }
-    }
-    // 关掉逐字时这里才把整段文字送出去；开着的走上面的增量，不必重复发。
-    if (bufferedContent) {
-      writeSse(response, "delta", { content: bufferedContent });
+
+          thinkingContent += content;
+          writeSse(response, "thinking_delta", { content });
+        }
+      });
+      artifactRequests = streamResult.artifactRequests;
     }
     const artifacts = await generateArtifacts(
       coerceArtifactRequests(artifactRequests)
@@ -2042,33 +1695,15 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         role: message.role,
         content: contentToStoredString(message.content)
       })),
-      {
-        role: "assistant",
-        content: assistantContent,
-        // 留痕：重开这段会话时，气泡上方还能看到「查了哪些工具」。
-        ...(chatToolCalls.length > 0
-          ? {
-              toolNotes: chatToolCalls.map((call) => ({
-                toolId: call.toolId,
-                name: call.name,
-                ok: call.ok,
-                latencyMs: call.latencyMs,
-                summary: call.summary
-              }))
-            }
-          : {})
-      }
+      { role: "assistant", content: assistantContent }
     ];
 
-    // 智能体对话按「通用对话」存档：它没有教学培训的评分口径，
-    // 走教案/说课那条分支会硬算出一份没有意义的评价。
-    if (assistantMode === "office" || chatAgent) {
+    if (assistantMode === "office") {
       await chatRepository.saveConversation({
         conversationId,
         title: buildConversationTitle(storedMessages),
         trainingType: "通用对话",
-        assistantMode: assistantMode === "office" ? "office" : "education",
-        agentId: chatAgent?.id,
+        assistantMode: "office",
         messages: storedMessages,
         knowledgeBaseIds,
         attachmentNames: getUploadedFiles(request).map((file) => file.originalname),
@@ -2079,11 +1714,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         output: {
           conversationId,
           assistantMode,
-          agentId: chatAgent?.id,
-          contextTurns: chatAgent ? contextTurnsOf(chatAgent) : undefined,
-          contextMessageCount: modelMessages.length,
-          toolCallCount: chatToolCalls.length,
-          toolNames: chatToolCalls.map((call) => call.name),
           citationCount: citations.length,
           artifactCount: artifacts.length,
           assistantCharacterCount: assistantContent.length,
@@ -2092,7 +1722,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       });
       writeSse(response, "done", {
         conversationId,
-        agentId: chatAgent?.id,
         thinkingText: enableThinking ? thinkingContent || undefined : undefined
       });
       return;
@@ -2179,26 +1808,12 @@ httpServer.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  // upgrade 不走 Express 中间件，这里是实时语音通道唯一的鉴权口子。
-  const context = resolveRequestAuth(request, authStore);
-  if (!context) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  runWithAuth(context, () => {
-    target.handleUpgrade(request, socket, head, (connection) => {
-      // 连接回调及其注册的消息监听器都要留在同一身份里，
-      // 否则后续写会话快照会掉回「无身份」而绕过归属过滤。
-      runWithAuth(context, () => target.emit("connection", connection, request));
-    });
+  target.handleUpgrade(request, socket, head, (connection) => {
+    target.emit("connection", connection, request);
   });
 });
 
 speakRealtimeServer.on("connection", (socket) => {
-  // 同谈心谈话：ws 的消息与关闭回调都拿不到 upgrade 时的身份，显式包一层。
-  const wrap = bindConnectionAuth();
   let session = speakTrainingSessions.getOrCreate();
   let knowledgeBaseIds: string[] = [];
   let lastCitations: StoredCitation[] = [];
@@ -2356,7 +1971,7 @@ speakRealtimeServer.on("connection", (socket) => {
 
   sendSpeakRealtimeEvent(socket, { type: "session", session });
 
-  socket.on("message", (rawMessage) => wrap(async () => {
+  socket.on("message", async (rawMessage) => {
     try {
       const event = JSON.parse(String(rawMessage)) as SpeakRealtimeClientEvent & {
         knowledgeBaseIds?: unknown;
@@ -2495,12 +2110,12 @@ speakRealtimeServer.on("connection", (socket) => {
         message: error instanceof Error ? error.message : "实时说课事件处理失败。"
       });
     }
-  }));
+  });
 
-  socket.on("close", () => wrap(() => {
+  socket.on("close", () => {
     xfyunIat?.close();
-    void wrap(() => saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, lastCitations));
-  }));
+    void saveSpeakTrainingSessionOnly(session, knowledgeBaseIds, lastCitations);
+  });
 });
 
 httpServer.listen(port, host, () => {
@@ -2518,19 +2133,17 @@ function parseSpeakAudioUpload(
   }
 
   upload.single("audio")(request, response, (error) => {
-    resumeAuth(authFromResponse(response), () => {
-      if (!error) {
-        next();
-        return;
-      }
+    if (!error) {
+      next();
+      return;
+    }
 
-      if (error instanceof multer.MulterError) {
-        respondToUploadError(response, error);
-        return;
-      }
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
 
-      response.status(400).json({ message: "说课音频解析失败，请稍后重试" });
-    });
+    response.status(400).json({ message: "说课音频解析失败，请稍后重试" });
   });
 }
 
@@ -2866,19 +2479,17 @@ function parseChatUpload(
   }
 
   upload.array("files", maxUploadCount)(request, response, (error) => {
-    resumeAuth(authFromResponse(response), () => {
-      if (!error) {
-        next();
-        return;
-      }
+    if (!error) {
+      next();
+      return;
+    }
 
-      if (error instanceof multer.MulterError) {
-        respondToUploadError(response, error);
-        return;
-      }
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
 
-      response.status(400).json({ message: "上传文件解析失败，请稍后重试" });
-    });
+    response.status(400).json({ message: "上传文件解析失败，请稍后重试" });
   });
 }
 
@@ -2893,19 +2504,17 @@ function parseReflectionUpload(
   }
 
   upload.array("files", maxUploadCount)(request, response, (error) => {
-    resumeAuth(authFromResponse(response), () => {
-      if (!error) {
-        next();
-        return;
-      }
+    if (!error) {
+      next();
+      return;
+    }
 
-      if (error instanceof multer.MulterError) {
-        respondToUploadError(response, error);
-        return;
-      }
+    if (error instanceof multer.MulterError) {
+      respondToUploadError(response, error);
+      return;
+    }
 
-      response.status(400).json({ message: "实习证据材料上传失败，请稍后重试。" });
-    });
+    response.status(400).json({ message: "实习证据材料上传失败，请稍后重试。" });
   });
 }
 
@@ -2923,48 +2532,8 @@ function respondToUploadError(response: express.Response, error: unknown) {
   response.status(400).json({ message: "上传文件解析失败，请稍后重试" });
 }
 
-/**
- * 把界面上选的模型 id 解析成上游调用参数。
- * 解析不出来（还没配模型、id 被删）就返回空，让客户端回落到环境变量，对话不因此中断。
- */
-function resolveChatModel(id: string): {
-  model?: string;
-  provider?: { baseUrl: string; apiKey: string; label?: string };
-} {
-  if (!id) {
-    return {};
-  }
-  try {
-    const resolution = resolveModel(id, { source: "default", allowRaw: false });
-    if (!resolution.baseUrl || !resolution.apiKey) {
-      return {};
-    }
-    return {
-      model: resolution.model,
-      provider: { baseUrl: resolution.baseUrl, apiKey: resolution.apiKey, label: resolution.label }
-    };
-  } catch {
-    return {};
-  }
-}
-
-/** 会话里填的变量值；只收能写进提示词的纯文本，长度截断防止塞爆上下文。 */
-function parseAgentVariables(value: unknown): Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return {};
-  }
-  const variables: Record<string, string> = {};
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    // 变量名允许中英文，与 agentChat 里的校验保持一致。
-    if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(key) || typeof item !== "string") {
-      continue;
-    }
-    variables[key] = item.trim().slice(0, 500);
-  }
-  return variables;
-}
-
-function normalizeMessages(messages: ChatStreamRequest["messages"]): ChatMessage[] {  const values = parseMessages(messages);
+function normalizeMessages(messages: ChatStreamRequest["messages"]): ChatMessage[] {
+  const values = parseMessages(messages);
 
   if (!Array.isArray(values)) {
     return [];
@@ -4165,7 +3734,6 @@ function writeSse(
     | "artifact"
     | "citation"
     | "evaluation"
-    | "tool"
     | "done"
     | "error",
   data: unknown

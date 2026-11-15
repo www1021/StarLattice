@@ -377,12 +377,13 @@ export function EvolutionPage() {
     <div className="platform-page evolution-page">
       <header className="platform-head">
         <div className="platform-head-main">
-          <h1>
-            优化实验
-            <span className="platform-version">{candidates.length} 个候选</span>
-          </h1>
-          <p className="platform-head-meta">
-            改进闭环：发布快照做基线 → 自循环补丁成为候选 → 门禁通过后金丝雀灰度；快照不可变，护栏越界自动回滚。
+          <span className="platform-eyebrow">
+            自进化中心 <em>Evolution Control Plane</em>
+          </span>
+          <h1>候选先过门禁，再以金丝雀承接内部流量</h1>
+          <p>
+            发布快照不可变：工作流、子工作流与 Agent 一起固化并计算哈希。自循环补丁不再直接写注册表，
+            必须先通过固定回归集的配对门禁，再由人工批准进入金丝雀；护栏越界会自动回滚。
           </p>
         </div>
         <div className="platform-head-actions">
@@ -418,21 +419,6 @@ export function EvolutionPage() {
           {notice}
         </div>
       )}
-
-      <ol className="evolution-steps" aria-label="优化实验三步走">
-        <li>
-          <strong>① 建基线</strong>
-          <span>在「发布版本」里选择工作流发布快照，作为后续对比的固定基线</span>
-        </li>
-        <li>
-          <strong>② 产候选</strong>
-          <span>运行工作流触发自循环补丁，补丁进入候选列表等待配对门禁</span>
-        </li>
-        <li>
-          <strong>③ 上金丝雀</strong>
-          <span>门禁通过并人工批准后灰度承接流量，护栏越界自动回滚</span>
-        </li>
-      </ol>
 
       <div className="evolution-kpis">
         <div className="evolution-kpi">

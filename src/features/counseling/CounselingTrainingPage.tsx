@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { accountStorage } from "../auth/accountStorage";
 import type { MicVAD } from "@ricky0123/vad-web";
 import { AlertTriangle, ArrowLeft, AudioLines, Bot, CheckCircle2, ChevronRight, CircleStop, Headphones, LoaderCircle, MessageCircleHeart, Mic, Radio, Send, ShieldAlert, Sparkles, Square, UserRound, Volume2, VolumeX } from "lucide-react";
 import type { CounselingCase, CounselingConfig, CounselingEvent, CounselingMessage, CounselingServerEvent, CounselingSession, StudentState } from "../../../shared/counseling";
@@ -394,14 +393,14 @@ function visibleEvents(session: CounselingSession) { return session.config.mode 
 type CounselingRunMapping = { sessionId: string; runId: string };
 function cacheRunMapping(sessionId: string, runId: string) {
   try {
-    accountStorage.setItem(counselingRunKey, JSON.stringify({ sessionId, runId } satisfies CounselingRunMapping));
+    window.localStorage.setItem(counselingRunKey, JSON.stringify({ sessionId, runId } satisfies CounselingRunMapping));
   } catch {
     // Local storage can be unavailable in restricted browser contexts.
   }
 }
 function readRunMapping(): CounselingRunMapping | undefined {
   try {
-    const raw = accountStorage.getItem(counselingRunKey);
+    const raw = window.localStorage.getItem(counselingRunKey);
     if (!raw) return undefined;
     const parsed = JSON.parse(raw) as CounselingRunMapping;
     return parsed?.sessionId && parsed?.runId ? parsed : undefined;
@@ -411,7 +410,7 @@ function readRunMapping(): CounselingRunMapping | undefined {
 }
 function clearRunMapping() {
   try {
-    accountStorage.removeItem(counselingRunKey);
+    window.localStorage.removeItem(counselingRunKey);
   } catch {
     // Local storage can be unavailable in restricted browser contexts.
   }

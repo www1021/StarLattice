@@ -1,6 +1,6 @@
 import type { AgentRecord } from "../types.js";
 import { createSchedule } from "../scheduler/scheduler.js";
-import { getModelProfile, isKnownModelId, modelDisplayLabel } from "../models/catalog.js";
+import { getModelProfile, isKnownModelId } from "../models/catalog.js";
 
 export type SelfLoopAction = "rewrite" | "swap_agent" | "swap_model" | "retrieve";
 
@@ -399,12 +399,13 @@ function chooseModelAction(
         promptPatch: stringValue(diagnosis.promptPatch)
       };
     }
+    const profile = getModelProfile(targetId);
     return {
       action: "swap_model",
       source: "model",
       reason: modelReason(diagnosis, `把执行模型切换到 ${targetId}`),
       nextModelId: targetId,
-      nextModelLabel: modelDisplayLabel(targetId),
+      nextModelLabel: profile?.label ?? targetId,
       retrievalQuery: stringValue(diagnosis.retrievalQuery),
       promptPatch: stringValue(diagnosis.promptPatch)
     };

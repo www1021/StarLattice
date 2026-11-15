@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import { accountStorage } from "./features/auth/accountStorage";
 import { createPortal } from "react-dom";
 import ReactDOM from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
@@ -8,7 +7,6 @@ import {
   Archive,
   AlertTriangle,
   BarChart3,
-  Bot,
   Brain,
   BookOpen,
   Bookmark,
@@ -44,11 +42,9 @@ import {
   TrendingUp,
   UploadCloud,
   Volume2,
-  Wrench,
   X
 } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
-import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
 import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
 import { WorkflowCanvasPage } from "./features/platform/WorkflowCanvasPage";
@@ -56,41 +52,11 @@ import { ScenarioValidationPage } from "./features/platform/ScenarioValidationPa
 import { RegistryPage } from "./features/platform/RegistryPage";
 import { KnowledgePage } from "./features/platform/KnowledgePage";
 import { McpPage } from "./features/platform/McpPage";
-import { PluginsPage } from "./features/platform/PluginsPage";
 import { RunMonitorPage } from "./features/platform/RunMonitorPage";
 import { VerifyReportPage } from "./features/platform/VerifyReportPage";
 import { EvolutionPage } from "./features/platform/EvolutionPage";
-import { platformApi } from "./features/platform/api";
-import type { AgentRecord } from "./features/platform/types";
-import { AgentAvatar } from "./features/agents/AgentAvatar";
-import { MessageMarkdown } from "./features/chat/MessageMarkdown";
-import {
-  buildWorkflowChatInput,
-  readWorkflowOptions,
-  readWorkflowVariables,
-  type WorkflowChatOption,
-  type WorkflowInputVariable
-} from "./features/workflowChat/session";
 import { VoiceChatStage } from "./features/voice/VoiceChatStage";
-import { SettingsDialog, type SettingsTab } from "./features/settings/SettingsDialog";
-import { AuthProvider, useAuth } from "./features/auth/AuthProvider";
-import { AccountDialog } from "./features/auth/AccountDialog";
-import { AppErrorBoundary } from "./components/AppErrorBoundary";
-import { ModelPicker } from "./features/settings/ModelPicker";
-import {
-  applyAppearance,
-  persistAppearance,
-  readAppearance,
-  type Appearance
-} from "./features/theme/appearance";
 import "./styles.css";
-import "./styles/theme-tokens.css";
-import "./styles/theme.css";
-import "./features/auth/auth.css";
-
-/** 写请求同源标记。服务端 CSRF 屏障要求 JSON 内容类型或这个头二选一，
- *  没有请求体的 POST / DELETE 必须显式带上，否则会被判成跨站表单提交。 */
-const SAME_ORIGIN_HEADERS = { "X-Requested-With": "StarLattice" };
 
 type Attachment = {
   id: string;
@@ -119,31 +85,6 @@ type ChatMessage = {
   lessonPlanState?: LessonPlanState;
   internshipReflectionState?: InternshipReflectionState;
   insightMode?: InsightMode;
-  /** 智能体在回答前调用过的工具，用来告诉用户「这条结论是查出来的」。 */
-  toolNotes?: ToolNote[];
-  /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
-  traceAgents?: TraceAgent[];
-  /** 这条回复由哪个智能体给出；默认助手留空。 */
-  agentName?: string;
-  agentAvatar?: string;
-  /** 从提问到回复结束的耗时，恢复的历史会话没有这个值。 */
-  durationMs?: number;
-};
-
-type TraceAgent = {
-  name: string;
-  kind: "agent" | "subworkflow" | "llm";
-  durationMs?: number;
-  agentId?: string;
-};
-
-type ToolNote = {
-  toolId: string;
-  name: string;
-  stage: "running" | "done";
-  ok?: boolean;
-  summary?: string;
-  latencyMs?: number;
 };
 
 type GenerationThinkingStep = {
@@ -253,7 +194,7 @@ type StarterKnowledgePack = {
 
 type TrainingType = "教案诊断" | "说课陪练" | "模拟课堂" | "实习反思" | "谈心谈话";
 
-type ChatMode = "office" | "education" | "workflow";
+type ChatMode = "office" | "education";
 
 type EvaluationDimension = {
   name: string;
@@ -630,23 +571,12 @@ type ConversationSummary = {
   lastMessage?: string;
   createdAt: string;
   updatedAt: string;
-  workflowId?: string;
-  lastRunId?: string;
-  /** 绑定的自建智能体；空表示默认助手。 */
-  agentId?: string;
 };
 
 type ConversationDetail = ConversationSummary & {
   messages: Array<{
     role: "user" | "assistant";
     content: string;
-    toolNotes?: Array<{
-      toolId: string;
-      name: string;
-      ok: boolean;
-      latencyMs: number;
-      summary?: string;
-    }>;
   }>;
   artifacts: ChatArtifact[];
   citations: KnowledgeCitation[];
@@ -2236,64 +2166,6 @@ function Conversation({
                 ) : null}
               </button>
             ) : null}
-            {message.role === "assistant" &&
-            (message.agentName || message.traceAgents?.length || message.toolNotes?.length) ? (
-              <div className="message-meta" aria-label="回答来源">
-                {message.agentName ? (
-                  <span className="message-agent-tag">
-                    <AgentAvatar
-                      name={message.agentName}
-                      avatar={message.agentAvatar}
-                      size={15}
-                    />
-                    {message.agentName}
-                    {message.durationMs ? (
-                      <small>{formatDuration(message.durationMs)}</small>
-                    ) : null}
-                  </span>
-                ) : null}
-                {message.traceAgents?.map((agent, index) => (
-                  <span
-                    className={`message-agent-row is-${agent.kind}`}
-                    key={`trace-${index}`}
-                    title={
-                      agent.kind === "subworkflow"
-                        ? `子流程：${agent.name}`
-                        : agent.kind === "llm"
-                          ? `模型节点：${agent.name}`
-                          : `智能体：${agent.name}`
-                    }
-                  >
-                    <Bot size={11} strokeWidth={2.2} />
-                    <span>{agent.name}</span>
-                    {agent.durationMs ? (
-                      <small>{(agent.durationMs / 1000).toFixed(1)}s</small>
-                    ) : null}
-                  </span>
-                ))}
-                {message.toolNotes?.map((note, index) => (
-                  <span
-                    className={`message-tool-row is-${note.stage} ${
-                      note.ok === false ? "is-failed" : ""
-                    }`}
-                    key={`${note.toolId}-${index}`}
-                    title={note.summary ?? note.name}
-                  >
-                    <Wrench size={11} strokeWidth={2.2} />
-                    <span>{note.name}</span>
-                    <small>
-                      {note.stage === "running"
-                        ? "正在调用"
-                        : note.ok === false
-                          ? "调用失败"
-                          : note.latencyMs
-                            ? `${(note.latencyMs / 1000).toFixed(1)}s`
-                            : "已返回"}
-                    </small>
-                  </span>
-                ))}
-              </div>
-            ) : null}
             {message.lessonPlanState && message.lessonPlanState.phase !== "collecting" ? (
               <LessonPlanMessageCard
                 knowledgeBases={knowledgeBases}
@@ -2334,7 +2206,7 @@ function Conversation({
             ) : message.evaluation?.trainingType === "模拟课堂" ? (
               <ClassroomRecordCard message={message} />
             ) : (
-              <MessageMarkdown
+              <CollapsibleText
                 text={
                   message.content ||
                   (message.status === "generating" ? "正在生成..." : "")
@@ -4072,11 +3944,11 @@ function SpeakTrainingRoom({
   }, []);
 
   useEffect(() => {
-    accountStorage.setItem("speak-training-favorites", JSON.stringify(favoriteItems));
+    window.localStorage.setItem("speak-training-favorites", JSON.stringify(favoriteItems));
   }, [favoriteItems]);
 
   useEffect(() => {
-    accountStorage.setItem("speak-training-archive", JSON.stringify(archiveItems));
+    window.localStorage.setItem("speak-training-archive", JSON.stringify(archiveItems));
   }, [archiveItems]);
 
   useEffect(() => {
@@ -6192,7 +6064,7 @@ function favoriteTypeLabel(type: SpeakFavoriteItem["type"]) {
 
 function readSpeakFavorites() {
   try {
-    const raw = accountStorage.getItem("speak-training-favorites");
+    const raw = window.localStorage.getItem("speak-training-favorites");
     const parsed = raw ? (JSON.parse(raw) as SpeakFavoriteItem[]) : [];
     return Array.isArray(parsed) ? parsed.filter(isSpeakFavoriteItem) : [];
   } catch {
@@ -6202,7 +6074,7 @@ function readSpeakFavorites() {
 
 function readSpeakArchive() {
   try {
-    const raw = accountStorage.getItem("speak-training-archive");
+    const raw = window.localStorage.getItem("speak-training-archive");
     const parsed = raw ? (JSON.parse(raw) as SpeakArchiveItem[]) : [];
     return Array.isArray(parsed) ? parsed.filter(isSpeakArchiveItem) : [];
   } catch {
@@ -6494,11 +6366,32 @@ function EvaluationPanel({ evaluation }: { evaluation?: TrainingEvaluation }) {
   );
 }
 
+function CollapsibleText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const needsCollapse = text.length > 300;
+  const shown = expanded || !needsCollapse ? text : `${text.slice(0, 300)}……`;
+
+  return (
+    <>
+      <p>{shown}</p>
+      {needsCollapse ? (
+        <button
+          type="button"
+          className="text-collapse-toggle"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "收起完整内容" : "展开完整内容"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
 function ClassroomRecordCard({ message }: { message: ChatMessage }) {
   return (
     <div className="classroom-record-card">
       <EvaluationPanel evaluation={message.evaluation} />
-      <MessageMarkdown text={message.content || ""} />
+      <CollapsibleText text={message.content || ""} />
     </div>
   );
 }
@@ -6516,8 +6409,6 @@ type ComposerProps = {
   placeholder?: string;
   ariaLabel?: string;
   selectedKnowledgeBaseIds: string[];
-  /** 输入框下方的模型选择器，由外层注入，Composer 自己不关心模型从哪来。 */
-  modelSlot?: React.ReactNode;
   onAttachFiles: (files: FileList | null) => void;
   onChangeInput: (value: string) => void;
   onClearKnowledgeBases: () => void;
@@ -6544,7 +6435,6 @@ function Composer({
   placeholder = "输入教学任务",
   ariaLabel = "教学任务输入",
   selectedKnowledgeBaseIds,
-  modelSlot,
   onAttachFiles,
   onChangeInput,
   onClearKnowledgeBases,
@@ -6892,7 +6782,6 @@ function Composer({
             </button>
           </div>
           <div className="composer-right-actions">
-            {modelSlot}
             <button
               className="voice-entry-button"
               type="button"
@@ -6917,34 +6806,6 @@ function Composer({
   );
 }
 
-/** 列表摘要要的是可读文字：把 Markdown 记号擦掉，别让 ** 和 | 跑到卡片上。 */
-function markdownToPlain(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, "（代码）")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/^\s{0,3}>\s?/gm, "")
-    .replace(/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/gm, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[*_~`]/g, "")
-    .replace(/\|/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** 回复耗时：不足一秒也显示成 0.x 秒，不四舍五入成 0。 */
-function formatDuration(ms: number): string {
-  const seconds = ms / 1000;
-  if (seconds < 10) {
-    return `${seconds.toFixed(1)}s`;
-  }
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m${Math.round(seconds % 60)}s`;
-}
-
 async function readChatStream(
   response: Response,
   handlers: {
@@ -6955,9 +6816,6 @@ async function readChatStream(
     onArtifact: (artifact: ChatArtifact) => void;
     onCitation: (citation: KnowledgeCitation) => void;
     onEvaluation: (evaluation: TrainingEvaluation) => void;
-    onTool?: (note: ToolNote) => void;
-    onMeta?: (workflowName: string) => void;
-    onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     onDone: (payload: StreamDonePayload) => void;
     onError: (message: string) => void;
   }
@@ -7020,11 +6878,6 @@ function handleChatStreamEvent(
     onArtifact: (artifact: ChatArtifact) => void;
     onCitation: (citation: KnowledgeCitation) => void;
     onEvaluation: (evaluation: TrainingEvaluation) => void;
-    onTool?: (note: ToolNote) => void;
-    /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
-    onMeta?: (workflowName: string) => void;
-    /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
-    onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     onDone: (payload: StreamDonePayload) => void;
     onError: (message: string) => void;
   }
@@ -7070,89 +6923,7 @@ function handleChatStreamEvent(
     steps?: GenerationThinkingStep[];
     activeStepId?: string;
     completedStepIds?: string[];
-    toolId?: string;
-    stage?: "running" | "done";
-    ok?: boolean;
-    summary?: string;
-    latencyMs?: number;
-    workflowName?: string;
-    trace?: {
-      agents?: Array<{
-        name?: string;
-        kind?: string;
-        durationMs?: number;
-        agentId?: string;
-      }>;
-      tools?: Array<{
-        toolId?: string;
-        name?: string;
-        ok?: boolean;
-        latencyMs?: number;
-      }>;
-    };
   };
-
-  if (
-    streamEvent.event === "meta" &&
-    typeof payload.workflowName === "string" &&
-    payload.workflowName.trim()
-  ) {
-    handlers.onMeta?.(payload.workflowName.trim());
-  }
-
-  if (
-    streamEvent.event === "trace" &&
-    (payload.trace?.agents?.length || payload.trace?.tools?.length)
-  ) {
-    const agents: TraceAgent[] = (payload.trace.agents ?? [])
-      .filter((item): item is { name: string; kind?: string; durationMs?: number; agentId?: string } =>
-        typeof item.name === "string" && item.name.trim() !== ""
-      )
-      .map((item) => ({
-        name: item.name,
-        kind:
-          item.kind === "subworkflow" || item.kind === "llm" || item.kind === "agent"
-            ? item.kind
-            : "agent",
-        durationMs:
-          typeof item.durationMs === "number" && item.durationMs > 0
-            ? item.durationMs
-            : undefined,
-        agentId: typeof item.agentId === "string" ? item.agentId : undefined
-      }));
-    const tools: ToolNote[] = (payload.trace.tools ?? [])
-      .filter(
-        (item): item is { toolId: string; name: string; ok?: boolean; latencyMs?: number } =>
-          typeof item.name === "string" &&
-          item.name.trim() !== "" &&
-          typeof item.toolId === "string" &&
-          item.toolId.trim() !== ""
-      )
-      .map((item) => ({
-        toolId: item.toolId,
-        name: item.name,
-        stage: "done" as const,
-        ok: item.ok,
-        latencyMs: item.latencyMs
-      }));
-    handlers.onTrace?.({ agents, tools });
-  }
-
-  if (
-    streamEvent.event === "tool" &&
-    payload.toolId &&
-    payload.name &&
-    payload.stage
-  ) {
-    handlers.onTool?.({
-      toolId: payload.toolId,
-      name: payload.name,
-      stage: payload.stage,
-      ok: payload.ok,
-      summary: payload.summary,
-      latencyMs: payload.latencyMs
-    });
-  }
 
   if (streamEvent.event === "delta" && payload.content) {
     handlers.onDelta(payload.content);
@@ -7953,14 +7724,10 @@ function HistoryCenter({
             <article className="history-item" key={conversation.id}>
               <div className="history-main">
                 <span className="training-badge">
-                  {conversation.workflowId
-                    ? "工作流"
-                    : conversation.assistantMode === "office"
-                      ? "通用对话"
-                      : conversation.trainingType}
+                  {conversation.assistantMode === "office" ? "通用对话" : conversation.trainingType}
                 </span>
                 <h2>{conversation.title}</h2>
-                <p>{truncateText(markdownToPlain(conversation.lastMessage || "") || "暂无回复摘要", 140)}</p>
+                <p>{truncateText(conversation.lastMessage || "暂无回复摘要", 140)}</p>
                 <div className="history-meta">
                   <span>{formatDateTime(conversation.updatedAt)}</span>
                   <span>{conversation.messageCount} 条消息</span>
@@ -7969,12 +7736,7 @@ function HistoryCenter({
                 </div>
               </div>
               <div className="history-score">
-                {conversation.workflowId ? (
-                  <>
-                    <strong>{conversation.messageCount}</strong>
-                    <span>条消息 · 工作流会话</span>
-                  </>
-                ) : conversation.assistantMode === "office" ? (
+                {conversation.assistantMode === "office" ? (
                   <>
                     <strong>{conversation.messageCount}</strong>
                     <span>条消息 · 通用对话</span>
@@ -8522,7 +8284,7 @@ function TrainingRecordPreviewDialog({
 
             <section className="growth-record-section">
               <h2>记录内容</h2>
-              <p>{truncateText(markdownToPlain(lastAssistantMessage?.content || conversation.lastMessage || "") || "暂无内容摘要。", 320)}</p>
+              <p>{truncateText(lastAssistantMessage?.content || conversation.lastMessage || "暂无内容摘要。", 320)}</p>
             </section>
 
             <section className="growth-record-section">
@@ -8548,45 +8310,8 @@ function TrainingRecordPreviewDialog({
   );
 }
 
-const CHAT_MODEL_STORAGE_KEY = "starlattice.chat-model";
-
-function readChatModelId(): string {
-  try {
-    return accountStorage.getItem(CHAT_MODEL_STORAGE_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function persistChatModelId(id: string) {
-  try {
-    if (id) {
-      accountStorage.setItem(CHAT_MODEL_STORAGE_KEY, id);
-    } else {
-      accountStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
-    }
-  } catch {
-    // 隐私模式下写不了本地存储，状态在当前会话里仍然有效。
-  }
-}
-
 function App() {
-  const auth = useAuth();
-  const [appearance, setAppearance] = useState<Appearance>(readAppearance);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  /** 从模型选择器点「添加或管理模型」时直接落到模型页签。 */
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
-  /** 对话页单独选的模型；空值表示跟随设置里的默认。 */
-  const [chatModelId, setChatModelId] = useState(readChatModelId);
-
-  useEffect(() => {
-    applyAppearance(appearance);
-    persistAppearance(appearance);
-  }, [appearance]);
-
   const [activeSection, setActiveSection] = useState<
-    | "workbench"
     | "chat"
     | "knowledge"
     | "history"
@@ -8599,11 +8324,10 @@ function App() {
     | "registry"
     | "library"
     | "mcp"
-    | "plugins"
     | "monitor"
     | "report"
     | "evolution"
-  >("workbench");
+  >("platform");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [newTaskToken, setNewTaskToken] = useState(0);
   const [workflowOpenRequest, setWorkflowOpenRequest] = useState<
@@ -8624,17 +8348,6 @@ function App() {
   const [attachmentError, setAttachmentError] = useState<string | undefined>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>("education");
-  // 自建智能体：为空表示用默认助手，选了就把它的角色/提示词/模型带上。
-  const [chatAgents, setChatAgents] = useState<AgentRecord[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState("");
-  // 空状态页「使用智能体」开关：打开才出现下拉选择，不把整排智能体都摆出来。
-  const [agentPickerOn, setAgentPickerOn] = useState(false);
-  const [agentVariableValues, setAgentVariableValues] = useState<Record<string, string>>({});
-  const [workflowOptions, setWorkflowOptions] = useState<WorkflowChatOption[]>([]);
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
-  const [workflowVariables, setWorkflowVariables] = useState<WorkflowInputVariable[]>([]);
-  const [workflowLoadError, setWorkflowLoadError] = useState<string | undefined>();
-  const chatModeBeforeWorkflowRef = useRef<"office" | "education">("education");
   const [currentTrainingType, setCurrentTrainingType] =
     useState<TrainingType>("教案诊断");
   const [activeInsightMessageId, setActiveInsightMessageId] = useState<
@@ -8687,80 +8400,12 @@ function App() {
   const [growthRecordPreviewStatus, setGrowthRecordPreviewStatus] =
     useState<string | undefined>();
   const activeRequestRef = useRef<AbortController | null>(null);
-  // 当前选中的自建智能体；被删掉或还没加载出来时按默认助手处理。
-  const activeAgent = chatAgents.find((agent) => agent.id === activeAgentId);
-  const agentVariableDefs = activeAgent?.chatConfig?.variables ?? [];
-
-  // 工作流会话：列表加载一次，选中项变化时再取该工作流的输入声明。
-  useEffect(() => {
-    let cancelled = false;
-    void platformApi
-      .listWorkflows()
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        const options = readWorkflowOptions(payload);
-        setWorkflowOptions(options);
-        setWorkflowLoadError(undefined);
-        setSelectedWorkflowId((current) => current || options[0]?.id || "");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setWorkflowLoadError("工作流列表加载失败，请刷新页面重试。");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!selectedWorkflowId) {
-      setWorkflowVariables([]);
-      return;
-    }
-    let cancelled = false;
-    void platformApi
-      .getWorkflow(selectedWorkflowId)
-      .then((payload) => {
-        if (!cancelled) {
-          setWorkflowVariables(readWorkflowVariables(payload));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setWorkflowVariables([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedWorkflowId]);
 
   useEffect(() => {
     void loadKnowledgeBases();
     void loadKnowledgeProviders();
     void loadStarterKnowledgePacks();
   }, []);
-
-  // 自建智能体：进页面拉一次，注册中心新建后切回来也能看到。
-  useEffect(() => {
-    let cancelled = false;
-    void platformApi
-      .listAgents("chat")
-      .then((payload) => {
-        if (!cancelled) {
-          setChatAgents(payload.agents.filter((agent) => agent.enabled));
-        }
-      })
-      .catch(() => {
-        // 拿不到就当没有自建智能体，不影响默认对话
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSection]);
 
   useEffect(() => {
     if (activeSection === "history") {
@@ -8837,8 +8482,7 @@ function App() {
 
     try {
       const response = await fetch(`/api/knowledge/starter-packs/${packId}/import`, {
-        method: "POST",
-        headers: SAME_ORIGIN_HEADERS
+        method: "POST"
       });
       const payload = (await response.json()) as { base?: KnowledgeBase; message?: string };
 
@@ -8890,8 +8534,7 @@ function App() {
 
     try {
       const response = await fetch("/api/knowledge/providers/ima/test", {
-        method: "POST",
-        headers: SAME_ORIGIN_HEADERS
+        method: "POST"
       });
       const payload = (await response.json()) as {
         result?: { message?: string; ok?: boolean };
@@ -8917,8 +8560,7 @@ function App() {
 
     try {
       const response = await fetch("/api/knowledge/providers/ima/sync", {
-        method: "POST",
-        headers: SAME_ORIGIN_HEADERS
+        method: "POST"
       });
       const payload = (await response.json()) as {
         result?: { message?: string; ok?: boolean; bases?: KnowledgeBase[] };
@@ -9010,10 +8652,7 @@ function App() {
 
   async function deleteKnowledgeBase(id: string) {
     try {
-      const response = await fetch(`/api/knowledge/bases/${id}`, {
-        method: "DELETE",
-        headers: SAME_ORIGIN_HEADERS
-      });
+      const response = await fetch(`/api/knowledge/bases/${id}`, { method: "DELETE" });
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => undefined)) as
@@ -9075,7 +8714,7 @@ function App() {
     try {
       const response = await fetch(
         `/api/knowledge/bases/${activeKnowledgeBaseId}/documents/${documentId}`,
-        { method: "DELETE", headers: SAME_ORIGIN_HEADERS }
+        { method: "DELETE" }
       );
 
       if (!response.ok) {
@@ -9168,23 +8807,6 @@ function App() {
         content: message.content,
         status: "done" as const,
         sourcePrompt: conversation.title,
-        // 历史里也标上是谁回答的，不然回看时只剩一大段无主文本。
-        agentName:
-          message.role === "assistant"
-            ? chatAgents.find((agent) => agent.id === conversation.agentId)?.name
-            : undefined,
-        agentAvatar:
-          message.role === "assistant"
-            ? chatAgents.find((agent) => agent.id === conversation.agentId)?.avatar
-            : undefined,
-        toolNotes: message.toolNotes?.map((note) => ({
-          toolId: note.toolId,
-          name: note.name,
-          stage: "done" as const,
-          ok: note.ok,
-          latencyMs: note.latencyMs,
-          summary: note.summary
-        })),
         artifacts:
           message.role === "assistant" && index === conversation.messages.length - 1
             ? conversation.artifacts
@@ -9200,27 +8822,8 @@ function App() {
       }));
       setConversationId(conversation.id);
       setMessages(restoredMessages);
-      // 回到当初那个智能体，否则接着聊会突然换人格。
-      // 智能体已经被删掉时退回默认助手，不然下一次发送会因为找不到人直接报错；
-      // 列表还没加载完就先保留 id，宁可等一次加载也别把有效的绑定清掉。
-      const boundAgent = conversation.agentId
-        ? chatAgents.find((agent) => agent.id === conversation.agentId)
-        : undefined;
-      if (boundAgent) {
-        setActiveAgentId(boundAgent.id);
-      } else if (chatAgents.length > 0) {
-        setActiveAgentId("");
-      } else {
-        setActiveAgentId(conversation.agentId ?? "");
-      }
-      if (conversation.workflowId) {
-        // 工作流会话靠 workflow_id 还原，assistant_mode 仍保持 office，不改历史数据结构。
-        setChatMode("workflow");
-        setSelectedWorkflowId(conversation.workflowId);
-      } else {
-        const restoredMode = conversation.assistantMode === "office" ? "office" : "education";
-        setChatMode(restoredMode);
-      }
+      const restoredMode = conversation.assistantMode === "office" ? "office" : "education";
+      setChatMode(restoredMode);
       if (conversation.trainingType !== "通用对话") {
         setCurrentTrainingType(conversation.trainingType);
       }
@@ -10911,12 +10514,8 @@ function App() {
       artifacts: [],
       citations: [],
       knowledgeBaseIds: knowledgeBaseIdsForRequest,
-      knowledgeQueryMode,
-      // 记住这条回复是谁给的：换过智能体之后，历史里也能看出各自说过什么。
-      agentName: activeAgent?.name,
-      agentAvatar: activeAgent?.avatar
+      knowledgeQueryMode
     };
-    const requestStartedAt = Date.now();
     const nextMessages = [...messages, userMessage];
     const assistantId = assistantMessage.id;
     const abortController = new AbortController();
@@ -10941,103 +10540,38 @@ function App() {
     setIsGenerating(true);
 
     try {
-      let response: Response;
+      const formData = new FormData();
+      formData.append(
+        "messages",
+        JSON.stringify(
+          nextMessages.map((message) => ({
+            role: message.role,
+            content: message.content
+          }))
+        )
+      );
+      formData.append("enableThinking", String(enableThinking));
+      formData.append("knowledgeBaseIds", JSON.stringify(knowledgeBaseIdsForRequest));
+      formData.append("trainingType", currentTrainingType);
+      formData.append("assistantMode", chatMode);
 
-      if (chatMode === "workflow") {
-        // 复用画布调试助手的 SSE 内核：问句直接聊、任务才跑流程，delta 格式与聊天流一致。
-        if (!selectedWorkflowId) {
-          throw new Error("还没选中工作流，请先在页面上方选择一条。");
-        }
-        if (!trimmedText) {
-          throw new Error("工作流会话请直接输入文字，暂不支持只发附件。");
-        }
-        response = await fetch(
-          `/api/platform/workflows/${encodeURIComponent(selectedWorkflowId)}/debug/chat`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              message: trimmedText,
-              input: buildWorkflowChatInput(workflowVariables, trimmedText),
-              persist: true,
-              conversationId,
-              history: nextMessages.map((message) => ({
-                role: message.role,
-                content: message.content
-              }))
-            }),
-            signal: abortController.signal
-          }
-        );
-      } else {
-        const formData = new FormData();
-        formData.append(
-          "messages",
-          JSON.stringify(
-            nextMessages.map((message) => ({
-              role: message.role,
-              content: message.content
-            }))
-          )
-        );
-        formData.append("enableThinking", String(enableThinking));
-        formData.append("knowledgeBaseIds", JSON.stringify(knowledgeBaseIdsForRequest));
-        formData.append("trainingType", currentTrainingType);
-        formData.append("assistantMode", chatMode);
-        // 输入框下方选的那条模型；没选就不传，由后端用默认模型。
-        if (chatModelId) {
-          formData.append("model", chatModelId);
-        }
-        // 选了自建智能体就用它的角色、提示词、模型和上下文设置。
-        if (activeAgentId) {
-          formData.append("agentId", activeAgentId);
-          const filled = Object.fromEntries(
-            Object.entries(agentVariableValues).filter(([, value]) => value.trim() !== "")
-          );
-          if (Object.keys(filled).length > 0) {
-            formData.append("variables", JSON.stringify(filled));
-          }
-        }
-
-        if (conversationId) {
-          formData.append("conversationId", conversationId);
-        }
-
-        for (const attachment of sentAttachments) {
-          formData.append("files", attachment.file, attachment.name);
-        }
-
-        response = await fetch("/api/chat/stream", {
-          method: "POST",
-          body: formData,
-          signal: abortController.signal
-        });
+      if (conversationId) {
+        formData.append("conversationId", conversationId);
       }
+
+      for (const attachment of sentAttachments) {
+        formData.append("files", attachment.file, attachment.name);
+      }
+
+      const response = await fetch("/api/chat/stream", {
+        method: "POST",
+        body: formData,
+        signal: abortController.signal
+      });
 
       await readChatStream(response, {
         onDelta(content) {
           visibleTextStreamer.enqueue(content);
-        },
-        onTool(note) {
-          setMessages((current) =>
-            current.map((item) => {
-              if (item.id !== assistantId) {
-                return item;
-              }
-              const notes = [...(item.toolNotes ?? [])];
-              const pending = notes.findIndex(
-                (entry) => entry.toolId === note.toolId && entry.stage === "running"
-              );
-              if (note.stage === "running") {
-                notes.push(note);
-              } else if (pending >= 0) {
-                notes[pending] = note;
-              } else {
-                notes.push(note);
-              }
-              return { ...item, toolNotes: notes };
-            })
-          );
         },
         onThinkingDelta(content) {
           setMessages((current) =>
@@ -11049,33 +10583,6 @@ function App() {
                   }
                 : message
             )
-          );
-        },
-        onMeta(workflowName) {
-          // 工作流会话的徽标：meta 事件在 SSE 一开始就到，回复是谁给的一目了然。
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === assistantId && !message.agentName
-                ? { ...message, agentName: workflowName }
-                : message
-            )
-          );
-        },
-        onTrace({ agents, tools }) {
-          setMessages((current) =>
-            current.map((message) => {
-              if (message.id !== assistantId) {
-                return message;
-              }
-              // 轨迹里的工具调用映射成 toolNotes，渲染与历史留痕共用同一套药丸样式。
-              const existing = message.toolNotes ?? [];
-              const seen = new Set(existing.map((note) => `${note.toolId}:${note.name}`));
-              const merged = [
-                ...existing,
-                ...tools.filter((note) => !seen.has(`${note.toolId}:${note.name}`))
-              ];
-              return { ...message, traceAgents: agents, toolNotes: merged };
-            })
           );
         },
         onMetrics(thinkingSeconds) {
@@ -11134,9 +10641,7 @@ function App() {
 
       setMessages((current) =>
         current.map((message) =>
-          message.id === assistantId
-            ? { ...message, status: "done", durationMs: Date.now() - requestStartedAt }
-            : message
+          message.id === assistantId ? { ...message, status: "done" } : message
         )
       );
       void loadConversationHistory();
@@ -11236,7 +10741,7 @@ function App() {
     setActiveSection("chat");
   }
 
-  function handleNewConversation(mode: ChatMode = "education", workflowId?: string) {
+  function handleNewConversation(mode: ChatMode = "education") {
     activeRequestRef.current?.abort();
     activeRequestRef.current = null;
     setMessages([]);
@@ -11246,95 +10751,11 @@ function App() {
     setConversationId(undefined);
     setRestoredCounselingSessionId(undefined);
     setChatMode(mode);
-    if (mode === "workflow") {
-      setSelectedWorkflowId(
-        workflowId || selectedWorkflowId || workflowOptions[0]?.id || ""
-      );
-    }
     setCurrentTrainingType("教案诊断");
     setIsGenerating(false);
     setActiveInsightMessageId(undefined);
     setSelectedKnowledgeBaseIds([]);
     setActiveSection("chat");
-  }
-
-  /**
-   * 换智能体等于换一条会话：不同提示词混在同一段历史里，
-   * 模型会拿着前一个角色说的话继续演，结果四不像。
-   */
-  function handlePickAgent(nextId: string) {
-    if (isGenerating || nextId === activeAgentId) {
-      return;
-    }
-    const next = chatAgents.find((agent) => agent.id === nextId);
-    setActiveAgentId(nextId);
-    setMessages([]);
-    setConversationId(undefined);
-    setActiveInsightMessageId(undefined);
-    setAttachmentError(undefined);
-    setSelectedKnowledgeBaseIds([]);
-    setInputValue("");
-    if (chatMode === "workflow") {
-      setChatMode("education");
-    }
-    const defaults: Record<string, string> = {};
-    for (const item of next?.chatConfig?.variables ?? []) {
-      defaults[item.key] = item.defaultValue ?? "";
-    }
-    setAgentVariableValues(defaults);
-  }
-
-  /** 空状态页上的开关：这一轮对话要不要绑定智能体。开=出现下拉选择；关=回到默认助手。 */
-  function handleToggleAgentPicker() {
-    if (isGenerating) {
-      return;
-    }
-    const next = !agentPickerOn;
-    setAgentPickerOn(next);
-    if (!next) {
-      // 关掉开关即回到默认助手；handlePickAgent 里会清掉智能体绑定的消息上下文。
-      if (activeAgentId) {
-        handlePickAgent("");
-      } else if (chatMode === "workflow") {
-        setChatMode(chatModeBeforeWorkflowRef.current);
-      }
-      return;
-    }
-    // 智能体和工作流互斥：绑了智能体就退出工作流模式，避免两边同时接管这轮对话。
-    if (chatMode === "workflow") {
-      setChatMode(chatModeBeforeWorkflowRef.current);
-    }
-  }
-
-  /** 空状态页上的开关：这一轮对话要不要绑定工作流，绑哪一条。 */
-  function handleToggleWorkflowChat() {
-    if (isGenerating) {
-      return;
-    }
-    const useWorkflow = chatMode !== "workflow";
-    if (messages.length > 0) {
-      handleNewConversation(useWorkflow ? "workflow" : "education");
-      return;
-    }
-    if (useWorkflow) {
-      chatModeBeforeWorkflowRef.current = chatMode === "office" ? "office" : "education";
-      setSelectedWorkflowId((current) => current || workflowOptions[0]?.id || "");
-      setChatMode("workflow");
-    } else {
-      setChatMode(chatModeBeforeWorkflowRef.current);
-    }
-  }
-
-  /** 会话中切换工作流会另起一轮，避免同一个会话里混着两条工作流的上下文。 */
-  function handleWorkflowChange(nextId: string) {
-    if (!nextId || isGenerating) {
-      return;
-    }
-    if (messages.length > 0) {
-      handleNewConversation("workflow", nextId);
-      return;
-    }
-    setSelectedWorkflowId(nextId);
   }
 
   function handleOpenSceneChat() {
@@ -11404,21 +10825,15 @@ function App() {
   const isInsightPanelOpen = Boolean(activeInsightMessage);
 
   return (
-    <>
-      <div className="app-photo" aria-hidden="true" />
-      <main
-        className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          isInsightPanelOpen ? "insight-open" : ""
-        }`}
-      >
+    <main
+      className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
+        isInsightPanelOpen ? "insight-open" : ""
+      }`}
+    >
       <Sidebar
         activeSection={activeSection}
         chatMode={chatMode}
         collapsed={sidebarCollapsed}
-        onOpenWorkbench={() => {
-          setActiveSection("workbench");
-          setActiveInsightMessageId(undefined);
-        }}
         onOpenGrowth={() => {
           setActiveSection("growth");
           setActiveInsightMessageId(undefined);
@@ -11466,10 +10881,6 @@ function App() {
           setActiveSection("mcp");
           setActiveInsightMessageId(undefined);
         }}
-        onOpenPlugins={() => {
-          setActiveSection("plugins");
-          setActiveInsightMessageId(undefined);
-        }}
         onOpenMonitor={() => {
           setActiveSection("monitor");
           setActiveInsightMessageId(undefined);
@@ -11490,57 +10901,9 @@ function App() {
         onOpenChat={handleOpenSceneChat}
         onNewConversation={(mode) => handleNewConversation(mode)}
         onToggle={() => setSidebarCollapsed((value) => !value)}
-        onOpenSettings={(tab) => {
-          setSettingsTab(tab);
-          setSettingsOpen(true);
-        }}
-        onOpenAccount={() => setAccountOpen(true)}
-        onLogout={() => {
-          void auth.logout();
-        }}
-        onSwitchAccount={() => {
-          void auth.switchAccount();
-        }}
-        user={{
-          name: auth.user?.displayName ?? "本地用户",
-          description:
-            auth.user?.role === "owner" ? "所有者 · 本地工作区" : "成员 · 本地工作区"
-        }}
       />
       <section className="workspace">
-        {activeSection === "workbench" ? (
-          <div className="workspace-inner wb-workspace">
-            <WorkbenchPage
-              onOpenChat={handleOpenSceneChat}
-              onOpenPlatform={() => {
-                setActiveSection("platform");
-                setActiveInsightMessageId(undefined);
-              }}
-              onOpenWorkflow={(workflowId) => handleOpenWorkflow(workflowId)}
-              onOpenMonitor={(runId) => {
-                if (runId) {
-                  handleOpenMonitorRun(runId);
-                  return;
-                }
-                setActiveSection("monitor");
-                setActiveInsightMessageId(undefined);
-              }}
-              onOpenLibrary={() => {
-                setActiveSection("library");
-                setActiveInsightMessageId(undefined);
-              }}
-              onOpenRegistry={() => {
-                setActiveSection("registry");
-                setActiveInsightMessageId(undefined);
-              }}
-              onNewWorkflow={() => {
-                setNewTaskToken((value) => value + 1);
-                setActiveSection("platform");
-                setActiveInsightMessageId(undefined);
-              }}
-            />
-          </div>
-        ) : activeSection === "knowledge" ? (
+        {activeSection === "knowledge" ? (
           <div className="workspace-inner knowledge-workspace">
             <TeachingResourceCenter
               bases={knowledgeBases}
@@ -11682,10 +11045,6 @@ function App() {
           <div className="workspace-inner platform-workspace">
             <McpPage onOpenCanvas={() => setActiveSection("platform")} />
           </div>
-        ) : activeSection === "plugins" ? (
-          <div className="workspace-inner platform-workspace">
-            <PluginsPage />
-          </div>
         ) : activeSection === "monitor" ? (
           <div className="workspace-inner platform-workspace">
             <RunMonitorPage
@@ -11703,179 +11062,17 @@ function App() {
             <EvolutionPage />
           </div>
         ) : (
-          <div className={`workspace-inner chat-workspace ${hasMessages ? "has-messages" : ""}`}>
-          {hasMessages && chatMode === "workflow" ? (
-            <div className="workflow-chat-bar">
-              <span className="workflow-chat-bar-label">当前工作流</span>
-              <span className="workflow-chat-bar-name">
-                {workflowOptions.find((option) => option.id === selectedWorkflowId)?.name ||
-                  selectedWorkflowId}
-              </span>
-              <span className="workflow-chat-bar-hint">
-                问问题直接聊，给具体任务才跑一遍流程
-              </span>
-            </div>
-          ) : null}
-          {hasMessages && activeAgent ? (
-            <div className="agent-chat-bar">
-              <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={22} />
-              <span className="agent-chat-bar-name">{activeAgent.name}</span>
-              <span className="agent-chat-bar-hint">
-                {activeAgent.description || activeAgent.role || "按自定义提示词回答"}
-              </span>
-              <button
-                type="button"
-                className="agent-chat-bar-switch"
-                disabled={isGenerating}
-                onClick={() => handlePickAgent("")}
-              >
-                换回默认助手
-              </button>
-            </div>
-          ) : null}
+          <div className={`workspace-inner ${hasMessages ? "has-messages" : ""}`}>
           {!hasMessages ? (
             <>
-              {appearance.photoBlend === "layered" && appearance.cutout ? (
-                <div className="app-photo-cutout" aria-hidden="true" />
-              ) : null}
               <header className="hero">
-                <h1>
-                  {activeAgent
-                    ? activeAgent.chatConfig?.welcome?.trim() ||
-                      `和「${activeAgent.name}」聊聊`
-                    : chatMode === "office"
-                      ? "今天想完成什么办公任务？"
-                      : chatMode === "workflow"
-                        ? "这条工作流能帮你做什么？"
-                        : "今天想完成什么教学任务？"}
-                </h1>
+                <h1>{chatMode === "office" ? "今天想完成什么办公任务？" : "今天想完成什么教学任务？"}</h1>
                 <p>
-                  {activeAgent
-                    ? activeAgent.description?.trim() ||
-                      activeAgent.role ||
-                      "它按你设定的角色和提示词回答"
-                    : chatMode === "office"
-                      ? "写作、总结、翻译、会议纪要、表格整理，都可以直接对话完成"
-                      : chatMode === "workflow"
-                        ? "直接问教学问题会流式回答；给出明确任务时才会跑一遍工作流，并把最终交付的内容讲给你听"
-                        : "说清学段、学科和想要的结果就行，需要跑流程时会自动切过去"}
+                  {chatMode === "office"
+                    ? "写作、总结、翻译、会议纪要、表格整理，都可以直接对话完成"
+                    : "教案生成、说课陪练、模拟课堂、实习日志与反思，都可以直接对话完成"}
                 </p>
               </header>
-              {agentVariableDefs.length > 0 ? (
-                <div className="agent-variable-fill" aria-label="填写智能体变量">
-                  <span className="agent-variable-fill-title">
-                    「{activeAgent?.name}」需要这些信息
-                  </span>
-                  {agentVariableDefs.map((item) => (
-                    <label key={item.key}>
-                      <span>
-                        {item.label || item.key}
-                        {item.required ? <em>必填</em> : null}
-                      </span>
-                      <input
-                        value={agentVariableValues[item.key] ?? ""}
-                        placeholder={item.defaultValue || item.key}
-                        onChange={(event) =>
-                          setAgentVariableValues((current) => ({
-                            ...current,
-                            [item.key]: event.target.value
-                          }))
-                        }
-                      />
-                    </label>
-                  ))}
-                </div>
-              ) : null}
-              <div className="new-chat-setup">
-                <button
-                  className={`new-chat-toggle ${agentPickerOn || Boolean(activeAgentId) ? "is-on" : ""}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={agentPickerOn || Boolean(activeAgentId)}
-                  onClick={handleToggleAgentPicker}
-                  disabled={isGenerating}
-                >
-                  <span className="new-chat-toggle-track" aria-hidden="true">
-                    <span className="new-chat-toggle-knob" />
-                  </span>
-                  <span>使用智能体</span>
-                </button>
-                {agentPickerOn || Boolean(activeAgentId) ? (
-                  <select
-                    className="new-chat-select"
-                    aria-label="选择智能体"
-                    value={activeAgentId}
-                    disabled={isGenerating}
-                    onChange={(event) => handlePickAgent(event.target.value)}
-                  >
-                    <option value="">默认助手</option>
-                    {chatAgents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <span className="new-chat-setup-divider" aria-hidden="true" />
-                <button
-                  className={`new-chat-toggle ${chatMode === "workflow" ? "is-on" : ""}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={chatMode === "workflow"}
-                  onClick={handleToggleWorkflowChat}
-                  disabled={isGenerating}
-                >
-                  <span className="new-chat-toggle-track" aria-hidden="true">
-                    <span className="new-chat-toggle-knob" />
-                  </span>
-                  <span>使用工作流</span>
-                </button>
-                {chatMode === "workflow" ? (
-                  <select
-                    className="new-chat-select"
-                    aria-label="选择工作流"
-                    value={selectedWorkflowId}
-                    disabled={isGenerating || workflowOptions.length === 0}
-                    onChange={(event) => handleWorkflowChange(event.target.value)}
-                  >
-                    {workflowOptions.length === 0 ? (
-                      <option value="">加载中…</option>
-                    ) : (
-                      workflowOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.name || option.id}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                ) : null}
-                <span className="new-chat-setup-hint">
-                  {activeAgent
-                    ? `正在和「${activeAgent.name}」对话`
-                    : chatMode === "workflow"
-                      ? "问问题直接聊，给具体任务才跑一遍流程"
-                      : "打开开关选择智能体或工作流，不选就用默认助手"}
-                </span>
-                {workflowLoadError ? (
-                  <span className="workflow-chat-bar-error">{workflowLoadError}</span>
-                ) : null}
-              </div>
-              {chatMode === "workflow" ? null : activeAgent &&
-                (activeAgent.chatConfig?.quickPrompts?.length ?? 0) > 0 ? (
-                <div className="quick-row" aria-label="智能体快捷指令">
-                  {(activeAgent.chatConfig?.quickPrompts ?? []).map((prompt) => (
-                    <button
-                      className="quick-pill"
-                      type="button"
-                      key={prompt}
-                      onClick={() => setInputValue(prompt)}
-                    >
-                      <Sparkles size={17} strokeWidth={2.1} />
-                      <span>{prompt}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
               <div className="quick-row" aria-label={chatMode === "office" ? "快捷办公任务" : "快捷任务"}>
                 {(chatMode === "office" ? officeQuickTasks : quickTasks).map((task) => {
                   const Icon = task.icon;
@@ -11897,7 +11094,6 @@ function App() {
                   );
                 })}
               </div>
-              )}
             </>
           ) : null}
           <Conversation
@@ -11927,20 +11123,8 @@ function App() {
             onUpdateReflectionInput={updateReflectionMessageInput}
           />
           <Composer
-            ariaLabel={
-              chatMode === "office"
-                ? "办公任务输入"
-                : chatMode === "workflow"
-                  ? "工作流会话输入"
-                  : "教学任务输入"
-            }
-            placeholder={
-              chatMode === "office"
-                ? "输入办公任务"
-                : chatMode === "workflow"
-                  ? "问个问题，或给这条工作流派个任务"
-                  : "输入教学任务"
-            }
+            ariaLabel={chatMode === "office" ? "办公任务输入" : "教学任务输入"}
+            placeholder={chatMode === "office" ? "输入办公任务" : "输入教学任务"}
             attachments={attachments}
             attachmentError={attachmentError}
             enableThinking={enableThinking}
@@ -11964,19 +11148,6 @@ function App() {
             onRemoveAttachment={handleRemoveAttachment}
             onSend={() => sendMessage()}
             onOpenVoice={() => setIsVoiceOpen(true)}
-            modelSlot={
-              <ModelPicker
-                value={chatModelId}
-                onChange={(id) => {
-                  setChatModelId(id);
-                  persistChatModelId(id);
-                }}
-                onOpenSettings={() => {
-                  setSettingsTab("models");
-                  setSettingsOpen(true);
-                }}
-              />
-            }
             onSkipKnowledgeSelection={() =>
               void completePendingLessonKnowledgeSelection(false)
             }
@@ -12030,30 +11201,9 @@ function App() {
         </AnimatePresence>,
         document.body
       )}
-      {settingsOpen ? (
-        <SettingsDialog
-          appearance={appearance}
-          initialTab={settingsTab}
-          onChange={setAppearance}
-          onClose={() => {
-            setSettingsOpen(false);
-            setSettingsTab("appearance");
-          }}
-        />
-      ) : null}
-      {accountOpen
-        ? createPortal(
-            <AccountDialog onClose={() => setAccountOpen(false)} />,
-            document.body
-          )
-        : null}
-      </main>
-    </>
+    </main>
   );
 }
-
-// 启动时还没确认身份，先只给中性配色；照片等 AuthProvider 确认账号后再铺。
-applyAppearance({ ...readAppearance(), photo: null, cutout: null });
 
 const rootElement = document.getElementById("root")!;
 const reactRoot =
@@ -12062,11 +11212,6 @@ const reactRoot =
 
 reactRoot.render(
   <React.StrictMode>
-    {/* 边界放在认证层外面：登录页和登录后的工作台任何一个抛错，都不至于只剩一张空背景。 */}
-    <AppErrorBoundary>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </AppErrorBoundary>
+    <App />
   </React.StrictMode>
 );

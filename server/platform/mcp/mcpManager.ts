@@ -54,8 +54,6 @@ export class McpManager {
   private readonly connect: McpConnect;
   private readonly timeoutMs: number;
   private workflowRunner?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
-  /** 平台插件（builtin）执行器：由服务端注入，把 builtin:// 端点分发到本地服务实现。 */
-  private builtinRunner?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
 
   constructor(private readonly store: PlatformStateStore, options: McpManagerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? (Number(process.env.PLATFORM_MCP_TIMEOUT_MS) || 20_000);
@@ -179,25 +177,12 @@ export class McpManager {
     this.workflowRunner = runner;
   }
 
-  /** 平台插件（builtin）同样由服务端内联执行：端点形如 builtin://knowledge/search。 */
-  setBuiltinRunner(
-    runner: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>
-  ) {
-    this.builtinRunner = runner;
-  }
-
   callToolRecord(tool: ToolRecord, args: Record<string, unknown>): Promise<McpCallResult> {
     if (isWorkflowToolEndpoint(tool.endpoint)) {
       if (!this.workflowRunner) {
         throw new PlatformError("工作流工具执行器尚未接入，无法执行该工具。", 500);
       }
       return this.workflowRunner(tool, args);
-    }
-    if (tool.type === "builtin" || (tool.endpoint ?? "").startsWith("builtin://")) {
-      if (!this.builtinRunner) {
-        throw new PlatformError("平台插件执行器尚未接入，无法执行该工具。", 500);
-      }
-      return this.builtinRunner(tool, args);
     }
     const reference = parseMcpEndpoint(tool.endpoint);
     if (!reference) {
@@ -263,30 +248,22 @@ export class McpManager {
     const prefix = endpointPrefix(server.id);
     const all = this.store.listTools();
     const existing = all.filter((tool) => tool.type === "mcp" && (tool.endpoint ?? "").startsWith(prefix));
-    // 取全库 id 去重：别人的连接也可能同步出同名函数，撞主键会互相覆盖。
-    const taken = new Set(
-      this.store.listAllToolIds().filter((id) => !existing.some((item) => item.id === id))
-    );
+    const taken = new Set(all.filter((tool) => !existing.some((item) => item.id === tool.id)).map((tool) => tool.id));
     const keep = new Set<string>();
-    // 同步出来的工具跟着服务器走：示例连接（无主）的工具全员可用，自己连的只有自己能用。
-    const ownerId = server.ownerId ?? null;
 
     for (const tool of tools) {
       const id = uniqueToolId(server.id, tool.name, taken);
       taken.add(id);
       keep.add(id);
-      this.store.saveTool(
-        {
-          id,
-          name: `${server.name} · ${tool.title || tool.name}`,
-          type: "mcp",
-          schema: tool.inputSchema,
-          endpoint: `${prefix}${encodeURIComponent(tool.name)}`,
-          description: tool.description || `由 MCP 服务器「${server.name}」提供的工具。`,
-          enabled: server.enabled
-        },
-        ownerId
-      );
+      this.store.saveTool({
+        id,
+        name: `${server.name} · ${tool.title || tool.name}`,
+        type: "mcp",
+        schema: tool.inputSchema,
+        endpoint: `${prefix}${encodeURIComponent(tool.name)}`,
+        description: tool.description || `由 MCP 服务器「${server.name}」提供的工具。`,
+        enabled: server.enabled
+      });
     }
 
     for (const tool of existing) {
@@ -309,13 +286,8 @@ export class McpManager {
     const toolCount = this.store
       .listTools()
       .filter((tool) => tool.type === "mcp" && (tool.endpoint ?? "").startsWith(prefix)).length;
-    const { env: _env, ownerId: _ownerId, ...rest } = config;
-    return {
-      ...rest,
-      envKeys: Object.keys(config.env).sort(),
-      toolCount,
-      source: config.ownerId ? "custom" : "builtin"
-    };
+    const { env: _env, ...rest } = config;
+    return { ...rest, envKeys: Object.keys(config.env).sort(), toolCount };
   }
 }
 

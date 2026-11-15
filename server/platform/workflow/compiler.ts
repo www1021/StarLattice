@@ -9,8 +9,6 @@ import {
   type CompileIssue,
   type ComparisonOperator,
   type LeafNode,
-  type NodeErrorPolicy,
-  type NodeOutputProperty,
   type WorkflowDefinition,
   type WorkflowEdge,
   type WorkflowNode
@@ -164,21 +162,6 @@ class Compiler {
         this.nodePaths.set(node.id, location);
       }
 
-      // 参数表是编辑器写回的声明式结构：这里只做结构性校验，
-      // 必填缺失交给 diagnostics 以 warning 提示，避免草稿无法保存。
-      const bindingNames = new Set<string>();
-      (node.inputBindings ?? []).forEach((binding, index) => {
-        if (!ID_PATTERN.test(binding.name)) {
-          this.error("invalid-port-name", `${location}.inputBindings[${index}]`, `输入参数名 "${binding.name}" 只能包含字母、数字、下划线和短横线`);
-        }
-        if (bindingNames.has(binding.name)) {
-          this.error("duplicate-port-name", `${location}.inputBindings[${index}]`, `输入参数 "${binding.name}" 重复声明`);
-        }
-        bindingNames.add(binding.name);
-      });
-      this.validateOutputSchema(node.outputSchema ?? [], `${location}.outputSchema`);
-      this.validateErrorPolicy(node.errorPolicy, `${location}.errorPolicy`);
-
       switch (node.kind) {
         case "start":
         case "end":
@@ -254,45 +237,9 @@ class Compiler {
           }
           break;
         }
-        case "extract": {
-          // 参数名会变成下游引用字段名，必须和节点 id 同一套规则，否则引用面板里点不出来。
-          const names = new Set<string>();
-          for (const [index, param] of node.params.entries()) {
-            if (!ID_PATTERN.test(param.name)) {
-              this.error(
-                "invalid-extract-param",
-                `${location}.params[${index}].name`,
-                `参数名 "${param.name}" 只能包含字母、数字、下划线和短横线`
-              );
-            }
-            if (names.has(param.name)) {
-              this.error(
-                "duplicate-extract-param",
-                `${location}.params[${index}].name`,
-                `参数 "${param.name}" 重复定义`
-              );
-            }
-            names.add(param.name);
-          }
-          if (
-            node.maxRounds !== undefined &&
-            (!Number.isInteger(node.maxRounds) || node.maxRounds < 1 || node.maxRounds > 5)
-          ) {
-            this.error("invalid-extract-rounds", `${location}.maxRounds`, "extract.maxRounds 必须在 1 到 5 之间");
-          }
-          if (
-            node.timeoutMs !== undefined &&
-            (!Number.isInteger(node.timeoutMs) || node.timeoutMs < 1000 || node.timeoutMs > 86_400_000)
-          ) {
-            this.error("invalid-extract-timeout", `${location}.timeoutMs`, "extract.timeoutMs 必须在 1000 到 86400000 之间");
-          }
-          break;
-        }
         case "llm":
           if (node.temperature !== undefined && (node.temperature < 0 || node.temperature > 2)) {
             this.error("invalid-llm-temperature", location, "llm.temperature 必须在 0 到 2 之间");
-          }          if (node.topP !== undefined && (node.topP < 0 || node.topP > 1)) {
-            this.error("invalid-llm-top-p", location, "llm.topP 必须在 0 到 1 之间");
           }
           if (
             node.maxTokens !== undefined &&
@@ -622,8 +569,7 @@ class Compiler {
         from: edge.from,
         to: edge.to,
         label: edge.label,
-        when,
-        fromPort: edge.fromPort
+        when
       });
       indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
     });
@@ -756,7 +702,6 @@ class Compiler {
       node.kind === "agent" ||
       node.kind === "llm" ||
       node.kind === "clarify" ||
-      node.kind === "extract" ||
       node.kind === "knowledge" ||
       node.kind === "tool" ||
       node.kind === "http" ||
@@ -914,7 +859,7 @@ class Compiler {
     for (const statement of block) {
       if (statement.type === "step") {
         for (const ref of collectNodeRefs(statement.step.node)) {
-          this.checkRef(ref, environment, statement.step.path, inLoop, localPortsOf(statement.step.node));
+          this.checkRef(ref, environment, statement.step.path, inLoop);
         }
         environment.add(statement.step.nodeId);
         continue;
@@ -923,7 +868,7 @@ class Compiler {
       if (statement.type === "subworkflow") {
         // 输入映射在父作用域解析；输出映射在子作用域解析，已由 expandSubWorkflow 单独校验。
         for (const ref of collectNodeRefs(statement.node)) {
-          this.checkRef(ref, environment, statement.path, inLoop, localPortsOf(statement.node));
+          this.checkRef(ref, environment, statement.path, inLoop);
         }
         environment.add(statement.nodeId);
         continue;
@@ -959,18 +904,8 @@ class Compiler {
     }
   }
 
-  private checkRef(
-    ref: string,
-    environment: Set<string>,
-    location: string,
-    inLoop: boolean,
-    /** 当前节点自己声明的输入变量名：正文里 ${name} 引用的是它们，不是同名的节点。 */
-    locals?: Set<string>
-  ) {
+  private checkRef(ref: string, environment: Set<string>, location: string, inLoop: boolean) {
     const [head, ...rest] = ref.split(".");
-    if (locals?.has(head)) {
-      return;
-    }
     if (head === "input") {
       const name = rest.join(".");
       if (!name) {
@@ -1009,60 +944,13 @@ class Compiler {
     }
   }
 
-  /** 输出字段树逐层校验命名与重复；层级不设限，靠 UI 控制展开深度。 */
-  private validateOutputSchema(properties: NodeOutputProperty[], location: string) {
-    const names = new Set<string>();
-    properties.forEach((property, index) => {
-      const at = `${location}[${index}]`;
-      if (!ID_PATTERN.test(property.name)) {
-        this.error("invalid-port-name", at, `输出参数名 "${property.name}" 只能包含字母、数字、下划线和短横线`);
-      }
-      if (names.has(property.name)) {
-        this.error("duplicate-port-name", at, `输出参数 "${property.name}" 重复声明`);
-      }
-      names.add(property.name);
-      if (property.properties?.length) {
-        this.validateOutputSchema(property.properties, `${at}.properties`);
-      }
-    });
-  }
-
-  /** 异常处理的取值边界；范围外直接报错，避免配成 0 秒超时这类隐性故障。 */
-  private validateErrorPolicy(policy: NodeErrorPolicy | undefined, location: string) {
-    if (!policy) {
-      return;
-    }
-    if (policy.retries !== undefined && (!Number.isInteger(policy.retries) || policy.retries < 0 || policy.retries > 5)) {
-      this.error("invalid-error-policy", `${location}.retries`, "重试次数只能是 0 到 5 的整数");
-    }
-    if (
-      policy.retryIntervalMs !== undefined &&
-      (!Number.isInteger(policy.retryIntervalMs) || policy.retryIntervalMs < 0 || policy.retryIntervalMs > 60_000)
-    ) {
-      this.error("invalid-error-policy", `${location}.retryIntervalMs`, "重试间隔只能是 0 到 60000 毫秒");
-    }
-    if (
-      policy.timeoutMs !== undefined &&
-      (!Number.isInteger(policy.timeoutMs) || policy.timeoutMs < 1_000 || policy.timeoutMs > 600_000)
-    ) {
-      this.error("invalid-error-policy", `${location}.timeoutMs`, "节点超时只能是 1000 到 600000 毫秒");
-    }
-    if (policy.strategy === "fallback" && policy.fallbackValue === undefined) {
-      this.error("invalid-error-policy", `${location}.fallbackValue`, "选择「兜底值」时必须在 fallbackValue 里给出替代产物");
-    }
-  }
-
   private error(code: string, path: string, message: string) {
     this.issues.push({ code, path, message });
   }
 }
 
 function collectNodeRefs(node: LeafNode): string[] {
-  const values: unknown[] = [node.inputs, (node.inputBindings ?? []).map((binding) => binding.value)];
-  // 兜底值同属节点产物，里面写的引用也要参与顺序与存在性校验。
-  if (node.errorPolicy?.fallbackValue !== undefined) {
-    values.push(node.errorPolicy.fallbackValue);
-  }
+  const values: unknown[] = [node.inputs];
   if (node.kind === "tool") {
     values.push(node.args);
   }
@@ -1075,11 +963,6 @@ function collectNodeRefs(node: LeafNode): string[] {
   if (node.kind === "clarify") {
     values.push(node.prompt);
   }
-  if (node.kind === "extract") {
-    // 抽取提示词与追问话术都可能引用上游变量，写错名字要在编译期就报出来。
-    values.push(node.prompt, node.askPrompt);
-    node.params.forEach((param) => values.push(param.description, param.question));
-  }
   if (node.kind === "knowledge") {
     values.push(node.query, node.knowledgeBaseIds);
   }
@@ -1088,10 +971,6 @@ function collectNodeRefs(node: LeafNode): string[] {
   }
   if (node.kind === "template") {
     values.push(node.template);
-  }
-  if (node.kind === "human") {
-    // 选项卡的生成提示词与动态选项来源同样是引用，写错名字要在编译期就报出来。
-    values.push(node.generatePrompt, node.optionsFrom);
   }
   // subworkflow.outputs 在子流程作用域内解析，由 expandSubWorkflow 单独校验。
   const refs: string[] = [];
@@ -1120,20 +999,6 @@ function emptyGraph(): CompiledGraph {
 
 function workflowKey(workflow: WorkflowDefinition): string {
   return `${workflow.id}@${workflow.version}`;
-}
-
-/** 节点「输入变量」表里声明的名字，正文里按名字引用时用它放行。 */
-function localPortsOf(node: WorkflowNode): Set<string> {
-  const names = new Set(
-    (node.inputBindings ?? [])
-      .map((binding) => (typeof binding.name === "string" ? binding.name.trim() : ""))
-      .filter((name) => name !== "")
-  );
-  // 选项卡提交时运行时自带 choice（用户选中的那一项），提示词里引用它不需要声明成入参。
-  if (node.kind === "human" && ((node.options?.length ?? 0) > 0 || node.optionsFrom?.trim())) {
-    names.add("choice");
-  }
-  return names;
 }
 
 function gatherRefs(value: unknown, refs: string[]): string[] {

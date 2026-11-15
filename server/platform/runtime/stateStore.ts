@@ -2,8 +2,6 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { currentAuth, ownerScope, ownerValue, ownerVisibleScope } from "../../auth/context.js";
-import { ensureOwnerColumnsFor, PERSONAL_TABLES } from "../../auth/ownership.js";
 import type {
   AgentRecord,
   AgentVersionRecord,
@@ -37,14 +35,12 @@ import type {
   TeamRecord,
   TeamWrite,
   ToolRecord,
-  ToolSource,
   ToolWrite,
   VerifyDimension,
   VerifyResultRecord,
   WorkflowDefinition
 } from "../types.js";
 import { parseWorkflowDefinition } from "../workflow/dsl.js";
-import { PlatformError } from "../types.js";
 import type {
   EvaluationDataset,
   EvaluationRun,
@@ -64,7 +60,6 @@ import { canonicalJson, sha256 } from "../evolution/util.js";
 
 export const PLATFORM_TABLES = [
   "platform_agents",
-  "chat_agents",
   "platform_agent_versions",
   "platform_teams",
   "platform_tools",
@@ -119,28 +114,6 @@ CREATE TABLE IF NOT EXISTS platform_agent_versions (
   PRIMARY KEY (agent_id, version)
 );
 
--- 用户自建智能体单独一张表：内置那批留在 platform_agents 里全员共享、只读，
--- 自建的只对 owner_id 本人可见。版本与记忆仍按 agent_id 共享同一套表，
--- 这样工作流按 id 引用时不用关心它到底住在哪张表。
-CREATE TABLE IF NOT EXISTS chat_agents (
-  id TEXT PRIMARY KEY,
-  owner_id TEXT,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  avatar TEXT NOT NULL DEFAULT '',
-  role TEXT NOT NULL DEFAULT '',
-  prompt TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  tools TEXT NOT NULL DEFAULT '[]',
-  capabilities TEXT NOT NULL DEFAULT '[]',
-  memory TEXT NOT NULL DEFAULT '{}',
-  config TEXT NOT NULL DEFAULT '{}',
-  version INTEGER NOT NULL DEFAULT 1,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS platform_teams (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -161,8 +134,7 @@ CREATE TABLE IF NOT EXISTS platform_tools (
   description TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  owner_id TEXT
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS platform_mcp_servers (
@@ -577,7 +549,6 @@ type WorkflowRow = {
   status: string;
   created_at: string;
   updated_at: string;
-  owner_id?: string | null;
 };
 
 type SchedulerLeaseRow = {
@@ -687,15 +658,6 @@ type AgentRow = {
   enabled: number;
   created_at: string;
   updated_at: string;
-  /** platform_agents 补列后才有；为 null 表示内置那批。 */
-  owner_id?: string | null;
-};
-
-type ChatAgentRow = AgentRow & {
-  owner_id: string | null;
-  description: string;
-  avatar: string;
-  config: string;
 };
 
 type AgentVersionRow = {
@@ -726,8 +688,6 @@ type ToolRow = {
   enabled: number;
   created_at: string;
   updated_at: string;
-  /** 为空是内置工具，非空是某个账号自己连 MCP 同步出来的。 */
-  owner_id?: string | null;
 };
 
 type McpServerRow = {
@@ -747,7 +707,6 @@ type McpServerRow = {
   last_latency_ms: number | null;
   created_at: string;
   updated_at: string;
-  owner_id?: string | null;
 };
 
 type RunRow = {
@@ -991,8 +950,6 @@ export type StoredWorkflow = {
   status: string;
   createdAt: string;
   updatedAt: string;
-  /** 归属账号；null 是内置共享的那份。保存前用来判断「当前账号能不能覆盖」。 */
-  ownerId: string | null;
 };
 
 export type WorkflowSummary = {
@@ -1004,10 +961,6 @@ export type WorkflowSummary = {
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
-  /** 内置（全员可见）还是自建（只有本人可见）。 */
-  source: ToolSource;
-  /** 归属账号；为空表示内置。 */
-  ownerId: string | null;
 };
 
 export type StepSnapshot = {
@@ -1084,38 +1037,7 @@ export class PlatformStateStore {
     this.ensureSchedulerIndexes();
     this.ensureMcpColumns();
     this.ensureLoopColumns();
-    ensureOwnerColumnsFor(this.db, PERSONAL_TABLES.platform);
-    // Agent 与工具单独补列：内置那批要留成「无主」，好让所有账号都能读到，不能走首账号回填。
-    ensureOwnerColumnsFor(this.db, ["platform_agents", "platform_tools"]);
-    this.adoptOrphanMcpTools();
     this.failInterruptedRuns();
-  }
-
-  /**
-   * 工具表加归属列之前，MCP 同步出来的工具一律是「无主」，
-   * 补列之后它们会被当成内置工具暴露给所有人。这里按 endpoint 前缀认回所属连接。
-   */
-  private adoptOrphanMcpTools() {
-    this.db
-      .prepare(
-        `
-        UPDATE platform_tools
-        SET owner_id = (
-          SELECT s.owner_id FROM platform_mcp_servers s
-          WHERE platform_tools.endpoint LIKE 'mcp://' || s.id || '/%'
-            AND s.owner_id IS NOT NULL
-          LIMIT 1
-        )
-        WHERE owner_id IS NULL
-          AND type = 'mcp'
-          AND EXISTS (
-            SELECT 1 FROM platform_mcp_servers s
-            WHERE platform_tools.endpoint LIKE 'mcp://' || s.id || '/%'
-              AND s.owner_id IS NOT NULL
-          )
-        `
-      )
-      .run();
   }
 
   /**
@@ -1390,73 +1312,13 @@ export class PlatformStateStore {
     };
   }
 
-  /**
-   * 播种「随代码分发的共享对话智能体」（如研途引航系列）。
-   * 与内置 Agent 的策略一致：INSERT 遇到同 id 已存在就跳过，本机的私人改动优先；
-   * 已存在但带主人的行放回无主，避免「我建了这批、别人拉代码后又多出一批」的重复。
-   */
-  seedSharedChatAgents(
-    seeds: Array<{
-      id: string;
-      name: string;
-      description?: string;
-      avatar?: string;
-      role?: string;
-      prompt: string;
-      model: string;
-      tools?: string[];
-      capabilities?: string[];
-      memory?: Record<string, unknown>;
-      config?: Record<string, unknown>;
-      enabled?: boolean;
-    }>
-  ): number {
-    const now = new Date().toISOString();
-    const insert = this.db.prepare(
-      `
-      INSERT INTO chat_agents
-        (id, owner_id, name, description, avatar, role, prompt, model, tools,
-         capabilities, memory, config, version, enabled, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-      ON CONFLICT(id) DO NOTHING
-      `
-    );
-    let inserted = 0;
-    const transaction = this.db.transaction(() => {
-      for (const seed of seeds) {
-        inserted += insert.run(
-          seed.id,
-          seed.name,
-          seed.description ?? "",
-          seed.avatar ?? "",
-          seed.role ?? "",
-          seed.prompt,
-          seed.model,
-          JSON.stringify(seed.tools ?? []),
-          JSON.stringify(seed.capabilities ?? []),
-          JSON.stringify(seed.memory ?? {}),
-          JSON.stringify(seed.config ?? {}),
-          seed.enabled === false ? 0 : 1,
-          now,
-          now
-        ).changes;
-        // 同 id 的历史私人行放回共享，跟内置工作流的 releaseBuiltinWorkflow 同思路。
-        this.db
-          .prepare("UPDATE chat_agents SET owner_id = NULL WHERE id = ? AND owner_id IS NOT NULL")
-          .run(seed.id);
-      }
-    });
-    transaction();
-    return inserted;
-  }
-
   seedAgents(seeds: AgentWrite[]): number {
     const now = new Date().toISOString();
     const statement = this.db.prepare(
       `
       INSERT INTO platform_agents
-        (id, name, version, role, prompt, tools, model, capabilities, memory, enabled, created_at, updated_at, owner_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        (id, name, version, role, prompt, tools, model, capabilities, memory, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
       `
     );
@@ -1515,63 +1377,17 @@ export class PlatformStateStore {
   }
 
   saveAgent(agent: AgentWrite): AgentRecord {
-    const ownerId = ownerValue();
-    const located = this.locateAgent(agent.id);
-    if (ownerId && located) {
-      // 内置 Agent 是各账号共用的那一份，能读但不能改，否则一个人改了所有人跟着变。
-      if (located.table === "platform" && located.ownerId === null) {
-        throw new PlatformError("内置 Agent 是只读的，要改请另存一个自己的。", 403);
-      }
-      // 共享对话智能体（无主行）随代码分发：部署者（owner 角色）可编辑且保持共享，
-      // 成员只读——直接改会同步给所有人，得另存一份自己的。
-      if (located.table === "chat" && located.ownerId === null) {
-        if (currentAuth()?.role !== "owner") {
-          throw new PlatformError("共享智能体是只读的，要改请另存一个自己的。", 403);
-        }
-        const existing = this.getAgent(agent.id);
-        const now = new Date().toISOString();
-        if (existing) {
-          this.recordAgentVersion(existing, existing.updatedAt);
-        }
-        this.writeChatAgent(agent, null, existing, now);
-        const saved = this.getAgent(agent.id)!;
-        this.recordAgentVersion(saved, now);
-        return saved;
-      }
-      // 别人的自建智能体对当前账号等同于不存在。
-      if (located.ownerId !== ownerId) {
-        throw new PlatformError("Agent 不存在。", 404);
-      }
-    }
     const existing = this.getAgent(agent.id);
     const now = new Date().toISOString();
     if (existing) {
       this.recordAgentVersion(existing, existing.updatedAt);
     }
-    // 老数据（含内置）继续留在 platform_agents：自循环改写内置提示词这类无身份的
-    // 后台路径依赖它，迁走会让历史版本和运行记录对不上。新建的一律进 chat_agents。
-    if (located?.table === "platform") {
-      this.writePlatformAgent(agent, ownerId, existing, now);
-    } else {
-      this.writeChatAgent(agent, located?.ownerId ?? ownerId, existing, now);
-    }
-    const saved = this.getAgent(agent.id)!;
-    this.recordAgentVersion(saved, now);
-    return saved;
-  }
-
-  private writePlatformAgent(
-    agent: AgentWrite,
-    ownerId: string | null,
-    existing: AgentRecord | undefined,
-    now: string
-  ) {
     this.db
       .prepare(
         `
         INSERT INTO platform_agents
-          (id, name, version, role, prompt, tools, model, capabilities, memory, enabled, created_at, updated_at, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, name, version, role, prompt, tools, model, capabilities, memory, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           version = excluded.version,
@@ -1597,128 +1413,16 @@ export class PlatformStateStore {
         JSON.stringify(agent.memory),
         agent.enabled ? 1 : 0,
         existing?.createdAt ?? now,
-        now,
-        ownerId
-      );
-  }
-
-  private writeChatAgent(
-    agent: AgentWrite,
-    ownerId: string | null,
-    existing: AgentRecord | undefined,
-    now: string
-  ) {
-    this.db
-      .prepare(
-        `
-        INSERT INTO chat_agents
-          (id, owner_id, name, description, avatar, role, prompt, model, tools,
-           capabilities, memory, config, version, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          name = excluded.name,
-          description = excluded.description,
-          avatar = excluded.avatar,
-          role = excluded.role,
-          prompt = excluded.prompt,
-          model = excluded.model,
-          tools = excluded.tools,
-          capabilities = excluded.capabilities,
-          memory = excluded.memory,
-          config = excluded.config,
-          version = excluded.version,
-          enabled = excluded.enabled,
-          updated_at = excluded.updated_at
-        `
-      )
-      .run(
-        agent.id,
-        ownerId,
-        agent.name,
-        agent.description ?? "",
-        agent.avatar ?? "",
-        agent.role,
-        agent.prompt,
-        agent.model,
-        JSON.stringify(agent.tools),
-        JSON.stringify(agent.capabilities ?? []),
-        JSON.stringify(agent.memory ?? {}),
-        JSON.stringify(agent.chatConfig ?? {}),
-        agent.version,
-        agent.enabled ? 1 : 0,
-        existing?.createdAt ?? now,
         now
       );
-  }
-
-  /** 自建智能体住在 chat_agents，内置与历史自定义的住在 platform_agents。 */
-  private locateAgent(
-    id: string
-  ): { table: "platform" | "chat"; ownerId: string | null } | undefined {
-    const chat = this.db
-      .prepare("SELECT owner_id FROM chat_agents WHERE id = ?")
-      .get(id) as { owner_id: string | null } | undefined;
-    if (chat) {
-      return { table: "chat", ownerId: chat.owner_id };
-    }
-    const platform = this.db
-      .prepare("SELECT owner_id FROM platform_agents WHERE id = ?")
-      .get(id) as { owner_id: string | null } | undefined;
-    return platform ? { table: "platform", ownerId: platform.owner_id } : undefined;
-  }
-
-  /**
-   * 删除自建智能体；内置不允许删。
-   * 版本与记忆按 agent_id 共享同一套表，这里一并清掉，避免换个同 id 又读回旧记忆。
-   */
-  deleteAgent(id: string): boolean {
-    const ownerId = ownerValue();
-    const located = this.locateAgent(id);
-    if (!located) {
-      return false;
-    }
-    if (located.table === "platform" && located.ownerId === null) {
-      throw new PlatformError("内置 Agent 不能删除。", 403);
-    }
-    // 共享对话智能体是随代码分发的公共资产，只允许部署者移除。
-    if (located.table === "chat" && located.ownerId === null) {
-      if (currentAuth()?.role !== "owner") {
-        throw new PlatformError("共享智能体不能删除。", 403);
-      }
-    } else if (ownerId && located.ownerId !== ownerId) {
-      throw new PlatformError("Agent 不存在。", 404);
-    }
-    const transaction = this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM ${located.table === "chat" ? "chat_agents" : "platform_agents"} WHERE id = ?`).run(id);
-      this.db.prepare("DELETE FROM platform_agent_versions WHERE agent_id = ?").run(id);
-      this.db.prepare("DELETE FROM platform_agent_memory WHERE agent_id = ?").run(id);
-    });
-    transaction();
-    return true;
+    const saved = this.getAgent(agent.id)!;
+    this.recordAgentVersion(saved, now);
+    return saved;
   }
 
   getAgent(id: string): AgentRecord | undefined {
-    const ownerId = ownerValue();
-    const platformRow = ownerId
-      ? (this.db
-          .prepare(
-            "SELECT * FROM platform_agents WHERE id = ? AND (owner_id IS NULL OR owner_id = ?)"
-          )
-          .get(id, ownerId) as AgentRow | undefined)
-      : (this.db.prepare("SELECT * FROM platform_agents WHERE id = ?").get(id) as
-          | AgentRow
-          | undefined);
-    if (platformRow) {
-      return toAgentRecord(platformRow, "platform");
-    }
-    const chatRow = ownerId
-      ? (this.db
-          .prepare("SELECT * FROM chat_agents WHERE id = ? AND (owner_id IS NULL OR owner_id = ?)")
-          .get(id, ownerId) as ChatAgentRow | undefined)
-      : (this.db.prepare("SELECT * FROM chat_agents WHERE id = ?").get(id) as
-          | ChatAgentRow
-          | undefined);
-    return chatRow ? toAgentRecord(chatRow, "chat") : undefined;
+    const row = this.db.prepare("SELECT * FROM platform_agents WHERE id = ?").get(id) as AgentRow | undefined;
+    return row ? toAgentRecord(row) : undefined;
   }
 
   /**
@@ -1771,42 +1475,10 @@ export class PlatformStateStore {
   }
 
   listAgents(): AgentRecord[] {
-    const ownerId = ownerValue();
-    // 内置（owner_id 为空）对所有账号可见，自定义的只对本人可见。
-    const platformRows = ownerId
-      ? (this.db
-          .prepare(
-            "SELECT * FROM platform_agents WHERE owner_id IS NULL OR owner_id = ? ORDER BY role ASC, name ASC"
-          )
-          .all(ownerId) as AgentRow[])
-      : (this.db
-          .prepare("SELECT * FROM platform_agents ORDER BY role ASC, name ASC")
-          .all() as AgentRow[]);
-    // 自建智能体同样只出本人那一份；它是工作流可引用的，所以并入同一份清单，
-    // 工作流节点按 id 挑人时不会因为「它住在另一张表」而找不到。
-    const chatRows = ownerId
-      ? (this.db
-          .prepare(
-            "SELECT * FROM chat_agents WHERE owner_id IS NULL OR owner_id = ? ORDER BY updated_at DESC"
-          )
-          .all(ownerId) as ChatAgentRow[])
-      : (this.db.prepare("SELECT * FROM chat_agents ORDER BY updated_at DESC").all() as ChatAgentRow[]);
-    return [...chatRows.map((row) => toAgentRecord(row, "chat")), ...platformRows.map((row) => toAgentRecord(row, "platform"))];
-  }
-
-  /** 聊天页只列自建智能体；内置那批是工作流零件，不适合当对话人格。 */
-  listChatAgents(): AgentRecord[] {
-    const ownerId = ownerValue();
-    // 无主行（owner_id 为空）是随代码分发的共享智能体，全员可见；
-    // 带主人的只对本人可见。
-    const rows = ownerId
-      ? (this.db
-          .prepare(
-            "SELECT * FROM chat_agents WHERE owner_id IS NULL OR owner_id = ? ORDER BY updated_at DESC"
-          )
-          .all(ownerId) as ChatAgentRow[])
-      : (this.db.prepare("SELECT * FROM chat_agents ORDER BY updated_at DESC").all() as ChatAgentRow[]);
-    return rows.map((row) => toAgentRecord(row, "chat"));
+    const rows = this.db
+      .prepare("SELECT * FROM platform_agents ORDER BY role ASC, name ASC")
+      .all() as AgentRow[];
+    return rows.map(toAgentRecord);
   }
 
   listAgentVersions(agentId: string): AgentVersionRecord[] {
@@ -1854,10 +1526,7 @@ export class PlatformStateStore {
       model: target.model,
       capabilities: target.capabilities,
       memory: target.memory,
-      enabled: target.enabled,
-      description: target.description,
-      avatar: target.avatar,
-      chatConfig: target.chatConfig
+      enabled: target.enabled
     });
   }
 
@@ -1936,10 +1605,7 @@ export class PlatformStateStore {
       model: record.model,
       capabilities: record.capabilities,
       memory: record.memory,
-      enabled: record.enabled,
-      description: record.description,
-      avatar: record.avatar,
-      chatConfig: record.chatConfig
+      enabled: record.enabled
     };
     this.db
       .prepare(
@@ -1954,12 +1620,11 @@ export class PlatformStateStore {
 
   seedTools(seeds: ToolWrite[]): number {
     const now = new Date().toISOString();
-    // 种子工具留空 owner_id：它们是产品自带的，所有账号都该看得到。
     const statement = this.db.prepare(
       `
       INSERT INTO platform_tools
-        (id, name, type, schema, endpoint, description, enabled, created_at, updated_at, owner_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        (id, name, type, schema, endpoint, description, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
       `
     );
@@ -1983,34 +1648,15 @@ export class PlatformStateStore {
     return inserted;
   }
 
-  /**
-   * 写入工具。ownerId 用来让 MCP 同步显式指定归属（服务器是谁的，工具就是谁的）；
-   * 不传则取当前请求的账号。
-   *
-   * 主键是工具 id，两个人给 MCP 服务器起同名 id 时会撞在一起，
-   * 这里直接报错而不是把别人的工具悄悄改掉。
-   */
-  saveTool(tool: ToolWrite, ownerId?: string | null): ToolRecord {
-    const existingRow = this.db
-      .prepare("SELECT owner_id, created_at FROM platform_tools WHERE id = ?")
-      .get(tool.id) as { owner_id: string | null; created_at: string } | undefined;
-    const currentOwner = ownerValue();
-    const owner = existingRow ? existingRow.owner_id : (ownerId === undefined ? currentOwner : ownerId);
-    if (existingRow && existingRow.owner_id && existingRow.owner_id !== owner) {
-      throw new PlatformError(`工具「${tool.id}」已被其他账号占用，请换一个服务器 id。`, 409);
-    }
-    // 内置工具是全站共用的：账号自己拿同名 id 来保存不能把它改掉。
-    // 同步类调用（MCP / 工作流）会显式传 ownerId，不走这条拦截。
-    if (existingRow && existingRow.owner_id === null && ownerId === undefined && currentOwner) {
-      throw new PlatformError(`「${tool.id}」是内置工具，不能覆盖。`, 400);
-    }
+  saveTool(tool: ToolWrite): ToolRecord {
+    const existing = this.getTool(tool.id);
     const now = new Date().toISOString();
     this.db
       .prepare(
         `
         INSERT INTO platform_tools
-          (id, name, type, schema, endpoint, description, enabled, created_at, updated_at, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, name, type, schema, endpoint, description, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           type = excluded.type,
@@ -2019,7 +1665,6 @@ export class PlatformStateStore {
           description = excluded.description,
           enabled = excluded.enabled,
           updated_at = excluded.updated_at
-        WHERE platform_tools.owner_id IS excluded.owner_id
         `
       )
       .run(
@@ -2030,41 +1675,26 @@ export class PlatformStateStore {
         tool.endpoint ?? null,
         tool.description,
         tool.enabled ? 1 : 0,
-        existingRow?.created_at ?? now,
-        now,
-        owner
+        existing?.createdAt ?? now,
+        now
       );
     return this.getTool(tool.id)!;
   }
 
   getTool(id: string): ToolRecord | undefined {
-    const owner = ownerVisibleScope("platform_tools");
-    const row = this.db
-      .prepare(`SELECT * FROM platform_tools WHERE id = ?${owner.and}`)
-      .get(id, ...owner.params) as ToolRow | undefined;
+    const row = this.db.prepare("SELECT * FROM platform_tools WHERE id = ?").get(id) as ToolRow | undefined;
     return row ? toToolRecord(row) : undefined;
   }
 
-  /** 内置工具 + 自己连 MCP 同步出来的，别人的一概不返回。 */
   listTools(): ToolRecord[] {
-    const owner = ownerVisibleScope("platform_tools");
     const rows = this.db
-      .prepare(`SELECT * FROM platform_tools WHERE ${owner.condition} ORDER BY type ASC, name ASC`)
-      .all(...owner.params) as ToolRow[];
+      .prepare("SELECT * FROM platform_tools ORDER BY type ASC, name ASC")
+      .all() as ToolRow[];
     return rows.map(toToolRecord);
   }
 
-  /** 全库工具 id：MCP 同步时用来避免和别人的 id 撞车。 */
-  listAllToolIds(): string[] {
-    const rows = this.db.prepare("SELECT id FROM platform_tools").all() as Array<{ id: string }>;
-    return rows.map((row) => row.id);
-  }
-
   deleteTool(id: string): boolean {
-    const owner = ownerVisibleScope("platform_tools");
-    return this.db
-      .prepare(`DELETE FROM platform_tools WHERE id = ?${owner.and}`)
-      .run(id, ...owner.params).changes > 0;
+    return this.db.prepare("DELETE FROM platform_tools WHERE id = ?").run(id).changes > 0;
   }
 
   deleteToolsWithEndpointPrefix(prefix: string): number {
@@ -2078,8 +1708,8 @@ export class PlatformStateStore {
     const statement = this.db.prepare(
       `
       INSERT INTO platform_mcp_servers
-        (id, name, transport, command, args, env, url, enabled, created_at, updated_at, owner_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, name, transport, command, args, env, url, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
       `
     );
@@ -2096,8 +1726,7 @@ export class PlatformStateStore {
           seed.url ?? null,
           seed.enabled ? 1 : 0,
           now,
-          now,
-          ownerValue()
+          now
         ).changes;
       }
     });
@@ -2106,39 +1735,28 @@ export class PlatformStateStore {
   }
 
   listMcpServers(): McpServerConfig[] {
-    // 内置示例连接（owner 为空）所有账号都能看到并直接用；自己加的只有自己看得到。
-    const owner = ownerVisibleScope("platform_mcp_servers");
     const rows = this.db
-      .prepare(`SELECT * FROM platform_mcp_servers WHERE ${owner.condition} ORDER BY name ASC`)
-      .all(...owner.params) as McpServerRow[];
+      .prepare("SELECT * FROM platform_mcp_servers ORDER BY name ASC")
+      .all() as McpServerRow[];
     return rows.map(toMcpServerConfig);
   }
 
   getMcpServer(id: string): McpServerConfig | undefined {
-    const owner = ownerVisibleScope("platform_mcp_servers");
     const row = this.db
-      .prepare(`SELECT * FROM platform_mcp_servers WHERE id = ?${owner.and}`)
-      .get(id, ...owner.params) as McpServerRow | undefined;
+      .prepare("SELECT * FROM platform_mcp_servers WHERE id = ?")
+      .get(id) as McpServerRow | undefined;
     return row ? toMcpServerConfig(row) : undefined;
   }
 
   saveMcpServer(server: McpServerWrite, existing?: McpServerConfig): McpServerConfig {
     const previous = existing ?? this.getMcpServer(server.id);
     const now = new Date().toISOString();
-    const ownerId = ownerValue();
-    // 连接 id 是主键：别人已经用掉的 id 不能静默改写，否则会替人换掉服务器配置。
-    const rider = this.db
-      .prepare("SELECT owner_id FROM platform_mcp_servers WHERE id = ?")
-      .get(server.id) as { owner_id: string | null } | undefined;
-    if (rider && rider.owner_id && rider.owner_id !== ownerId) {
-      throw new PlatformError(`连接 id「${server.id}」已被其他账号占用，请换一个。`, 409);
-    }
     this.db
       .prepare(
         `
         INSERT INTO platform_mcp_servers
-          (id, name, transport, command, args, env, url, enabled, last_connected_at, last_error, created_at, updated_at, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, name, transport, command, args, env, url, enabled, last_connected_at, last_error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           transport = excluded.transport,
@@ -2148,7 +1766,6 @@ export class PlatformStateStore {
           url = excluded.url,
           enabled = excluded.enabled,
           updated_at = excluded.updated_at
-        WHERE platform_mcp_servers.owner_id IS excluded.owner_id
         `
       )
       .run(
@@ -2163,18 +1780,13 @@ export class PlatformStateStore {
         previous?.lastConnectedAt ?? null,
         previous?.lastError ?? null,
         previous?.createdAt ?? now,
-        now,
-        // 内置示例连接被谁改都还是内置，不能因为一次保存就变成某个人的私有连接。
-        rider ? rider.owner_id : ownerId
+        now
       );
     return this.getMcpServer(server.id)!;
   }
 
   deleteMcpServer(id: string): boolean {
-    const owner = ownerVisibleScope("platform_mcp_servers");
-    return this.db
-      .prepare(`DELETE FROM platform_mcp_servers WHERE id = ?${owner.and}`)
-      .run(id, ...owner.params).changes > 0;
+    return this.db.prepare("DELETE FROM platform_mcp_servers WHERE id = ?").run(id).changes > 0;
   }
 
   markMcpServerStatus(
@@ -2187,11 +1799,10 @@ export class PlatformStateStore {
     }
   ) {
     const now = new Date().toISOString();
-    const owner = ownerVisibleScope("platform_mcp_servers");
     if (status.error !== undefined) {
       this.db
-        .prepare(`UPDATE platform_mcp_servers SET last_error = ?, updated_at = ? WHERE id = ?${owner.and}`)
-        .run(status.error, now, id, ...owner.params);
+        .prepare("UPDATE platform_mcp_servers SET last_error = ?, updated_at = ? WHERE id = ?")
+        .run(status.error, now, id);
       return;
     }
     this.db
@@ -2205,7 +1816,7 @@ export class PlatformStateStore {
             protocol_version = COALESCE(?, protocol_version),
             last_latency_ms = COALESCE(?, last_latency_ms),
             updated_at = ?
-        WHERE id = ?${owner.and}
+        WHERE id = ?
         `
       )
       .run(
@@ -2215,8 +1826,7 @@ export class PlatformStateStore {
         status.info?.protocolVersion ?? null,
         status.latencyMs ?? null,
         now,
-        id,
-        ...owner.params
+        id
       );
   }
 
@@ -2235,25 +1845,18 @@ export class PlatformStateStore {
     };
   }
 
-  /**
-   * 落库一个工作流版本。
-   * ownerId 不传时归当前账号；显式传 null 用于「部署者改共享流程，新版本仍共享」，
-   * 否则 upsert 的 owner 条件会把共享行漏掉（NULL ≠ 当前账号）变成静默 no-op。
-   */
-  saveWorkflow(definition: WorkflowDefinition, ownerId?: string | null) {
+  saveWorkflow(definition: WorkflowDefinition) {
     const now = new Date().toISOString();
-    const resolvedOwner = ownerId === undefined ? ownerValue() : ownerId;
     this.db
       .prepare(
         `
-        INSERT INTO platform_workflows (id, version, name, description, dsl, status, created_at, updated_at, owner_id)
-        VALUES (?, ?, ?, ?, ?, 'published', ?, ?, ?)
+        INSERT INTO platform_workflows (id, version, name, description, dsl, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'published', ?, ?)
         ON CONFLICT(id, version) DO UPDATE SET
           name = excluded.name,
           description = excluded.description,
           dsl = excluded.dsl,
           updated_at = excluded.updated_at
-        WHERE platform_workflows.owner_id IS excluded.owner_id
         `
       )
       .run(
@@ -2263,21 +1866,19 @@ export class PlatformStateStore {
         definition.description ?? "",
         JSON.stringify(definition),
         now,
-        now,
-        resolvedOwner
+        now
       );
   }
 
   getWorkflow(id: string, version?: number): StoredWorkflow | undefined {
-    const owner = ownerVisibleScope("platform_workflows");
     const row =
       version === undefined
         ? (this.db
-            .prepare(`SELECT * FROM platform_workflows WHERE id = ?${owner.and} ORDER BY version DESC LIMIT 1`)
-            .get(id, ...owner.params) as WorkflowRow | undefined)
+            .prepare("SELECT * FROM platform_workflows WHERE id = ? ORDER BY version DESC LIMIT 1")
+            .get(id) as WorkflowRow | undefined)
         : (this.db
-            .prepare(`SELECT * FROM platform_workflows WHERE id = ? AND version = ?${owner.and}`)
-            .get(id, version, ...owner.params) as WorkflowRow | undefined);
+            .prepare("SELECT * FROM platform_workflows WHERE id = ? AND version = ?")
+            .get(id, version) as WorkflowRow | undefined);
     if (!row) {
       return undefined;
     }
@@ -2285,41 +1886,22 @@ export class PlatformStateStore {
       definition: parseWorkflowDefinition(JSON.parse(row.dsl)),
       status: row.status,
       createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ownerId: row.owner_id
+      updatedAt: row.updated_at
     };
   }
 
-  /**
-   * 查某个 (id, version) 行的归属，不管当前账号的可见域。
-   * 保存前用来识别「要写的版本号已被别人/共享行占用」这种看不见的冲突，
-   * 否则 upsert 的 owner 条件会静默 no-op，响应再查回来就是空。
-   */
-  workflowVersionOwner(id: string, version: number): string | null | undefined {
-    const row = this.db
-      .prepare("SELECT owner_id FROM platform_workflows WHERE id = ? AND version = ?")
-      .get(id, version) as { owner_id: string | null } | undefined;
-    return row ? row.owner_id : undefined;
-  }
-
   listWorkflows(): WorkflowSummary[] {
-    // 内置工作流对所有账号可见；自己存过新版本后，列表里看到的是自己那一版。
-    const owner = ownerVisibleScope("w");
-    const inner = ownerVisibleScope("platform_workflows");
     const rows = this.db
       .prepare(
         `
         SELECT w.* FROM platform_workflows w
         JOIN (
-          SELECT id, MAX(version) AS version FROM platform_workflows
-          WHERE ${inner.condition}
-          GROUP BY id
+          SELECT id, MAX(version) AS version FROM platform_workflows GROUP BY id
         ) latest ON latest.id = w.id AND latest.version = w.version
-        WHERE ${owner.condition}
         ORDER BY w.updated_at DESC
         `
       )
-      .all(...inner.params, ...owner.params) as WorkflowRow[];
+      .all() as WorkflowRow[];
     return rows.map((row) => {
       const definition = parseWorkflowDefinition(JSON.parse(row.dsl));
       return {
@@ -2330,24 +1912,9 @@ export class PlatformStateStore {
         status: row.status,
         nodeCount: definition.nodes.length,
         createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        source: row.owner_id ? "custom" : "builtin",
-        ownerId: row.owner_id ?? null
+        updatedAt: row.updated_at
       };
     });
-  }
-
-  /**
-   * 把内置工作流的某个版本放回「无主」。
-   *
-   * 早先按「首个账号接管无主数据」回填过一次，内置流程也一并被划给了那个账号，
-   * 结果第二个账号登进来工作流列表是空的。启动时按内置文件校正回来，
-   * 只动版本号与内置文件一致的那几行，用户自己存的新版本不受影响。
-   */
-  releaseBuiltinWorkflow(id: string, version: number): number {
-    return this.db
-      .prepare("UPDATE platform_workflows SET owner_id = NULL WHERE id = ? AND version = ? AND owner_id IS NOT NULL")
-      .run(id, version).changes;
   }
 
   createRun(input: {
@@ -2368,16 +1935,14 @@ export class PlatformStateStore {
     resumeCount?: number;
   }): RunRecord {
     const id = `run_${randomUUID()}`;
-    // 后台调度创建运行时没有请求身份，归属顺着工作流走，避免落成谁都查不到的无主记录。
-    const ownerId = ownerValue() ?? this.workflowOwnerId(input.workflowId);
     this.db
       .prepare(
         `
         INSERT INTO platform_runs
           (id, workflow_id, workflow_version, status, mode, input, plan, definition,
            release_id, experiment_id, arm, priority_class, deadline_at, scheduler_state,
-           resume_count, step_count, started_at, owner_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+           resume_count, step_count, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         `
       )
       .run(
@@ -2396,27 +1961,13 @@ export class PlatformStateStore {
         input.deadlineAt ?? null,
         input.schedulerState ?? null,
         input.resumeCount ?? 0,
-        new Date().toISOString(),
-        ownerId
+        new Date().toISOString()
       );
-    // 刚创建的这一条必然属于自己（或继承自工作流），直接按主键读回，避免受归属过滤影响。
-    const row = this.db.prepare("SELECT * FROM platform_runs WHERE id = ?").get(id) as RunRow;
-    return toRunRecord(row);
-  }
-
-  /** 工作流的主人；无身份路径创建运行时用来继承归属。 */
-  private workflowOwnerId(workflowId: string): string | null {
-    const row = this.db
-      .prepare(
-        "SELECT owner_id FROM platform_workflows WHERE id = ? AND owner_id IS NOT NULL ORDER BY rowid LIMIT 1"
-      )
-      .get(workflowId) as { owner_id: string } | undefined;
-    return row?.owner_id ?? null;
+    return this.getRun(id)!;
   }
 
   /** 保存时默认追加版本，避免覆盖已被历史运行引用的 DSL。 */
   nextWorkflowVersion(id: string): number {
-    // 全局取最大版本：主键是 (id, version)，只按自己可见的范围算会和内置版本撞车。
     const row = this.db
       .prepare("SELECT MAX(version) AS version FROM platform_workflows WHERE id = ?")
       .get(id) as { version: number | null } | undefined;
@@ -2446,21 +1997,14 @@ export class PlatformStateStore {
   }
 
   getRun(id: string): RunRecord | undefined {
-    // 有身份时只认自己的运行；调度器、恢复器没有身份，仍是全量。
-    const owner = ownerScope("platform_runs");
-    const row = this.db
-      .prepare(`SELECT * FROM platform_runs WHERE id = ?${owner.and}`)
-      .get(id, ...owner.params) as RunRow | undefined;
+    const row = this.db.prepare("SELECT * FROM platform_runs WHERE id = ?").get(id) as RunRow | undefined;
     return row ? toRunRecord(row) : undefined;
   }
 
   listRuns(limit = 20): RunRecord[] {
-    const owner = ownerScope("platform_runs");
     const rows = this.db
-      .prepare(
-        `SELECT * FROM platform_runs WHERE 1 = 1${owner.and} ORDER BY started_at DESC, rowid DESC LIMIT ?`
-      )
-      .all(...owner.params, Math.min(Math.max(limit, 1), 100)) as RunRow[];
+      .prepare("SELECT * FROM platform_runs ORDER BY started_at DESC, rowid DESC LIMIT ?")
+      .all(Math.min(Math.max(limit, 1), 100)) as RunRow[];
     return rows.map(toRunRecord);
   }
 
@@ -3220,21 +2764,18 @@ export class PlatformStateStore {
 
   listRunsForMetrics(workflowIds: string[] = [], limit = 1000): RunRecord[] {
     const capped = Math.min(Math.max(limit, 1), 5000);
-    const owner = ownerScope("platform_runs");
     if (workflowIds.length === 0) {
       const rows = this.db
-        .prepare(
-          `SELECT * FROM platform_runs WHERE 1 = 1${owner.and} ORDER BY started_at DESC, rowid DESC LIMIT ?`
-        )
-        .all(...owner.params, capped) as RunRow[];
+        .prepare("SELECT * FROM platform_runs ORDER BY started_at DESC, rowid DESC LIMIT ?")
+        .all(capped) as RunRow[];
       return rows.map(toRunRecord);
     }
     const placeholders = workflowIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
-        `SELECT * FROM platform_runs WHERE workflow_id IN (${placeholders})${owner.and} ORDER BY started_at DESC, rowid DESC LIMIT ?`
+        `SELECT * FROM platform_runs WHERE workflow_id IN (${placeholders}) ORDER BY started_at DESC, rowid DESC LIMIT ?`
       )
-      .all(...workflowIds, ...owner.params, capped) as RunRow[];
+      .all(...workflowIds, capped) as RunRow[];
     return rows.map(toRunRecord);
   }
 
@@ -3466,23 +3007,12 @@ export class PlatformStateStore {
     const row = this.db.prepare("SELECT * FROM platform_approvals WHERE id = ?").get(id) as
       | ApprovalRow
       | undefined;
-    if (!row) {
-      return undefined;
-    }
-    // 有身份时确认这条审批挂在自己的运行下面，别人的审批等同于不存在。
-    if (ownerValue() && !this.getRun(row.run_id)) {
-      return undefined;
-    }
-    return toApprovalRecord(row);
+    return row ? toApprovalRecord(row) : undefined;
   }
 
   listApprovals(options: { runId?: string; status?: ApprovalStatus; limit?: number } = {}): ApprovalRecord[] {
     const clauses: string[] = [];
     const params: string[] = [];
-    // 审批是运行的子资源，按运行归属过滤：有身份时看不到别人运行下的审批。
-    const runOwner = ownerScope("r");
-    clauses.push(`run_id IN (SELECT r.id FROM platform_runs r WHERE 1 = 1${runOwner.and})`);
-    params.push(...runOwner.params);
     if (options.runId) {
       clauses.push("run_id = ?");
       params.push(options.runId);
@@ -3554,14 +3084,7 @@ export class PlatformStateStore {
     const row = this.db.prepare("SELECT * FROM platform_interactions WHERE id = ?").get(id) as
       | InteractionRow
       | undefined;
-    if (!row) {
-      return undefined;
-    }
-    // 同审批：别人的运行挂起的人工输入任务，当前账号既看不到也答不了。
-    if (ownerValue() && !this.getRun(row.run_id)) {
-      return undefined;
-    }
-    return toInteractionRecord(row);
+    return row ? toInteractionRecord(row) : undefined;
   }
 
   listInteractions(
@@ -3569,10 +3092,6 @@ export class PlatformStateStore {
   ): InteractionRecord[] {
     const clauses: string[] = [];
     const params: string[] = [];
-    // 同审批：交互任务也挂在运行下面，跟着运行归属走。
-    const runOwner = ownerScope("r");
-    clauses.push(`run_id IN (SELECT r.id FROM platform_runs r WHERE 1 = 1${runOwner.and})`);
-    params.push(...runOwner.params);
     if (options.runId) {
       clauses.push("run_id = ?");
       params.push(options.runId);
@@ -4564,9 +4083,7 @@ function toLedgerEvent(row: LedgerRow): LedgerEvent {
   };
 }
 
-function toAgentRecord(row: AgentRow, table: "platform" | "chat"): AgentRecord {
-  const chat = row as Partial<ChatAgentRow>;
-  const owned = row.owner_id ?? null;
+function toAgentRecord(row: AgentRow): AgentRecord {
   return {
     id: row.id,
     name: row.name,
@@ -4579,11 +4096,7 @@ function toAgentRecord(row: AgentRow, table: "platform" | "chat"): AgentRecord {
     memory: fromJson<Record<string, unknown>>(row.memory) ?? {},
     enabled: row.enabled === 1,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    source: table === "chat" || owned ? "custom" : "builtin",
-    description: typeof chat.description === "string" ? chat.description : "",
-    avatar: typeof chat.avatar === "string" ? chat.avatar : "",
-    chatConfig: chat.config ? (fromJson<AgentRecord["chatConfig"]>(chat.config) ?? {}) : undefined
+    updatedAt: row.updated_at
   };
 }
 
@@ -4610,8 +4123,7 @@ function toToolRecord(row: ToolRow): ToolRecord {
     description: row.description,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    source: row.owner_id ? "custom" : "builtin"
+    updatedAt: row.updated_at
   };
 }
 
@@ -4632,8 +4144,7 @@ function toMcpServerConfig(row: McpServerRow): McpServerConfig {
     protocolVersion: row.protocol_version ?? undefined,
     lastLatencyMs: row.last_latency_ms ?? undefined,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    ownerId: row.owner_id ?? null
+    updatedAt: row.updated_at
   };
 }
 

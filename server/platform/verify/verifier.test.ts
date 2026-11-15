@@ -1,22 +1,7 @@
 import assert from "node:assert/strict";
-import test, { after, before } from "node:test";
+import test from "node:test";
 import type { AgentRecord } from "../types.js";
 import { LayeredVerifier } from "./verifier.js";
-import { configureTestModels } from "../../testing/modelFixtures.js";
-
-// 模型密钥只能来自账号设置（环境变量不再兜底），整份用例统一备好两条模型：
-// 一条中等成本作默认，一条低成本供预算降级时挑。
-let restoreModels: () => void;
-before(() => {
-  restoreModels = configureTestModels(
-    [
-      { id: "test-model", model: "test-model", costTier: "medium" },
-      { id: "cheap-model", model: "cheap-model", costTier: "low" }
-    ],
-    { defaultId: "test-model" }
-  );
-});
-after(() => restoreModels());
 
 function agent(id: string, name: string, tools: string[] = []): AgentRecord {
   return {
@@ -483,6 +468,7 @@ test("number_match normalizes percent signs, thousands separators and negatives"
 
 test("verification nodes can pin an independent verifier model", () => {
   const restore = withEnv({
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_MODEL_REASONING: "strong-model"
@@ -518,6 +504,7 @@ test("verification nodes can pin an independent verifier model", () => {
 
 test("verifiers default to their own model so execution and review stay independent", () => {
   const restore = withEnv({
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_VERIFY_MODEL: "verify-model"
@@ -556,9 +543,10 @@ test("verifiers default to their own model so execution and review stay independ
 
 test("verifier falls back to PLATFORM_VERIFY_MODEL when the agent keeps the default", () => {
   const restore = withEnv({
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
-    PLATFORM_VERIFY_MODEL: "cheap-model"
+    PLATFORM_VERIFY_MODEL: "fast"
   });
   try {
     const report = new LayeredVerifier(() => 0.86).evaluate({
@@ -577,9 +565,8 @@ test("verifier falls back to PLATFORM_VERIFY_MODEL when the agent keeps the defa
       ]
     });
 
-    // PLATFORM_VERIFY_MODEL 只能指向账号里已配好的模型，验证器仍然独立于执行侧。
-    assert.equal(report.layers.crossCheck.verifiers[0].model, "cheap-model");
-    assert.equal(report.layers.crossCheck.verifiers[0].resolvedModel, "cheap-model");
+    assert.equal(report.layers.crossCheck.verifiers[0].model, "fast");
+    assert.equal(report.layers.crossCheck.verifiers[0].resolvedModel, "fast-model");
     assert.equal(report.layers.crossCheck.verifiers[0].modelSource, "verifier");
   } finally {
     restore();
@@ -588,6 +575,7 @@ test("verifier falls back to PLATFORM_VERIFY_MODEL when the agent keeps the defa
 
 test("verifier downgrades to a low-cost model when the run budget is exhausted", () => {
   const restore = withEnv({
+    QWEN_API_KEY: "test-key",
     PLATFORM_LIVE_MODEL: "default-model",
     PLATFORM_MODEL_FAST: "fast-model",
     PLATFORM_MODEL_REASONING: "strong-model"
@@ -609,8 +597,8 @@ test("verifier downgrades to a low-cost model when the run budget is exhausted",
     });
 
     const score = report.layers.crossCheck.verifiers[0];
-    assert.equal(score.model, "cheap-model");
-    assert.equal(score.resolvedModel, "cheap-model");
+    assert.equal(score.model, "fast");
+    assert.equal(score.resolvedModel, "fast-model");
     assert.equal(score.modelSource, "budget-downgrade");
   } finally {
     restore();

@@ -4,20 +4,15 @@ import {
   CheckCircle2,
   History,
   Loader2,
-  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
-  Sparkles,
-  Trash2,
   Users,
   Wrench,
   X,
   XCircle
 } from "lucide-react";
 import { platformApi } from "./api";
-import { AgentAvatar } from "../agents/AgentAvatar";
-import { AgentEditor } from "../agents/AgentEditor";
 import {
   SCENARIO_PACK_FILTERS,
   filterByPack,
@@ -72,9 +67,6 @@ export function RegistryPage() {
   const [versions, setVersions] = useState<AgentVersionsResponse>();
   const [versionLoading, setVersionLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<number>();
-  /** 打开编辑器：传 Agent 是编辑，传 "new" 是新建。 */
-  const [editing, setEditing] = useState<RegistryAgentView | "new">();
-  const [removing, setRemoving] = useState<string>();
 
   async function load() {
     try {
@@ -208,28 +200,6 @@ export function RegistryPage() {
     }
   }
 
-  async function removeAgent(agent: RegistryAgentView) {
-    if (removing) {
-      return;
-    }
-    const confirmed = window.confirm(
-      `删除智能体「${agent.name}」？已有的对话记录会保留，但之后不能再选它。`
-    );
-    if (!confirmed) {
-      return;
-    }
-    setRemoving(agent.id);
-    try {
-      await platformApi.deleteAgent(agent.id);
-      setBanner({ tone: "success", text: `已删除「${agent.name}」。` });
-      await load();
-    } catch (error) {
-      setBanner({ tone: "error", text: describe(error) });
-    } finally {
-      setRemoving(undefined);
-    }
-  }
-
   if (loading) {
     return (
       <div className="platform-page">
@@ -258,14 +228,6 @@ export function RegistryPage() {
           <button type="button" className="platform-button is-ghost" onClick={() => void load()}>
             <RefreshCw size={14} />
             刷新
-          </button>
-          <button
-            type="button"
-            className="platform-button is-ghost"
-            onClick={() => setEditing("new")}
-          >
-            <Sparkles size={14} />
-            新建智能体
           </button>
           <button
             type="button"
@@ -457,14 +419,7 @@ export function RegistryPage() {
               </h3>
               <div className="registry-agent-grid">
                 {team.agents.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    onVersions={() => void openVersions(agent)}
-                    onEdit={() => setEditing(agent)}
-                    onDelete={() => void removeAgent(agent)}
-                    removing={removing === agent.id}
-                  />
+                  <AgentCard key={agent.id} agent={agent} onVersions={() => void openVersions(agent)} />
                 ))}
               </div>
             </div>
@@ -477,14 +432,7 @@ export function RegistryPage() {
               </h3>
               <div className="registry-agent-grid">
                 {groups.ungrouped.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    onVersions={() => void openVersions(agent)}
-                    onEdit={() => setEditing(agent)}
-                    onDelete={() => void removeAgent(agent)}
-                    removing={removing === agent.id}
-                  />
+                  <AgentCard key={agent.id} agent={agent} onVersions={() => void openVersions(agent)} />
                 ))}
               </div>
             </div>
@@ -511,9 +459,6 @@ export function RegistryPage() {
                   <p>{tool.description || "未填写描述"}</p>
                   <footer>
                     <code>{tool.id}</code>
-                    <span className="registry-badge is-owner">
-                      {tool.source === "custom" ? "我的" : "内置"}
-                    </span>
                     <span>{packLabel(packOf("tools", tool.id))}</span>
                     <span className={tool.enabled ? "is-on" : "is-off"}>
                       {tool.enabled ? "启用" : "停用"}
@@ -593,18 +538,6 @@ export function RegistryPage() {
           </div>
         </div>
       )}
-
-      {editing && (
-        <AgentEditor
-          agent={editing === "new" ? undefined : editing}
-          onClose={() => setEditing(undefined)}
-          onSaved={async (agent) => {
-            setEditing(undefined);
-            setBanner({ tone: "success", text: `已保存智能体「${agent.name}」。` });
-            await load();
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -612,30 +545,21 @@ export function RegistryPage() {
 type AgentCardProps = {
   agent: RegistryAgentView;
   onVersions: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  removing: boolean;
 };
 
-function AgentCard({ agent, onVersions, onEdit, onDelete, removing }: AgentCardProps) {
+function AgentCard({ agent, onVersions }: AgentCardProps) {
   const memoryKeys = Object.keys(agent.memory);
-  // 内置那批是工作流零件，改不了也删不掉；只有自建的才有编辑入口。
-  const own = agent.source === "custom";
   return (
     <article className="registry-agent">
       <header>
-        <div className="registry-agent-title">
-          <AgentAvatar name={agent.name} avatar={agent.avatar} size={34} />
-          <div>
-            <strong>{agent.name}</strong>
-            <small>
-              <code>{agent.id}</code> · {agent.role || "未设置角色"}
-            </small>
-          </div>
+        <div>
+          <strong>{agent.name}</strong>
+          <small>
+            <code>{agent.id}</code> · {agent.role || "未设置角色"}
+          </small>
         </div>
         <div className="registry-agent-badges">
           <span className="registry-badge">v{agent.version}</span>
-          {own && <span className="registry-badge is-own">自建</span>}
           {agent.modelProfile && (
             <span
               className="registry-badge"
@@ -649,8 +573,6 @@ function AgentCard({ agent, onVersions, onEdit, onDelete, removing }: AgentCardP
           </span>
         </div>
       </header>
-
-      {agent.description && <p className="registry-agent-desc">{agent.description}</p>}
 
       <div className="registry-agent-stats">
         <span>
@@ -689,29 +611,10 @@ function AgentCard({ agent, onVersions, onEdit, onDelete, removing }: AgentCardP
 
       <footer>
         <span>更新于 {formatTime(agent.updatedAt)}</span>
-        <div className="registry-agent-actions">
-          {own && (
-            <>
-              <button type="button" className="platform-button is-ghost" onClick={onEdit}>
-                <Pencil size={13} />
-                编辑
-              </button>
-              <button
-                type="button"
-                className="platform-button is-ghost is-danger"
-                onClick={onDelete}
-                disabled={removing}
-              >
-                <Trash2 size={13} />
-                {removing ? "删除中" : "删除"}
-              </button>
-            </>
-          )}
-          <button type="button" className="platform-button is-ghost" onClick={onVersions}>
-            <History size={14} />
-            版本历史
-          </button>
-        </div>
+        <button type="button" className="platform-button is-ghost" onClick={onVersions}>
+          <History size={14} />
+          版本历史
+        </button>
       </footer>
     </article>
   );

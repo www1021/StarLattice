@@ -9,7 +9,6 @@ import {
   parseKnowledgeBindingRequest
 } from "../knowledge/knowledgeBases.js";
 import { BUILTIN_AGENTS, parseAgentWrite } from "./agents.js";
-import { SHARED_CHAT_AGENTS } from "./sharedChatAgents.js";
 import { parseTeamWrite } from "./teams.js";
 import { BUILTIN_TOOLS, parseToolWrite } from "./tools.js";
 
@@ -46,12 +45,7 @@ test("builtin registry registers at least 8 agents and 5 tools with unique ids",
 test("builtin registry covers every reference in builtin workflows", () => {
   const workflows = loadBuiltinWorkflows();
   assert.ok(workflows.length >= 2, `workflows: ${workflows.length}`);
-  // 研途引航系列是对话智能体（chat_agents），随 SHARED_CHAT_AGENTS 分发，
-  // 对工作流而言同样是「已注册」的引用目标。
-  const agentIds = new Set([
-    ...BUILTIN_AGENTS.map((agent) => agent.id),
-    ...SHARED_CHAT_AGENTS.map((agent) => agent.id)
-  ]);
+  const agentIds = new Set(BUILTIN_AGENTS.map((agent) => agent.id));
   const toolIds = new Set(BUILTIN_TOOLS.map((tool) => tool.id));
 
   for (const workflow of workflows) {

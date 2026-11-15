@@ -447,10 +447,7 @@ export function KnowledgePage() {
                   {isIma ? (
                     <span className="knowledge-note">IMA 资料请在 IMA 平台维护</span>
                   ) : (
-                    <label
-                      className={`platform-button is-ghost ${uploading ? "is-disabled" : ""}`}
-                      title="支持 PDF、Word（docx）、Excel（xlsx）、PPT（pptx）、TXT、MD、CSV、JSON，单个文件不超过 10MB，一次最多 5 个"
-                    >
+                    <label className={`platform-button is-ghost ${uploading ? "is-disabled" : ""}`}>
                       {uploading ? <Loader2 size={14} className="is-spinning" /> : <Upload size={14} />}
                       {uploading ? "上传中…" : "上传资料"}
                       <input
@@ -458,7 +455,7 @@ export function KnowledgePage() {
                         multiple
                         hidden
                         disabled={uploading}
-                        accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json"
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json"
                         onChange={(event) => {
                           void uploadFiles(event.target.files);
                           event.target.value = "";

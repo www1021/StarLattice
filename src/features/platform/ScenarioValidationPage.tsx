@@ -60,7 +60,7 @@ const PACKS: PackPresentation[] = [
     id: "education",
     title: "师范生课堂训练",
     narrative:
-      "教案、课堂演练、虚拟课堂与谈心谈话共用同一套 Agent 注册与运行记录；虚拟课堂和谈心谈话在人工交互节点暂停，提交后继续同一条运行。",
+      "教案、课堂演练、虚拟课堂与谈心谈话共用同一套 Agent 注册与运行台账；虚拟课堂和谈心谈话在人工交互节点暂停，提交后继续同一条运行。",
     flagship: ["classroom-map-v1", "classroom-session-v1", "counseling-session-v1"],
     interactive: {
       "classroom-session-v1": "人工交互",
@@ -272,7 +272,7 @@ export function ScenarioValidationPage(handlers: ScenarioValidationPageProps) {
           </span>
           <h1>两个场景，一套编排引擎</h1>
           <p>
-            教育训练与经营分析共用工作流、Agent、知识库与运行记录。这里按场景汇总覆盖度、最近运行和待处理交互，
+            教育训练与经营分析共用工作流、Agent、知识库与运行台账。这里按场景汇总覆盖度、最近运行和待处理交互，
             点开任意链路即可回到同一条执行器的画布。
           </p>
         </div>
@@ -288,7 +288,7 @@ export function ScenarioValidationPage(handlers: ScenarioValidationPageProps) {
           </button>
           <button type="button" className="platform-button is-ghost" onClick={handlers.onOpenMonitor}>
             <Activity size={15} />
-            运行记录
+            运行台账
           </button>
           <button type="button" className="platform-button is-primary" onClick={handlers.onOpenReport}>
             <ClipboardCheck size={15} />
@@ -330,7 +330,7 @@ export function ScenarioValidationPage(handlers: ScenarioValidationPageProps) {
         >
           <span>待处理交互</span>
           <strong>{interactions.length}</strong>
-          <small>{interactions.length ? "去运行记录继续提交" : "当前没有暂停中的运行"}</small>
+          <small>{interactions.length ? "去运行台账继续提交" : "当前没有暂停中的运行"}</small>
         </button>
       </div>
 
@@ -549,7 +549,7 @@ export function ScenarioValidationPage(handlers: ScenarioValidationPageProps) {
                       type="button"
                       className="scenario-workflow-link"
                       onClick={handlers.onOpenMonitor}
-                      title="查看运行记录"
+                      title="查看运行台账"
                     >
                       台账
                     </button>
