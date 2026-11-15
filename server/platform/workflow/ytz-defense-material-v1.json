@@ -1,0 +1,184 @@
+{
+  "id": "ytz-defense-material-v1",
+  "name": "模拟答辩子工作流(材料信息)",
+  "version": 4,
+  "description": "任务描述: 针对用户上传的开题报告、研究大纲等论文材料，完成文本解析与信息提取，基于真实研究细节分层生成开题答辩评委问题；通过多轮问答交互，循环发起提问、接收作答并完成点评反馈，实现沉浸式模拟答辩流程，满足本科/硕士不同答辩类型的评审需求，达到全真演练效果。 示例问题: “开始模拟答辩，我已上传开题报告。” “请生成关于研究方法的分层提问。” “模拟硕士开题答辩，先问研究背景问题。”",
+  "inputs": [
+    {
+      "name": "mode",
+      "type": "string",
+      "required": false,
+      "description": "mode 输入参数",
+      "defaultValue": "开题答辩"
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "required": false,
+      "description": "title 输入参数",
+      "defaultValue": ""
+    },
+    {
+      "name": "input",
+      "type": "string",
+      "required": false,
+      "description": "自动补齐的输入",
+      "defaultValue": ""
+    }
+  ],
+  "nodes": [
+    {
+      "id": "a296111e40b20ec181376f3322ee1181",
+      "title": "开始",
+      "kind": "start"
+    },
+    {
+      "id": "4962f9c556609d792864fe22ca94d47f",
+      "title": "结束",
+      "inputs": {
+        "result": "${8445827f928050e3ca5b2dd11eb135ad.output}"
+      },
+      "kind": "end"
+    },
+    {
+      "id": "ea72fbd3ab91f59b18c3c6cf3c4ce7d8",
+      "title": "文本收集11",
+      "inputs": {},
+      "inputBindings": [],
+      "kind": "human",
+      "prompt": "请输入你对上述问题的回答：",
+      "fields": [
+        {
+          "key": "text",
+          "label": "回答",
+          "type": "textarea"
+        }
+      ]
+    },
+    {
+      "id": "43848561b9f5522f22c6f67b45da6992",
+      "title": "问题评分",
+      "inputs": {
+        "question": "${e27a1c5bfd2ea7b7d9fcd9a531b8383d.output}",
+        "answer": "${ea72fbd3ab91f59b18c3c6cf3c4ce7d8.text}"
+      },
+      "inputBindings": [
+        {
+          "name": "question",
+          "type": "string",
+          "source": "reference",
+          "value": "${e27a1c5bfd2ea7b7d9fcd9a531b8383d.output}"
+        },
+        {
+          "name": "answer",
+          "type": "string",
+          "source": "reference",
+          "value": "${ea72fbd3ab91f59b18c3c6cf3c4ce7d8.text}"
+        }
+      ],
+      "kind": "llm",
+      "prompt": "【导师问题】${e27a1c5bfd2ea7b7d9fcd9a531b8383d.output}\n【学生回答】${ea72fbd3ab91f59b18c3c6cf3c4ce7d8.text}\n\n请根据学生回答的准确性、完整性、逻辑性以及与论文题目的相关性，对本次回答进行打分（满分100分），并给出简要评语。请确保评分标准明确，避免主观偏差。",
+      "system": "你是论文开题答辩评审专家，根据给定论文题目、导师提出的问题、学生的回答进行客观打分。\n\n【导师问题】${e27a1c5bfd2ea7b7d9fcd9a531b8383d.output}\n【学生回答】${ea72fbd3ab91f59b18c3c6cf3c4ce7d8.text}\n\n请从以下四个维度评分，每个维度分数区间0‑25分，总分满分100分：\n1. 完整性(0‑25)：是否完整回答了问题的核心要点；存在要点遗漏则扣分，完全没有回应核心问题给0‑8分。若学生回答为空或仅提供无关内容，完整性直接给0分。\n2. 专业性(0‑25)：是否恰当使用学术语言、专业术语；术语错误、口语化严重会扣分。若回答完全非学术化（如日常聊天语气），专业性质性给0‑8分。\n3. 逻辑性(0‑25)：论证是否清晰有条理；是否前后矛盾、思维跳跃，层次混乱要扣减分数。若回答出现明显逻辑断裂或自相矛盾，逻辑性最高不超过10分。\n4. 创新性(0‑25)：是否有独立思考、结合课题的独特见解；单纯复述课本、套话无自己思考则低分。若回答完全照搬文献或模板，创新性最高不超过8分。\n\n打分规则：\n1. 分数为整数，每个维度严格不超出0‑25区间；\n2. 拒绝全部高分，学生回答差时可以给出低分；若回答质量极差，允许总分低于25分；\n3. 综合评价写2‑3句话；改进建议输出2条，必须具体，不要空泛套话；\n4. 严格遵循下面固定输出格式，不要输出额外解释、不要输出JSON，严格照搬排版。\n\n注意：评分时请结合论文题目与导师问题的具体语境，避免仅根据回答文字表面判断；若学生回答中引用了文献或数据，需评估其与课题的相关性及准确性。\n\n输出格式：\n评分：XX/100\n\n📊 各维度得分：\n• 完整性：X/25\n• 专业性：X/25\n• 逻辑性：X/25\n• 创新性：X/25\n\n📝 综合评价：\n（2‑3句话评价整体表现）\n\n💡 改进建议：\n1. （具体可落地的第一条建议）\n2. （具体可落地的第二条建议）"
+    },
+    {
+      "id": "8445827f928050e3ca5b2dd11eb135ad",
+      "title": "回复21",
+      "kind": "template",
+      "template": "${43848561b9f5522f22c6f67b45da6992.output}"
+    },
+    {
+      "id": "e27a1c5bfd2ea7b7d9fcd9a531b8383d",
+      "title": "根据资料生成问题",
+      "inputs": {
+        "input": "${input.input}"
+      },
+      "inputBindings": [
+        {
+          "name": "input",
+          "type": "string",
+          "source": "reference",
+          "value": "${input.input}"
+        }
+      ],
+      "kind": "llm",
+      "prompt": "请你根据论文完整材料${input.input}，生成一道答辩问题。要求：问题严格紧扣原文细节，避免泛泛而谈；按“背景→方法→创新→风险→落地规划”维度依次递进（本次优先输出背景维度）；风格贴合真实高校导师，专业有深度；仅输出问题正文，不附带解答。",
+      "system": "你作为高校资深答辩评审专家，专攻本科/硕士开题答辩评审。请严格依据上传完整论文材料文本${input.input}，分层生成高频专业答辩问题：\n1. 先从材料中自动提取核心信息：论文题目、研究背景、国内外现状、技术路线、创新点、研究难点、实施规划，必须依托材料真实细节出题，禁止脱离材料凭空编造；\n2. 固定6大模块分层出题：行业研究背景→选题价值与必要性→研究方案与技术路线→创新点合理性→研究难点与风险预判→可行性与进度规划，每模块1-2道深度追问，总计6-12道；\n3. 开题答辩侧重考察选题依据、研究可行性、方案落地性、预期成果合理性，不涉及实验数据与结论有效性；\n4. 问题贴合高校真实导师风格，专业严谨，紧扣课题细分领域，拒绝通用套话；\n5. 区分答辩类型：本科开题侧重基础可行性与文献调研完整性；硕士开题侧重研究创新性、领域空白挖掘与研究边界把控；\n6. 输出格式清晰分模块，每道问题附带简短提问意图（如“考察选题动机”），便于模拟答辩。"
+    },
+    {
+      "id": "55f08067b42225b5f1a5cdb848d60250",
+      "title": "回复2",
+      "inputs": {},
+      "inputBindings": [
+        {
+          "name": "template",
+          "type": "object",
+          "required": false,
+          "description": "供 ${…} 插值的数据",
+          "source": "literal",
+          "value": "正在结合开题评审标准对你刚刚的回答进行打分评估，请耐心等待一下😘"
+        }
+      ],
+      "kind": "template",
+      "template": "<span style=\"color: rgb(114, 192, 64);\">正在结合开题评审标准对你刚刚的回答进行打分评估，请耐心等待一下😘</span>"
+    },
+    {
+      "id": "540a14b355bf0fb66a0f3e5a17825aaa",
+      "title": "回复1",
+      "inputs": {},
+      "inputBindings": [],
+      "kind": "template",
+      "template": "<span style=\"color: rgb(114, 192, 64);\">正在根据您的论文材料信息生成一道答辩问题，请稍作等待，无需额外发送消息～</span>"
+    },
+    {
+      "id": "0e2e3d69d749b43320bbe1ff224641de",
+      "title": "回复3",
+      "inputs": {},
+      "inputBindings": [
+        {
+          "name": "template",
+          "type": "object",
+          "required": false,
+          "description": "供 ${…} 插值的数据",
+          "source": "reference",
+          "value": "${e27a1c5bfd2ea7b7d9fcd9a531b8383d.Content}"
+        }
+      ],
+      "kind": "template",
+      "template": "${e27a1c5bfd2ea7b7d9fcd9a531b8383d.output}"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a296111e40b20ec181376f3322ee1181",
+      "to": "540a14b355bf0fb66a0f3e5a17825aaa"
+    },
+    {
+      "from": "ea72fbd3ab91f59b18c3c6cf3c4ce7d8",
+      "to": "55f08067b42225b5f1a5cdb848d60250"
+    },
+    {
+      "from": "43848561b9f5522f22c6f67b45da6992",
+      "to": "8445827f928050e3ca5b2dd11eb135ad"
+    },
+    {
+      "from": "8445827f928050e3ca5b2dd11eb135ad",
+      "to": "4962f9c556609d792864fe22ca94d47f"
+    },
+    {
+      "from": "e27a1c5bfd2ea7b7d9fcd9a531b8383d",
+      "to": "0e2e3d69d749b43320bbe1ff224641de"
+    },
+    {
+      "from": "55f08067b42225b5f1a5cdb848d60250",
+      "to": "43848561b9f5522f22c6f67b45da6992"
+    },
+    {
+      "from": "540a14b355bf0fb66a0f3e5a17825aaa",
+      "to": "e27a1c5bfd2ea7b7d9fcd9a531b8383d"
+    },
+    {
+      "from": "0e2e3d69d749b43320bbe1ff224641de",
+      "to": "ea72fbd3ab91f59b18c3c6cf3c4ce7d8"
+    }
+  ]
+}

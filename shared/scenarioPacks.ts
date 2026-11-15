@@ -139,10 +139,15 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
   },
   research: {
     // 研途引航系列是对话智能体（住在 chat_agents），不登记在 agents 里；
-    // 这里只挂随代码分发的两条工作流。
+    // 这里挂随代码分发的调度流、训练流，以及训练流内部引用的两条答辩子流程。
     agents: [],
     tools: [],
-    workflows: ["ytz-master-v1", "ytz-defense-training-v1"],
+    workflows: [
+      "ytz-master-v1",
+      "ytz-defense-training-v1",
+      "ytz-defense-title-v1",
+      "ytz-defense-material-v1"
+    ],
     templates: []
   }
 };
