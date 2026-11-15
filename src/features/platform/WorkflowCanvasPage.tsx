@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { accountSessionStorage } from "../auth/accountStorage";
 import { useStore } from "zustand";
 import {
   Background,
@@ -19,17 +20,21 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clock3,
+  Copy,
+  Ellipsis,
   FileText,
   LayoutGrid,
-  LayoutTemplate,
   Loader2,
   Maximize2,
+  MessageSquareText,
   Play,
   Plus,
   Redo2,
   RefreshCw,
   Save,
+  Settings,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -56,6 +61,7 @@ import {
   uniqueNodeId,
   type RunNodeStatus
 } from "./layout";
+import { WorkflowDebugPanel } from "./WorkflowDebugPanel";
 import { PlatformNodeCard, type PlatformFlowNode, type PlatformNodeData } from "./PlatformNodeCard";
 import {
   PlatformContainerNode,
@@ -67,7 +73,8 @@ import { EdgeInspector } from "./EdgeInspector";
 import { NodePalette } from "./NodePalette";
 import { CanvasContainerContext } from "./canvasContainerContext";
 import { CanvasEdgeContext } from "./canvasEdgeContext";
-import { WorkflowEdge } from "./WorkflowEdge";
+import { CanvasEdgeMarkers, WorkflowEdge } from "./WorkflowEdge";
+import { choiceOptionsOf, inferChoicePorts, migrateChoiceEdgePorts } from "./choicePorts";
 import { applyTemplate, WORKFLOW_TEMPLATES, type WorkflowTemplate } from "./templates";
 import {
   FLAGSHIP_WORKFLOW_BY_SCENE,
@@ -99,7 +106,7 @@ const nodeTypes = { platform: PlatformNodeCard, container: PlatformContainerNode
 const edgeTypes = { workflow: WorkflowEdge };
 type CanvasNode = PlatformFlowNode | PlatformContainerFlowNode;
 const EMPTY_SPECS: NodeTypeSpec[] = [];
-const EDGE_COLOR = "#94a3b8";
+const EDGE_COLOR = "#bdb0a0";
 const PENDING_NODE_KEY = "platform:pending-node";
 const CORE_WORKFLOW_IDS = new Set<string>(SCENARIO_PACK_ITEMS.core.workflows);
 const FLAGSHIP_WORKFLOW_IDS = new Set<string>(Object.values(FLAGSHIP_WORKFLOW_BY_SCENE));
@@ -207,26 +214,39 @@ function PlatformWorkspace({
   const canRedo = useStore(definitionTemporal, (state) => state.futureStates.length > 0);
   const [selectedId, setSelectedId] = useState<string>();
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
+  /** 点击错误提示跳转到「参数提取」节点时，顺手把检查器滚到出问题的那一行参数。 */
+  const [focusParam, setFocusParam] = useState<number | null>(null);
+  /** 同一下标连点两次也要重新滚动，用自增计数强制 effect 触发。 */
+  const [focusNonce, setFocusNonce] = useState(0);
   const [expandedContainers, setExpandedContainers] = useState<Set<string>>(new Set());
   const [issuesByNode, setIssuesByNode] = useState<Record<string, PlatformIssue[]>>({});
   const [banner, setBanner] = useState<Banner>();
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugState, setDebugState] = useState<"idle" | "checking">("idle");
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [runState, setRunState] = useState<"idle" | "running">("idle");
   const [runOpen, setRunOpen] = useState(false);
   const [trialTarget, setTrialTarget] = useState<string>();
   const [inputsOpen, setInputsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [subflowPreview, setSubflowPreview] = useState<{ workflowId: string; version?: number }>();
   const [layouting, setLayouting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [trace, setTrace] = useState<TraceResponse>();
+  /** 点节点卡片右上角「详情」时，展示哪个节点的运行结果。 */
+  const [resultNodeId, setResultNodeId] = useState<string>();
   const [runValues, setRunValues] = useState<Record<string, string>>({});
   const [loadToken, setLoadToken] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(true);
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [flowMenuOpen, setFlowMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string>();
+  /** 悬停的节点：它的出入线会整条变蓝，用来数清这个节点连了几条线。 */
+  const [hoveredNodeId, setHoveredNodeId] = useState<string>();
   const [pendingInsertEdge, setPendingInsertEdge] = useState<string>();
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const fittedTokenRef = useRef(0);
@@ -267,9 +287,26 @@ function PlatformWorkspace({
     () => (trace ? aggregateStatuses(trace.steps) : new Map<string, RunNodeStatus>()),
     [trace]
   );
+  /** 选中节点最近一次的报错，挂在输出变量的 Error 分支下展示。 */
+  const selectedNodeError = useMemo(() => {
+    if (!selectedId) {
+      return undefined;
+    }
+    const steps = trace?.steps ?? [];
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+      const step = steps[index];
+      if (step.nodeId === selectedId && step.error) {
+        return step.error;
+      }
+    }
+    return undefined;
+  }, [trace, selectedId]);
   const nodeDurations = useMemo(() => {
     const durations = new Map<string, number>();
     for (const step of trace?.steps ?? []) {
+      if (step.status === "skipped") {
+        continue;
+      }
       const root = step.path.split("/")[0];
       if (!root) {
         continue;
@@ -278,6 +315,23 @@ function PlatformWorkspace({
     }
     return durations;
   }, [trace]);
+  /**
+   * 出边上挂的分支条件。画布上不再把条件铺在连线旁，统一收进来源节点的卡片里，
+   * 免得一串长表达式糊在桌面上把连线和节点都盖住。
+   */
+  const branchConditions = useMemo(() => {
+    const map = new Map<string, Array<{ key: string; when: string }>>();
+    for (const edge of definition?.edges ?? []) {
+      const when = edge.when?.trim();
+      if (!when) {
+        continue;
+      }
+      const list = map.get(edge.from) ?? [];
+      list.push({ key: edge.label?.trim() || `条件 ${list.length + 1}`, when });
+      map.set(edge.from, list);
+    }
+    return map;
+  }, [definition]);
   const childStatuses = useMemo(() => {
     const statuses = new Map<string, RunNodeStatus>();
     for (const step of trace?.steps ?? []) {
@@ -296,6 +350,8 @@ function PlatformWorkspace({
         statuses.set(parts[1], "running");
       } else if (step.status === "succeeded" && !current) {
         statuses.set(parts[1], "succeeded");
+      } else if (step.status === "skipped" && !current) {
+        statuses.set(parts[1], "skipped");
       }
     }
     return statuses;
@@ -310,6 +366,36 @@ function PlatformWorkspace({
       durations.set(parts[1], (durations.get(parts[1]) ?? 0) + (step.durationMs ?? 0));
     }
     return durations;
+  }, [trace]);
+  /**
+   * 本次运行真正跑过的节点。节点的「详情」入口和耗时徽标只对它们显示，
+   * 没跑过的节点不该出现一个 0 ms 的假耗时和点开空白的详情。
+   */
+  const ranNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const step of trace?.steps ?? []) {
+      // 被跳过的节点也有一条 step 记录（记跳过原因），但它一秒都没跑，
+      // 不能因此挂上 0 ms 的耗时徽标和空白的详情入口。
+      if (step.status === "skipped") {
+        continue;
+      }
+      ids.add(step.nodeId);
+      const root = step.path.split("/")[0];
+      if (root) {
+        ids.add(root);
+      }
+    }
+    return ids;
+  }, [trace]);
+  /** 正卡在人工输入上的节点：不能给它挂耗时，否则会显示成「0 ms 就跑完了」。 */
+  const waitingNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const step of trace?.steps ?? []) {
+      if (step.status === "waiting") {
+        ids.add(step.nodeId);
+      }
+    }
+    return ids;
   }, [trace]);
   const containerBoxes = useMemo(() => {
     const boxes = new Map<string, NonNullable<ReturnType<typeof layoutContainer>>>();
@@ -384,11 +470,11 @@ function PlatformWorkspace({
           }
           setWorkflowId(detail.workflow.definition.id);
           positionsRef.current = new Map();
-          setDefinition(detail.workflow.definition);
+          const { definition: loaded } = adoptDefinition(detail.workflow.definition);
           definitionTemporal.getState().clear();
-          setExpandedContainers(demoContainersFor(detail.workflow.definition));
-          focusNodeInDefinition(detail.workflow.definition, requestedNodeRef.current);
-          setRunValues(initialRunValues(detail.workflow.definition));
+          setExpandedContainers(demoContainersFor(loaded));
+          focusNodeInDefinition(loaded, requestedNodeRef.current);
+          setRunValues(initialRunValues(loaded));
           setLoadToken((value) => value + 1);
         }
       } catch (error) {
@@ -433,7 +519,7 @@ function PlatformWorkspace({
       const currentById = new Map(current.map((node) => [node.id, node]));
       const topLevel = definition.nodes.map((node): CanvasNode => {
         const spec = specByKind.get(node.kind);
-        const accent = spec?.accent ?? "#6366f1";
+        const accent = spec?.accent ?? "#a8552c";
         const existing = currentById.get(node.id);
         const position = existing?.position ?? positions.get(node.id) ?? { x: 60, y: 80 };
         const box = containerBoxes.get(node.id);
@@ -444,7 +530,8 @@ function PlatformWorkspace({
             width: box.width,
             height: box.height,
             childCount: containerChildCount(node),
-            columns: box.columns
+            columns: box.columns,
+            onRename: renameNode
           };
           return {
             id: node.id,
@@ -460,12 +547,16 @@ function PlatformWorkspace({
           label: spec?.label ?? node.kind,
           accent,
           status: runStatuses.get(node.id),
-          durationMs: nodeDurations.get(node.id),
+          waitingForInput: waitingNodeIds.has(node.id),
+          durationMs: ranNodeIds.has(node.id) ? nodeDurations.get(node.id) ?? 0 : undefined,
           issues: issuesByNode[node.id] ?? [],
           inputs: inputNamesOf(node, definition),
+          branches: branchConditions.get(node.id),
+          onShowDetail: ranNodeIds.has(node.id) ? () => setResultNodeId(node.id) : undefined,
           canExpand: containerChildCount(node) > 0,
           expanded: false,
-          childCount: containerChildCount(node)
+          childCount: containerChildCount(node),
+          onRename: renameNode
         };
         return existing && existing.type === "platform"
           ? { ...existing, data }
@@ -483,11 +574,18 @@ function PlatformWorkspace({
           const data: PlatformNodeData = {
             definition: child.node,
             label: spec?.label ?? child.node.kind,
-            accent: spec?.accent ?? "#6366f1",
+            accent: spec?.accent ?? "#a8552c",
             status: childStatuses.get(child.node.id),
-            durationMs: childDurations.get(child.node.id),
+            waitingForInput: waitingNodeIds.has(child.node.id),
+            durationMs: ranNodeIds.has(child.node.id)
+              ? childDurations.get(child.node.id) ?? 0
+              : undefined,
             issues: issuesByNode[child.node.id] ?? [],
             inputs: inputNamesOf(child.node, definition),
+            branches: branchConditions.get(child.node.id),
+            onShowDetail: ranNodeIds.has(child.node.id)
+              ? () => setResultNodeId(child.node.id)
+              : undefined,
             innerLabel: child.label,
             ownerId,
             canExpand: false,
@@ -515,24 +613,46 @@ function PlatformWorkspace({
       return [...topLevel, ...children];
     });
     const activeRun = trace ? isActiveRun(trace.run.status) : false;
+    // 老流程的选项卡出边没绑端口，按「边上的选项条件 → 剩余端口顺序」补一次，
+    // 连线才会落在对应那一行上；规则和运行期共用同一份实现。
+    const choiceOptions = new Map<string, string[]>();
+    for (const node of definition.nodes) {
+      const options = choiceOptionsOf(node);
+      if (options.length > 0) {
+        choiceOptions.set(node.id, options);
+      }
+    }
+    const inferredPorts = inferChoicePorts(definition.edges, choiceOptions);
     setEdges((current) => {
       const selected = new Set(current.filter((edge) => edge.selected).map((edge) => edge.id));
-      const topLevel = definition.edges.map((edge) => {
+      const topLevel = definition.edges.map((edge, edgeIndex) => {
         const sourceNode = nodeById.get(edge.from);
         const accent = (sourceNode && specByKind.get(sourceNode.kind)?.accent) || EDGE_COLOR;
-        const condition = edge.when?.trim() || undefined;
-        const running =
-          activeRun &&
-          (runStatuses.get(edge.from) === "running" || runStatuses.get(edge.to) === "running");
+        /**
+         * 连线的状态只看「上游走完之后有没有把下游推起来」：
+         * 上游还在跑（尤其是选项卡在等人输入）时这条边根本没分派，
+         * 提前点亮会让用户以为所有分支都在跑。
+         */
+        const sourceStatus = runStatuses.get(edge.from);
+        const targetStatus = runStatuses.get(edge.to);
+        const dispatched = sourceStatus === "succeeded";
+        // 只有「正在走」需要 activeRun：跑完之后走过的路要留着变蓝，方便回看这一轮怎么走的。
+        const running = activeRun && dispatched && targetStatus === "running";
+        const done = dispatched && targetStatus === "succeeded";
+        // 上游走完了、下游却跳过：这条分支这一轮没被选中，画成灰虚线。
+        const skipped = dispatched && targetStatus === "skipped";
         return {
           id: edgeIdOf(edge),
           source: edge.from,
           target: edge.to,
+          // 选项卡的一条分支挂在具体选项端口上，连线才能从那一行出发。
+          sourceHandle: edge.fromPort ?? inferredPorts.get(edgeIndex),
           type: "workflow",
-          data: { accent, running, condition },
+          // 条件表达式不铺到桌面上：已收进来源节点的卡片，编辑仍在连线面板。
+          data: { accent, running, done, skipped },
           selected: selected.has(edgeIdOf(edge)),
-          markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: accent },
-          label: edge.label ?? (condition ? "条件" : defaultEdgeLabel(sourceNode))
+          markerEnd: { type: MarkerType.ArrowClosed, width: 13, height: 13, color: "#c3b7a3" },
+          label: edge.label ?? defaultEdgeLabel(sourceNode)
         };
       });
       const inner = [...containerBoxes].flatMap(([ownerId, box]) => {
@@ -546,11 +666,18 @@ function PlatformWorkspace({
           data: {
             accent,
             inner: true,
-            running:
-              activeRun &&
-              (childStatuses.get(edge.from) === "running" || childStatuses.get(edge.to) === "running")
+            ...(() => {
+              const fromStatus = childStatuses.get(edge.from);
+              const toStatus = childStatuses.get(edge.to);
+              const dispatched = fromStatus === "succeeded";
+              return {
+                running: activeRun && dispatched && toStatus === "running",
+                done: dispatched && toStatus === "succeeded",
+                skipped: dispatched && toStatus === "skipped"
+              };
+            })()
           },
-          markerEnd: { type: MarkerType.ArrowClosed, width: 13, height: 13, color: accent },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 11, height: 11, color: "#c3b7a3" },
           selectable: false,
           deletable: false,
           focusable: false,
@@ -565,8 +692,11 @@ function PlatformWorkspace({
     nodeById,
     runStatuses,
     nodeDurations,
+    branchConditions,
     childStatuses,
     childDurations,
+    ranNodeIds,
+    waitingNodeIds,
     containerBoxes,
     issuesByNode,
     trace,
@@ -670,11 +800,11 @@ function PlatformWorkspace({
       return;
     }
     pendingAppliedRef.current = true;
-    const raw = sessionStorage.getItem(PENDING_NODE_KEY);
+    const raw = accountSessionStorage.getItem(PENDING_NODE_KEY);
     if (!raw) {
       return;
     }
-    sessionStorage.removeItem(PENDING_NODE_KEY);
+    accountSessionStorage.removeItem(PENDING_NODE_KEY);
     try {
       const pending = JSON.parse(raw) as {
         title?: string;
@@ -712,7 +842,7 @@ function PlatformWorkspace({
       if (!isUndo && !isRedo) {
         return;
       }
-      if (runOpen || subflowPreview || isEditableTarget(event.target)) {
+      if (runOpen || subflowPreview || debugMode || isEditableTarget(event.target)) {
         return;
       }
       const history = definitionTemporal.getState();
@@ -724,7 +854,7 @@ function PlatformWorkspace({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [runOpen, subflowPreview]);
+  }, [runOpen, subflowPreview, debugMode]);
 
   function applyElkPositions(positions: Map<string, { x: number; y: number }>) {
     if (positions.size === 0) {
@@ -835,6 +965,16 @@ function PlatformWorkspace({
     setInputsOpen(false);
   }
 
+  function handleSaveSettings(name: string, description: string) {
+    patchDefinition((current) => ({
+      ...current,
+      name,
+      ...(description ? { description } : { description: undefined })
+    }));
+    setSettingsOpen(false);
+    setBanner({ tone: "success", text: "已更新流程信息，记得保存让改动生效。" });
+  }
+
   function handleCreateWorkflow(draft: WorkflowDefinition) {
     setNewOpen(false);
     setWorkflowId(draft.id);
@@ -887,6 +1027,22 @@ function PlatformWorkspace({
         });
       }
     }, 360);
+  }
+
+  /** 点击错误提示跳转到对应节点：顶层直接选中，容器内的展开祖先容器再选中。 */
+  function locateNode(nodeId: string | undefined, paramIndex?: number) {
+    if (!nodeId) {
+      return;
+    }
+    if (paramIndex !== undefined) {
+      setFocusParam(paramIndex);
+      setFocusNonce((value) => value + 1);
+    }
+    if (topLevelIds.has(nodeId)) {
+      selectNode(nodeId);
+    } else if (definition) {
+      focusNodeInDefinition(definition, nodeId);
+    }
   }
 
   function selectEdge(id: string) {
@@ -954,6 +1110,21 @@ function PlatformWorkspace({
     setSelectedEdgeId(undefined);
   }
 
+  /**
+   * 打开流程时先把选项卡的老连线补上选项端口。
+   * 这些线是「一选项一端口」之前画的，只有 ${节点.choice} == 某选项 的条件、没有 fromPort，
+   * 运行期认不出它属于哪个选项，就会出现「选第一项却走兜底」。
+   * 这里把推断结果写回定义，保存后即固化；推断不出端口的一律不动，宁可留空也不接到错的选项上。
+   */
+  function adoptDefinition(raw: WorkflowDefinition): { definition: WorkflowDefinition; migrated: boolean } {
+    const { definition: next, changed } = migrateChoiceEdgePorts(raw);
+    setDefinition(next);
+    if (changed) {
+      setDirty(true);
+    }
+    return { definition: next, migrated: changed };
+  }
+
   function handleSelectWorkflow(id: string, focusNodeId?: string) {
     if (id === workflowId) {
       return;
@@ -964,16 +1135,23 @@ function PlatformWorkspace({
       .then((response) => {
         setWorkflowId(response.workflow.definition.id);
         positionsRef.current = new Map();
-        setDefinition(response.workflow.definition);
+        const { definition: loaded, migrated } = adoptDefinition(response.workflow.definition);
         definitionTemporal.getState().clear();
         setSelectedId(undefined);
         setSelectedEdgeId(undefined);
-        setExpandedContainers(demoContainersFor(response.workflow.definition));
-        focusNodeInDefinition(response.workflow.definition, focusNodeId);
+        setExpandedContainers(demoContainersFor(loaded));
+        focusNodeInDefinition(loaded, focusNodeId);
         setIssuesByNode({});
         setTrace(undefined);
-        setBanner(undefined);
-        setRunValues(initialRunValues(response.workflow.definition));
+        setBanner(
+          migrated
+            ? {
+                tone: "info",
+                text: "已把选项卡的旧连线自动挂到对应选项端口上，保存后生效。"
+              }
+            : undefined
+        );
+        setRunValues(initialRunValues(loaded));
         setDirty(false);
         setLoadToken((value) => value + 1);
       })
@@ -1049,7 +1227,12 @@ function PlatformWorkspace({
         : next.edges;
       const added = insertEdge
         ? [
-            { from: insertEdge.from, to: id },
+            // 插在选项卡分支中间时，前半段继续挂在原来那个选项端口上。
+            {
+              from: insertEdge.from,
+              to: id,
+              ...(insertEdge.fromPort ? { fromPort: insertEdge.fromPort } : {})
+            },
             { from: id, to: insertEdge.to, ...(insertEdge.label ? { label: insertEdge.label } : {}) }
           ]
         : sourceId && kind !== "start"
@@ -1065,7 +1248,11 @@ function PlatformWorkspace({
     window.setTimeout(() => selectNode(id), 140);
   }
 
-  function validateConnection(source?: string | null, target?: string | null): string | undefined {
+  function validateConnection(
+    source?: string | null,
+    target?: string | null,
+    sourceHandle?: string | null
+  ): string | undefined {
     const current = definitionRef.current;
     if (!current) {
       return "画布尚未就绪。";
@@ -1087,7 +1274,14 @@ function PlatformWorkspace({
     if (sourceNode.kind === "end") {
       return "结束节点只能接收入边，不能再往后连线。";
     }
-    if (current.edges.some((edge) => edge.from === source && edge.to === target)) {
+    if (
+      current.edges.some(
+        (edge) =>
+          edge.from === source &&
+          edge.to === target &&
+          (edge.fromPort ?? "") === (sourceHandle ?? "")
+      )
+    ) {
       return "这条连线已经存在。";
     }
     if (pathExists(current.edges, target, source)) {
@@ -1097,8 +1291,11 @@ function PlatformWorkspace({
   }
 
   function handleConnect(connection: Connection) {
-    const { source, target } = connection;
-    const issue = validateConnection(source, target);
+    if (debugMode) {
+      return;
+    }
+    const { source, target, sourceHandle } = connection;
+    const issue = validateConnection(source, target, sourceHandle);
     if (issue) {
       setBanner({ tone: "error", text: issue });
       return;
@@ -1108,7 +1305,11 @@ function PlatformWorkspace({
     }
     patchDefinition((current) => ({
       ...current,
-      edges: [...current.edges, { from: source, to: target }]
+      edges: [
+        ...current.edges,
+        // sourceHandle 就是选项卡的选项端口；从卡片中部拖出来的线不带端口，按原语义走。
+        { from: source, to: target, ...(sourceHandle ? { fromPort: sourceHandle } : {}) }
+      ]
     }));
   }
 
@@ -1128,6 +1329,9 @@ function PlatformWorkspace({
   }
 
   function insertOnEdge(edgeId: string) {
+    if (debugMode) {
+      return;
+    }
     window.clearTimeout(hoverTimerRef.current);
     setHoveredEdgeId(edgeId);
     setPendingInsertEdge(edgeId);
@@ -1206,6 +1410,14 @@ function PlatformWorkspace({
     }));
   }
 
+  /** 节点标题就地改名：只改展示名，引用走节点 ID，不会断链。 */
+  function renameNode(nodeId: string, title: string) {
+    patchDefinition((current) => ({
+      ...current,
+      nodes: renameNodeInTree(current.nodes, nodeId, title)
+    }));
+  }
+
   async function refreshWorkflows() {
     try {
       const response = await platformApi.listWorkflows();
@@ -1226,8 +1438,10 @@ function PlatformWorkspace({
     setSaveState("saving");
     setIssuesByNode({});
     setBanner(undefined);
+    // 保存前再补一次端口：用户可能是从别的入口拿到的旧定义，落库时必须是带 fromPort 的版本。
+    const { definition: prepared } = adoptDefinition(definition);
     try {
-      const response = await platformApi.saveWorkflow(definition);
+      const response = await platformApi.saveWorkflow(prepared);
       setDefinition(response.workflow.definition);
       definitionTemporal.getState().clear();
       setWorkflowId(response.workflow.definition.id);
@@ -1265,10 +1479,102 @@ function PlatformWorkspace({
     }
   }
 
+  /** 静态诊断：调试门禁与试跑共用，问题同时挂到画布节点上标红。 */
+  async function checkDefinition(target: WorkflowDefinition) {
+    const result = await platformApi.diagnoseWorkflow(target);
+    const ids = new Set(target.nodes.map((node) => node.id));
+    const grouped: Record<string, PlatformIssue[]> = {};
+    for (const issue of result.issues) {
+      const nodeId = issueNodeId(issue.path, ids);
+      if (nodeId) {
+        grouped[nodeId] = [...(grouped[nodeId] ?? []), issue];
+      }
+    }
+    setIssuesByNode(grouped);
+    return {
+      issues: result.issues,
+      grouped,
+      errors: result.issues.filter((issue) => issue.severity !== "warning")
+    };
+  }
+
+  /** 调试门禁：先做静态诊断，无阻断问题才进入左画布右聊天的调试视图。 */
+  async function handleDebug() {
+    if (!definition || debugState === "checking") {
+      return;
+    }
+    setDebugState("checking");
+    setIssuesByNode({});
+    setBanner(undefined);
+    try {
+      const { issues, grouped, errors } = await checkDefinition(definition);
+      if (errors.length > 0) {
+        setBanner({
+          tone: "error",
+          text: `调试前检查发现 ${errors.length} 处问题，请先修复标红节点`,
+          issues
+        });
+        return;
+      }
+      const warnings = issues.length - errors.length;
+      // startRun 只认已入库的 workflowId：未保存改动或新建草稿都要先落库。
+      const isStored = workflows.some((workflow) => workflow.id === definition.id);
+      const saved = dirty || !isStored ? await handleSave() : definition;
+      if (!saved) {
+        return;
+      }
+      // handleSave 会清空 issuesByNode，这里恢复 warning 的节点高亮。
+      setIssuesByNode(grouped);
+      setTrace(undefined);
+      setSelectedEdgeId(undefined);
+      setDebugMode(true);
+      setBanner({
+        tone: warnings > 0 ? "info" : "success",
+        text:
+          warnings > 0
+            ? `静态检查通过，有 ${warnings} 条提示，已进入调试视图`
+            : "静态检查通过，已进入调试视图",
+        ...(warnings > 0 ? { issues } : {})
+      });
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    } finally {
+      setDebugState("idle");
+    }
+  }
+
+  /**
+   * 退出调试：连带把这一轮运行的痕迹清掉。
+   * 否则关掉对话面板后画布上还挂着耗时、详情按钮和状态点，像刚跑过一样。
+   */
+  function handleExitDebug() {
+    setDebugMode(false);
+    setTrace(undefined);
+    setResultNodeId(undefined);
+    setIssuesByNode({});
+    setSelectedEdgeId(undefined);
+  }
+
   async function handleRun() {
     // 没有未保存修改时直接运行已存版本，避免每次试跑都无谓地升一个版本。
     const saved = dirty ? await handleSave() : definition;
     if (!saved) {
+      return;
+    }
+
+    // 试跑同样要过门禁：没连线、必填项为空的工作流不允许跑。
+    try {
+      const { issues, errors } = await checkDefinition(saved);
+      if (errors.length > 0) {
+        setBanner({
+          tone: "error",
+          text: `运行前检查发现 ${errors.length} 处问题，请先修复标红节点`,
+          issues
+        });
+        return;
+      }
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
       return;
     }
 
@@ -1344,79 +1650,114 @@ function PlatformWorkspace({
     );
   }
 
+  const resultStep = resultNodeId
+    ? [...(trace?.steps ?? [])].reverse().find((step) => step.nodeId === resultNodeId)
+    : undefined;
+  const resultNodeTitle = resultNodeId
+    ? definition.nodes.find((node) => node.id === resultNodeId)?.title ?? resultNodeId
+    : "";
+
   return (
     <div className="platform-page">
       <header className="platform-head">
         <div className="platform-head-main">
-          <span className="platform-eyebrow">
-            Agent 编排平台
-            {contract && <em>节点契约 v{contract.version} · {specs.length} 类节点</em>}
-          </span>
-          <h1>
-            {definition.name}
-            <span className="platform-version">v{definition.version}</span>
-            <span className="platform-version">
-              {scenePreference === "education" ? "教育场景" : "经营分析"}
+          <div className="platform-flow-picker">
+            <button
+              type="button"
+              className="platform-flow-name"
+              title={definition.description || "切换工作流"}
+              aria-expanded={flowMenuOpen}
+              onClick={() => setFlowMenuOpen((value) => !value)}
+            >
+              {definition.name}
+              <ChevronDown size={15} />
+            </button>
+            <span className={`platform-save-state ${dirty ? "is-dirty" : ""}`}>
+              {saveState === "saving" ? "保存中…" : dirty ? "有未保存修改" : "已同步"}
             </span>
-          </h1>
-          {definition.description && <p>{definition.description}</p>}
+
+            {flowMenuOpen && (
+              <div className="platform-flow-menu" role="menu">
+                <div className="platform-flow-menu-head">
+                  <span>切换到其他流程</span>
+                  <button
+                    type="button"
+                    className="platform-link"
+                    onClick={() => {
+                      setFlowMenuOpen(false);
+                      setNewOpen(true);
+                    }}
+                  >
+                    <Plus size={12} /> 新建
+                  </button>
+                </div>
+                <div className="platform-flow-menu-list">
+                  {flagshipWorkflows.length > 0 && <h5>旗舰地图</h5>}
+                  {flagshipWorkflows.map((workflow) => (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      role="menuitem"
+                      className={workflow.id === definition.id ? "is-current" : ""}
+                      onClick={() => {
+                        setFlowMenuOpen(false);
+                        handleSelectWorkflow(workflow.id);
+                      }}
+                    >
+                      {workflow.name}
+                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
+                    </button>
+                  ))}
+                  {coreWorkflows.length > 0 && <h5>通用模板</h5>}
+                  {coreWorkflows.map((workflow) => (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      role="menuitem"
+                      className={workflow.id === definition.id ? "is-current" : ""}
+                      onClick={() => {
+                        setFlowMenuOpen(false);
+                        handleSelectWorkflow(workflow.id);
+                      }}
+                    >
+                      {workflow.name}
+                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
+                    </button>
+                  ))}
+                  {otherWorkflows.length > 0 && <h5>其他流程</h5>}
+                  {otherWorkflows.map((workflow) => (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      role="menuitem"
+                      className={workflow.id === definition.id ? "is-current" : ""}
+                      onClick={() => {
+                        setFlowMenuOpen(false);
+                        handleSelectWorkflow(workflow.id);
+                      }}
+                    >
+                      {workflow.name}
+                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <p className="platform-head-meta">
+            {definition.nodes.length} 节点 · {definition.edges.length} 连线 ·{" "}
+            {scenePreference === "education" ? "教育场景" : "经营分析"}
+            {workflows.find((item) => item.id === definition.id)?.source === "custom"
+              ? " · 我的流程"
+              : " · 内置流程"}
+          </p>
         </div>
         <div className="platform-head-actions">
-          <button type="button" className="platform-button is-ghost" onClick={() => setNewOpen(true)}>
-            <Plus size={14} /> 新建
-          </button>
-          <select
-            className="platform-select"
-            value={workflowId}
-            onChange={(event) => handleSelectWorkflow(event.target.value)}
-          >
-            {flagshipWorkflows.length > 0 && (
-              <optgroup label="旗舰地图">
-                {flagshipWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {coreWorkflows.length > 0 && (
-              <optgroup label="通用模板">
-                {coreWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {otherWorkflows.length > 0 && (
-              <optgroup label="其他流程">
-                {otherWorkflows.map((workflow) => (
-                  <option key={workflow.id} value={workflow.id}>
-                    {workflow.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {definition && !workflows.some((workflow) => workflow.id === definition.id) && (
-              <option value={definition.id}>{definition.name}（未保存）</option>
-            )}
-          </select>
-          <span className={`platform-save-state ${dirty ? "is-dirty" : ""}`}>
-            {saveState === "saving" ? "保存中…" : dirty ? "有未保存修改" : "已同步"}
-          </span>
-          <button
-            type="button"
-            className="platform-button is-ghost"
-            onClick={() => setInputsOpen(true)}
-            disabled={runState === "running"}
-          >
-            输入定义 · {definition.inputs.length}
-          </button>
           <button
             type="button"
             className="platform-button is-ghost"
             onClick={() => void handleSave()}
-            disabled={saveState === "saving" || runState === "running"}
+            disabled={saveState === "saving" || runState === "running" || debugMode}
           >
             {saveState === "saving" ? <Loader2 size={14} className="is-spinning" /> : <Save size={14} />}
             保存
@@ -1428,11 +1769,106 @@ function PlatformWorkspace({
               setTrialTarget(undefined);
               setRunOpen(true);
             }}
-            disabled={runState === "running" || saveState === "saving"}
+            disabled={runState === "running" || saveState === "saving" || debugMode}
           >
             {runState === "running" ? <Loader2 size={14} className="is-spinning" /> : <Play size={14} />}
             运行
           </button>
+          <div className="platform-more">
+            <button
+              type="button"
+              className="platform-icon-button"
+              aria-label="更多操作"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((value) => !value)}
+            >
+              <Ellipsis size={16} />
+            </button>
+            {moreOpen && (
+              <div className="platform-more-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setSettingsOpen(true);
+                  }}
+                >
+                  <Settings size={13} />
+                  流程设置
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={runState === "running" || debugMode}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setInputsOpen(true);
+                  }}
+                >
+                  <FileText size={13} />
+                  输入定义 · {definition.inputs.length}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={debugState === "checking" || runState === "running"}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    if (debugMode) {
+                      handleExitDebug();
+                    } else {
+                      void handleDebug();
+                    }
+                  }}
+                >
+                  {debugState === "checking" ? (
+                    <Loader2 size={13} className="is-spinning" />
+                  ) : debugMode ? (
+                    <X size={13} />
+                  ) : (
+                    <MessageSquareText size={13} />
+                  )}
+                  {debugMode ? "退出调试" : "调试运行"}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={refreshing}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    handleRefreshRegistry();
+                  }}
+                >
+                  {refreshing ? (
+                    <Loader2 size={13} className="is-spinning" />
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  刷新注册项
+                </button>
+                <span className="platform-more-sep" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!canUndo || debugMode}
+                  onClick={() => runHistory("undo")}
+                >
+                  <Undo2 size={13} />
+                  撤销
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!canRedo || debugMode}
+                  onClick={() => runHistory("redo")}
+                >
+                  <Redo2 size={13} />
+                  重做
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1445,12 +1881,18 @@ function PlatformWorkspace({
           {banner.issues && banner.issues.length > 0 && (
             <ul>
               {banner.issues.map((issue, index) => {
-                const nodeId = issueNodeId(issue.path, topLevelIds);
+                const targetId = issue.nodeId ?? issueNodeId(issue.path, topLevelIds);
+                const locatable = Boolean(targetId);
                 return (
                   <li key={`${issue.path}-${index}`}>
-                    <button type="button" onClick={() => nodeId && selectNode(nodeId)} disabled={!nodeId}>
+                    <button
+                      type="button"
+                      onClick={() => locateNode(targetId, issue.paramIndex)}
+                      disabled={!locatable}
+                      title={locatable ? "点击跳转到对应节点修改" : "工作流级问题，请在画布或输入映射里检查"}
+                    >
                       <code>{issue.path}</code>
-                      {issue.message}
+                      <span>{issue.message}</span>
                     </button>
                   </li>
                 );
@@ -1459,98 +1901,6 @@ function PlatformWorkspace({
           )}
         </div>
       )}
-
-      <div className="platform-toolbar">
-        <span className="platform-toolbar-label">画布</span>
-        <span className="platform-toolbar-meta">
-          {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条连线
-          {expandedContainers.size > 0 ? ` · 展开 ${expandedContainers.size} 个容器` : ""}
-        </span>
-        <span
-          className="platform-toolbar-hint"
-          title="容器可展开查看内部步骤；点击连线可在右侧编辑标签与边条件。变量引用 ${节点ID.字段}，条件形如 ${verify.score} < 0.85。"
-        >
-          点节点看配置 · 点连线改条件 · 容器卡片可展开
-        </span>
-        <div className="platform-toolbar-actions">
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={() => setPaletteOpen((value) => !value)}
-            title="显示或收起左侧节点库"
-          >
-            <LayoutGrid size={12} />
-            {paletteOpen ? "收起节点库" : "节点库"}
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={() => setTemplateOpen(true)}
-            title="用内置模板替换当前画布的节点与连线"
-          >
-            <LayoutTemplate size={12} />
-            模板库
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={handleRefreshRegistry}
-            disabled={refreshing}
-            title="重新读取注册中心的 Agent、工具与工作流列表"
-          >
-            {refreshing ? <Loader2 size={12} className="is-spinning" /> : <RefreshCw size={12} />}
-            刷新注册项
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={handleDemoView}
-            title="展开课堂演练、质量分流等关键容器，并聚焦整张地图"
-          >
-            <Sparkles size={12} />
-            演示视图
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={handleExpandAll}
-            title="展开当前流程的全部容器，查看完整编排"
-          >
-            <Maximize2 size={12} />
-            展开全部
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={handleAutoLayout}
-            disabled={layouting}
-            title="用 ELK 重新计算顶层节点位置（不改变 DSL，不会标记未保存）"
-          >
-            {layouting ? <Loader2 size={12} className="is-spinning" /> : <LayoutGrid size={12} />}
-            自动布局
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={() => runHistory("undo")}
-            disabled={!canUndo}
-            title="撤销 (⌘/Ctrl+Z)"
-          >
-            <Undo2 size={12} />
-            撤销
-          </button>
-          <button
-            type="button"
-            className="platform-chip"
-            onClick={() => runHistory("redo")}
-            disabled={!canRedo}
-            title="重做 (⇧⌘/Ctrl+Shift+Z 或 Ctrl+Y)"
-          >
-            <Redo2 size={12} />
-            重做
-          </button>
-        </div>
-      </div>
 
       {trace && (
         <div className={`platform-run-strip is-${runStatusTone(trace.run.status)}`}>
@@ -1585,26 +1935,42 @@ function PlatformWorkspace({
         </div>
       )}
 
-      <div className={`platform-canvas-wrap ${paletteOpen ? "has-palette" : "is-palette-collapsed"}`}>
-        <NodePalette
-          specs={specs}
-          open={paletteOpen}
-          onToggle={() => setPaletteOpen((value) => !value)}
-          onAdd={(kind) => handleAddNode(kind)}
-        />
+      <div
+        className={`platform-canvas-wrap ${paletteOpen && !debugMode ? "has-palette" : "is-palette-collapsed"}${
+          debugMode ? " is-debugging" : ""
+        }`}
+      >
+        {!debugMode && (
+          <NodePalette
+            specs={specs}
+            open={paletteOpen}
+            onToggle={() => setPaletteOpen((value) => !value)}
+            onAdd={(kind) => handleAddNode(kind)}
+            inputs={definition.inputs}
+            onOpenInputs={() => setInputsOpen(true)}
+            templateSlot={<TemplateCards compact onApply={handleApplyTemplate} />}
+          />
+        )}
         <div
           className="platform-canvas"
           onDragOver={(event) => {
+            if (debugMode) {
+              return;
+            }
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
           }}
-          onDrop={handleDrop}
+          onDrop={(event) => {
+            if (!debugMode) {
+              handleDrop(event);
+            }
+          }}
         >
           <CanvasContainerContext.Provider
             value={{ isExpanded: (id) => expandedContainers.has(id), toggle: toggleContainer }}
           >
             <CanvasEdgeContext.Provider
-              value={{ hoveredEdgeId, keepEdgeHover, scheduleEdgeLeave, insertOnEdge }}
+              value={{ hoveredEdgeId, hoveredNodeId, keepEdgeHover, scheduleEdgeLeave, insertOnEdge }}
             >
               <ReactFlow
                 nodes={nodes}
@@ -1614,21 +1980,46 @@ function PlatformWorkspace({
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={handleConnect}
+                // 从端口拖线时浏览器会顺手把卡片上的文字整片选中，拖完还挂着蓝色高亮。
+                // 拖线期间全局禁选，结束（无论连没连上）再放开。
+                onConnectStart={() => {
+                  document.body.classList.add("is-linking");
+                  window.getSelection()?.removeAllRanges();
+                  // 兜一层：手势被意外打断时 onConnectEnd 可能不触发，
+                  // 否则整张画布会一直处于禁止选中的状态。
+                  window.addEventListener(
+                    "pointerup",
+                    () => document.body.classList.remove("is-linking"),
+                    { once: true }
+                  );
+                }}
+                onConnectEnd={() => {
+                  document.body.classList.remove("is-linking");
+                  window.getSelection()?.removeAllRanges();
+                }}
                 isValidConnection={(connection) =>
-                  validateConnection(connection.source, connection.target) === undefined
+                  validateConnection(connection.source, connection.target, connection.sourceHandle) ===
+                  undefined
                 }
-                onNodesDelete={(deleted) => handleRemoveNodes(deleted.map((node) => node.id))}
+                onNodesDelete={(deleted) => {
+                  if (!debugMode) {
+                    handleRemoveNodes(deleted.map((node) => node.id));
+                  }
+                }}
                 onEdgesDelete={(deleted) => {
+                  if (debugMode) {
+                    return;
+                  }
                   const removable = deleted.filter((edge) => !edge.data?.inner);
                   const removed = new Set(
-                    removable.map((edge) => `${edge.source}->${edge.target}`)
+                    removable.map((edge) => edgeKeyOf(edge.source, edge.target, edge.sourceHandle))
                   );
                   if (removed.size === 0) {
                     return;
                   }
                   patchDefinition((current) => ({
                     ...current,
-                    edges: current.edges.filter((edge) => !removed.has(`${edge.from}->${edge.to}`))
+                    edges: current.edges.filter((edge) => !removed.has(edgeIdOf(edge)))
                   }));
                   setSelectedEdgeId((current) =>
                     current && removed.has(current) ? undefined : current
@@ -1638,6 +2029,9 @@ function PlatformWorkspace({
                   const data = node.data as PlatformNodeData | PlatformContainerData;
                   selectNode("ownerId" in data && data.ownerId ? data.ownerId : node.id);
                 }}
+                nodesDraggable={!debugMode}
+                nodesConnectable={!debugMode}
+                elementsSelectable
                 onNodeDragStop={(_event, node) => {
                   if (!node.parentId) {
                     positionsRef.current.set(node.id, node.position);
@@ -1651,15 +2045,19 @@ function PlatformWorkspace({
                 onPaneClick={() => {
                   setSelectedId(undefined);
                   setSelectedEdgeId(undefined);
+                  setHoveredNodeId(undefined);
                 }}
                 onEdgeMouseEnter={(_event, edge) => handleEdgeHover(edge.id)}
                 onEdgeMouseLeave={scheduleEdgeLeave}
-                connectionLineStyle={{ stroke: "#6366f1", strokeWidth: 2, strokeDasharray: "6 5" }}
+                onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
+                onNodeMouseLeave={() => setHoveredNodeId(undefined)}
+                connectionLineStyle={{ stroke: "var(--edge-focus)", strokeWidth: 2, strokeDasharray: "6 5" }}
                 minZoom={0.25}
                 maxZoom={1.6}
-                deleteKeyCode={["Backspace", "Delete"]}
+                deleteKeyCode={debugMode ? null : ["Backspace", "Delete"]}
               >
-                <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d9dfea" />
+                <CanvasEdgeMarkers />
+                <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#dbd0be" />
                 <Controls showInteractive={false} />
                 <MiniMap
                   className="platform-minimap"
@@ -1668,8 +2066,8 @@ function PlatformWorkspace({
                   nodeBorderRadius={7}
                   nodeStrokeWidth={2}
                   maskColor="rgba(247, 249, 252, 0.78)"
-                  nodeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
-                  nodeStrokeColor={(node) => (node.data as PlatformNodeData).accent ?? "#94a3b8"}
+                  nodeColor={() => "#b9bec6"}
+                  nodeStrokeColor={() => "#c8ccd2"}
                 />
                 {pendingEdge && (
                   <div className="platform-insert-hint">
@@ -1685,6 +2083,35 @@ function PlatformWorkspace({
               </ReactFlow>
             </CanvasEdgeContext.Provider>
           </CanvasContainerContext.Provider>
+          {!debugMode && (
+            <div className={`platform-canvas-tools${selectedNode || selectedEdge ? " is-shifted" : ""}`}>
+              <button
+                type="button"
+                title="自动布局：用 ELK 重算节点位置，不改变编排内容"
+                aria-label="自动布局"
+                disabled={layouting}
+                onClick={handleAutoLayout}
+              >
+                {layouting ? <Loader2 size={14} className="is-spinning" /> : <LayoutGrid size={14} />}
+              </button>
+              <button
+                type="button"
+                title="展开全部容器，查看完整编排"
+                aria-label="展开全部容器"
+                onClick={handleExpandAll}
+              >
+                <Maximize2 size={14} />
+              </button>
+              <button
+                type="button"
+                title="演示视图：展开关键容器并聚焦整张地图"
+                aria-label="演示视图"
+                onClick={handleDemoView}
+              >
+                <Sparkles size={14} />
+              </button>
+            </div>
+          )}
           <div className="platform-canvas-badge">
             {definition.nodes.length} 个顶层节点 · {definition.edges.length} 条边
             {expandedContainers.size > 0 ? ` · 展开 ${expandedContainers.size} 个容器` : ""}
@@ -1695,7 +2122,16 @@ function PlatformWorkspace({
           )}
         </div>
 
-        {selectedEdge ? (
+        {debugMode ? (
+          <WorkflowDebugPanel
+            definition={definition}
+            workflowId={definition.id}
+            onTrace={setTrace}
+            onRunningChange={(running) => setRunState(running ? "running" : "idle")}
+            onSelectNode={(id, paramIndex) => locateNode(id, paramIndex)}
+            onClose={handleExitDebug}
+          />
+        ) : selectedEdge ? (
           <div className="platform-side">
             <div className="platform-side-bar">
               <button type="button" className="platform-link" onClick={() => setSelectedEdgeId(undefined)}>
@@ -1706,6 +2142,12 @@ function PlatformWorkspace({
               edge={selectedEdge}
               source={nodeById.get(selectedEdge.from)}
               target={nodeById.get(selectedEdge.to)}
+              siblingGated={(definition?.edges ?? []).some(
+                (edge) =>
+                  edge.from === selectedEdge.from &&
+                  edge !== selectedEdge &&
+                  Boolean(edge.when?.trim())
+              )}
               onChange={(patch) => updateEdge(selectedEdgeId!, patch)}
               onDelete={() => deleteEdge(selectedEdgeId!)}
               onClose={() => setSelectedEdgeId(undefined)}
@@ -1713,23 +2155,26 @@ function PlatformWorkspace({
           </div>
         ) : selectedNode ? (
           <div className="platform-side">
-            <div className="platform-side-bar">
-              <button type="button" className="platform-link" onClick={() => setSelectedId(undefined)}>
-                收起节点面板
-              </button>
-            </div>
             <NodeInspector
               definition={selectedNode}
+              workflow={definition}
               spec={specByKind.get(selectedNode.kind)}
               specs={specs}
               commonFields={contract?.commonFields ?? []}
               usedIds={collectNodeIds(definition.nodes)}
               status={runStatuses.get(selectedNode.id)}
+              lastError={selectedNodeError}
               onChange={updateSelectedNode}
               onDelete={() => handleRemoveNodes([selectedNode.id])}
               onOpenSubflow={(workflowId, version) => setSubflowPreview({ workflowId, version })}
               onTrialRun={() => handleStartTrial(selectedNode.id)}
               trialState={runState}
+              focusParamIndex={focusParam}
+              focusParamNonce={focusNonce}
+              onClose={() => {
+                setFocusParam(null);
+                setSelectedId(undefined);
+              }}
             />
           </div>
         ) : null}
@@ -1763,6 +2208,66 @@ function PlatformWorkspace({
               onSave={handleSaveInputs}
               onClose={() => setInputsOpen(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {settingsOpen && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setSettingsOpen(false)}
+        >
+          <div className="platform-modal" role="dialog" aria-modal="true" aria-label="流程设置">
+            <WorkflowSettingsForm
+              definition={definition}
+              onSave={handleSaveSettings}
+              onClose={() => setSettingsOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {resultNodeId && (
+        <div
+          className="platform-modal-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setResultNodeId(undefined)}
+        >
+          <div
+            className="platform-modal platform-node-result"
+            role="dialog"
+            aria-modal="true"
+            aria-label="运行结果"
+          >
+            <div className="nr-panel">
+              <header className="nr-head">
+                <div>
+                  <strong>运行结果</strong>
+                  <span>{resultNodeTitle}</span>
+                </div>
+                <button
+                  type="button"
+                  className="platform-modal-close"
+                  title="关闭"
+                  onClick={() => setResultNodeId(undefined)}
+                >
+                  <X size={14} />
+                </button>
+              </header>
+              {resultStep ? (
+                <>
+                  <p className="nr-meta">
+                    状态 {resultStep.status} · 耗时 {resultStep.durationMs ?? 0} ms
+                    {resultStep.error ? ` · ${resultStep.error}` : ""}
+                  </p>
+                  <ResultSection title="输入变量" value={resultStep.input} />
+                  <ResultSection title="输出变量" value={resultStep.output} />
+                </>
+              ) : (
+                <p className="nr-empty">这个节点还没有运行记录，先跑一轮工作流再看。</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1913,8 +2418,6 @@ function SubflowPreviewPanel({ workflowId, version, specs, onClose }: SubflowPre
       {definition && (
         <>
           <div className="platform-subflow-meta">
-            <span>ID {definition.id}</span>
-            <span>v{definition.version}</span>
             <span>{definition.nodes.length} 个顶层节点</span>
             <span>{definition.inputs.length} 个输入</span>
             <span>{definition.edges.length} 条边</span>
@@ -1968,7 +2471,7 @@ function SubflowNodeTree({
         return (
           <div className="platform-subflow-branch" key={`${node.id}-${depth}`}>
             <div className="platform-subflow-node" style={{ marginLeft: depth * 16 }}>
-              <span className="platform-subflow-dot" style={{ background: spec?.accent ?? "#94a3b8" }} />
+              <span className="platform-subflow-dot" style={{ background: spec?.accent ?? "#bdb0a0" }} />
               <span className="platform-subflow-kind">{spec?.label ?? node.kind}</span>
               <strong>{node.title || node.id}</strong>
               <code>{node.id}</code>
@@ -2095,6 +2598,85 @@ const INPUT_TYPE_LABELS: Record<WorkflowVariable["type"], string> = {
   object: "JSON 对象"
 };
 
+const DESCRIPTION_MAX = 200;
+
+/** 流程设置弹窗：改工作流名称和描述，保存后随下一次「保存」一起落库。 */
+function WorkflowSettingsForm({
+  definition,
+  onSave,
+  onClose
+}: {
+  definition: WorkflowDefinition;
+  onSave: (name: string, description: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(definition.name);
+  const [description, setDescription] = useState(definition.description ?? "");
+  const nameInvalid = !name.trim();
+
+  return (
+    <aside className="platform-run-panel platform-settings-panel">
+      <header>
+        <div>
+          <span className="platform-inspector-kind">设置</span>
+          <h2>编辑工作流</h2>
+        </div>
+        <button type="button" className="platform-modal-close" aria-label="关闭流程设置" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <label className="platform-field">
+        <span>工作流名称</span>
+        <input
+          value={name}
+          placeholder="给流程起个名字"
+          spellCheck={false}
+          autoFocus
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !nameInvalid) {
+              onSave(name.trim(), description.trim());
+            }
+          }}
+        />
+      </label>
+
+      <label className="platform-field is-wide">
+        <span>工作流描述</span>
+        <textarea
+          value={description}
+          rows={4}
+          maxLength={DESCRIPTION_MAX}
+          placeholder="一句话说明这个流程做什么、什么时候用"
+          onChange={(event) => setDescription(event.target.value)}
+        />
+        <small className="platform-field-counter">
+          {description.length} / {DESCRIPTION_MAX}
+        </small>
+      </label>
+
+      <p className="platform-inspector-note">
+        名称和描述只影响展示；改完要点右上角「保存」，才会同步到流程列表和对话页的流程选择器。
+      </p>
+
+      <div className="platform-inputs-actions">
+        <button type="button" className="platform-button is-ghost" onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="platform-button is-primary"
+          disabled={nameInvalid}
+          onClick={() => onSave(name.trim(), description.trim())}
+        >
+          保存
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 function InputsEditor({ inputs, onSave, onClose }: InputsEditorProps) {
   const [draft, setDraft] = useState<WorkflowVariable[]>(() => inputs.map((item) => ({ ...item })));
   const issues = validateInputDraft(draft);
@@ -2109,7 +2691,9 @@ function InputsEditor({ inputs, onSave, onClose }: InputsEditorProps) {
         name: item.name.trim(),
         type: item.type,
         ...(item.required ? { required: true } : {}),
-        ...(item.description?.trim() ? { description: item.description.trim() } : {})
+        ...(item.description?.trim() ? { description: item.description.trim() } : {}),
+        // 编辑输入参数时别把声明好的默认值抹掉（之前保存一次就全变空）。
+        ...(item.defaultValue === undefined ? {} : { defaultValue: item.defaultValue })
       }))
     );
   };
@@ -2211,6 +2795,19 @@ function InputsEditor({ inputs, onSave, onClose }: InputsEditorProps) {
       </div>
     </aside>
   );
+}
+
+/** 深度改名：容器 body 里的节点也改得到；引用走节点 ID，改标题不断链。 */
+function renameNodeInTree(nodes: WorkflowNode[], nodeId: string, title: string): WorkflowNode[] {
+  return nodes.map((node) => {
+    if (node.id === nodeId) {
+      return { ...node, title };
+    }
+    if (node.body?.length) {
+      return { ...node, body: renameNodeInTree(node.body, nodeId, title) };
+    }
+    return node;
+  });
 }
 
 function validateInputDraft(draft: WorkflowVariable[]): string[] {
@@ -2666,7 +3263,13 @@ function describe(error: unknown): string {
 }
 
 function edgeIdOf(edge: WorkflowDefinition["edges"][number]): string {
-  return `${edge.from}->${edge.to}`;
+  // 同一个选项卡可能有多条出边，端口要参与 id，否则选中 / 删除会互相打架。
+  return `${edge.from}|${edge.fromPort ?? ""}->${edge.to}`;
+}
+
+/** 与 edgeIdOf 同构，用于从画布回调（只有 source / sourceHandle）反查 DSL 边。 */
+function edgeKeyOf(source: string, target: string, sourceHandle?: string | null): string {
+  return `${source}|${sourceHandle ?? ""}->${target}`;
 }
 
 function pathExists(edges: WorkflowDefinition["edges"], from: string, to: string): boolean {
@@ -2747,6 +3350,7 @@ function inputNamesOf(node: WorkflowNode, definition: WorkflowDefinition): strin
   return [...refs].slice(0, 6);
 }
 
+/** 节点声明了参数表就用声明，否则回退到契约里的端口预设。 */
 type TemplateCardsProps = {
   onApply: (template: WorkflowTemplate) => void;
   compact?: boolean;
@@ -2849,5 +3453,80 @@ function CanvasEmptyState({
       <span className="platform-canvas-empty-label">或从模板开始</span>
       <TemplateCards onApply={onApply} compact />
     </div>
+  );
+}
+
+/** 运行结果弹窗里的一节：root 下按层级展开，右侧可复制整段 JSON。 */
+function ResultSection({ title, value }: { title: string; value: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(
+        typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2)
+      );
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const keys =
+    value && typeof value === "object"
+      ? Array.isArray(value)
+        ? value.length
+        : Object.keys(value).length
+      : 0;
+  return (
+    <section className="nr-section">
+      <div className="nr-section-head">
+        <h3>{title}</h3>
+        <button type="button" className="nr-copy" onClick={() => void copy()}>
+          <Copy size={13} /> {copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      {value === undefined || value === null ? (
+        <p className="nr-empty">（无数据）</p>
+      ) : (
+        <div className="nr-tree">
+          <div className="nr-root">
+            <span>root</span>
+            <em>
+              {keys} {Array.isArray(value) ? "items" : "keys"}
+            </em>
+          </div>
+          <ResultTree value={value} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ResultTree({ value }: { value: unknown }) {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const entries: Array<[string, unknown]> = Array.isArray(value)
+    ? value.map((item, index): [string, unknown] => [String(index), item])
+    : Object.entries(value as Record<string, unknown>);
+  return (
+    <ul className="nr-branch">
+      {entries.map(([key, item]) => (
+        <li key={key}>
+          <span className="nr-key">{key}</span>
+          {item !== null && typeof item === "object" ? (
+            <>
+              <em className="nr-count">
+                {Array.isArray(item) ? `${item.length} items` : `${Object.keys(item).length} keys`}
+              </em>
+              <ResultTree value={item} />
+            </>
+          ) : (
+            <span className={`nr-value is-${typeof item}`}>
+              {typeof item === "string" ? `"${item}"` : String(item)}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }

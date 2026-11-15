@@ -52,7 +52,8 @@ test("education pack covers all built-in education agents and workflows", () => 
   );
   const sharedWorkflows = new Set([
     ...SCENARIO_PACK_ITEMS.core.workflows,
-    ...business.workflows
+    ...business.workflows,
+    ...SCENARIO_PACK_ITEMS.research.workflows
   ]);
   for (const id of workflowIds) {
     assert.ok(education.workflows.includes(id) || sharedWorkflows.has(id), `${id} 未归入任何场景包`);

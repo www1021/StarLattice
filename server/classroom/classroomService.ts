@@ -47,7 +47,11 @@ export class ClassroomService {
 
   restoreClassroom(input: unknown) {
     const classroomState = normalizeRestoredClassroomState(input);
-    this.sessions.save(classroomState);
+    // 前端会把整个课堂状态传回来续跑。这里必须确认 sessionId 没被别的账号占用，
+    // 否则别人只要拿到 id 就能把原会话顶掉。
+    if (!this.sessions.save(classroomState)) {
+      throw new ClassroomServiceError(404, "虚拟课堂会话不存在，请重新生成课堂。");
+    }
 
     return {
       sessionId: classroomState.sessionId,

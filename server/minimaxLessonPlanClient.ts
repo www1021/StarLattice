@@ -5,7 +5,6 @@ import {
   type LessonPlanSection,
   renderLessonPlanText
 } from "./lessonPlanService.js";
-import { observeGeneration, summarizeText } from "./observability.js";
 import {
   completeQwenChat,
   isQwenConfigured,
@@ -27,36 +26,6 @@ type StreamMiniMaxLessonPlanOptions = GenerateMiniMaxLessonPlanOptions & {
   onThinkingDelta?: (content: string) => void;
 };
 
-type MiniMaxChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string;
-      reasoning_content?: string;
-    };
-  }>;
-  base_resp?: {
-    status_code?: number;
-    status_msg?: string;
-  };
-  error?: {
-    message?: string;
-  };
-};
-
-type MimoAnthropicMessageResponse = {
-  content?: Array<{
-    type?: string;
-    text?: string;
-  }>;
-  error?: {
-    message?: string;
-  };
-};
-
-const DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io";
-const DEFAULT_MINIMAX_MODEL = "MiniMax-M3";
-const DEFAULT_MIMO_ANTHROPIC_BASE_URL = "https://token-plan-cn.xiaomimimo.com/anthropic";
-const DEFAULT_MIMO_MODEL = "mimo-v2.5";
 const requiredHeadings = [
   "一、教学目标",
   "二、学情分析",
@@ -78,11 +47,8 @@ export class MiniMaxLessonPlanError extends Error {
 }
 
 export function isMiniMaxLessonPlanConfigured() {
-  return Boolean(
-    isQwenConfigured() ||
-      process.env.MINIMAX_API_KEY ||
-      process.env.MIMO_ANTHROPIC_API_KEY
-  );
+  // 教案模型跟聊天用同一条路径：账号里配好的模型。环境变量不再提供兜底。
+  return isQwenConfigured();
 }
 
 export async function generateMiniMaxLessonPlanDraft({
@@ -91,57 +57,21 @@ export async function generateMiniMaxLessonPlanDraft({
   currentDraft,
   mode
 }: GenerateMiniMaxLessonPlanOptions): Promise<LessonPlanDraft | undefined> {
-  const apiKey = process.env.MINIMAX_API_KEY;
+  // 没配模型就不生成 AI 草稿，让调用方用本地规则版本，不再偷偷借部署方的 Key。
+  if (!isQwenConfigured()) {
+    return undefined;
+  }
+
   const fallbackDraft = generateLessonPlanDraft(
     input,
     citations,
     mode === "refine" ? Math.max(2, (currentDraft?.version || 1) + 1) : 1
   );
-
-  if (!isQwenConfigured() && !apiKey && !process.env.MIMO_ANTHROPIC_API_KEY) {
-    return undefined;
-  }
-
   const prompt = {
     system: buildLessonPlanSystemPrompt(),
     user: buildLessonPlanUserPrompt(input, citations, currentDraft, mode)
   };
-
-  let content = "";
-
-  if (isQwenConfigured()) {
-    try {
-      content = await requestQwenLessonPlan(prompt);
-    } catch (error) {
-      if (!apiKey && !process.env.MIMO_ANTHROPIC_API_KEY) {
-        throw error;
-      }
-      const message =
-        error instanceof Error ? error.message : "Qwen lesson plan request failed";
-      console.warn(`Qwen lesson plan failed, trying legacy providers: ${message}`);
-    }
-  }
-
-  if (apiKey && apiKey !== process.env.MIMO_ANTHROPIC_API_KEY) {
-    try {
-      content = await requestMiniMaxOpenAiCompatible(prompt);
-    } catch (error) {
-      if (!process.env.MIMO_ANTHROPIC_API_KEY) {
-        throw error;
-      }
-      const message =
-        error instanceof Error ? error.message : "MiniMax OpenAI-compatible request failed";
-      console.warn(`MiniMax OpenAI-compatible lesson plan failed, trying MIMO Anthropic: ${message}`);
-    }
-  }
-
-  if (!content && process.env.MIMO_ANTHROPIC_API_KEY) {
-    content = await requestMimoAnthropicLessonPlan(prompt);
-  }
-
-  if (!content) {
-    throw new MiniMaxLessonPlanError("MiniMax skill did not return lesson plan content");
-  }
+  const content = await requestQwenLessonPlan(prompt);
 
   return normalizeAiLessonPlanDraft({
     rawText: content,
@@ -161,64 +91,44 @@ export async function generateStreamingMiniMaxLessonPlanDraft({
   onDelta,
   onThinkingDelta
 }: StreamMiniMaxLessonPlanOptions): Promise<LessonPlanDraft | undefined> {
+  if (!isQwenConfigured()) {
+    return undefined;
+  }
+
   const fallbackDraft = generateLessonPlanDraft(
     input,
     citations,
     mode === "refine" ? Math.max(2, (currentDraft?.version || 1) + 1) : 1
   );
-
-  if (!isMiniMaxLessonPlanConfigured()) {
-    return undefined;
-  }
-
   const prompt = {
     system: buildLessonPlanSystemPrompt(),
     user: buildLessonPlanUserPrompt(input, citations, currentDraft, mode)
   };
 
-  if (isQwenConfigured()) {
-    try {
-      const streamResult = await streamQwenChat({
-        system: prompt.system,
-        messages: [
-          {
-            role: "user",
-            content: prompt.user
-          }
-        ],
-        enableThinking: true,
-        maxTokens: 4096,
-        signal,
-        onDelta(content) {
-          onDelta?.(content);
-        },
-        onThinkingDelta(content) {
-          onThinkingDelta?.(content);
-        }
-      });
-
-      return normalizeAiLessonPlanDraft({
-        rawText: streamResult.rawAssistantContent || streamResult.visibleAssistantContent,
-        fallbackDraft,
-        input,
-        citations,
-        mode
-      });
-    } catch (error) {
-      if (!process.env.MINIMAX_API_KEY && !process.env.MIMO_ANTHROPIC_API_KEY) {
-        throw error;
+  const streamResult = await streamQwenChat({
+    system: prompt.system,
+    messages: [
+      {
+        role: "user",
+        content: prompt.user
       }
-
-      const message =
-        error instanceof Error ? error.message : "Qwen lesson plan stream failed";
-      console.warn(`Qwen lesson plan stream failed, trying legacy providers: ${message}`);
+    ],
+    enableThinking: true,
+    maxTokens: 4096,
+    signal,
+    onDelta(content) {
+      onDelta?.(content);
+    },
+    onThinkingDelta(content) {
+      onThinkingDelta?.(content);
     }
-  }
+  });
 
-  return generateMiniMaxLessonPlanDraft({
+  return normalizeAiLessonPlanDraft({
+    rawText: streamResult.rawAssistantContent || streamResult.visibleAssistantContent,
+    fallbackDraft,
     input,
     citations,
-    currentDraft,
     mode
   });
 }
@@ -245,219 +155,6 @@ async function requestQwenLessonPlan(prompt: {
       error instanceof UpstreamModelError ? error.status : undefined
     );
   }
-}
-
-async function requestMiniMaxOpenAiCompatible(prompt: {
-  system: string;
-  user: string;
-}) {
-  const apiKey = process.env.MINIMAX_API_KEY;
-
-  if (!apiKey) {
-    return "";
-  }
-
-  const baseUrl = trimTrailingSlash(
-    process.env.MINIMAX_BASE_URL || DEFAULT_MINIMAX_BASE_URL
-  );
-  const model = process.env.MINIMAX_MODEL || DEFAULT_MINIMAX_MODEL;
-
-  return observeGeneration(
-    "minimax.lesson_plan.generate",
-    {
-      input: {
-        system: summarizeText(prompt.system, 900),
-        user: summarizeText(prompt.user, 1400)
-      },
-      model,
-      modelParameters: {
-        temperature: 0.35,
-        maxCompletionTokens: 4200
-      },
-      metadata: {
-        provider: "minimax",
-        baseUrl,
-        thinking: "adaptive",
-        reasoningSplit: true
-      }
-    },
-    async (generation) => {
-      try {
-        const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${apiKey}`,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: prompt.system
-              },
-              {
-                role: "user",
-                content: prompt.user
-              }
-            ],
-            temperature: 0.35,
-            max_completion_tokens: 4200,
-            thinking: { type: "adaptive" },
-            reasoning_split: true
-          })
-        });
-
-        if (!response.ok) {
-          const details = await response.text().catch(() => "");
-          throw new MiniMaxLessonPlanError(
-            details || `MiniMax request failed with status ${response.status}`,
-            response.status
-          );
-        }
-
-        const payload = (await response.json()) as MiniMaxChatCompletionResponse;
-        const content = payload.choices?.[0]?.message?.content?.trim();
-        const statusCode = payload.base_resp?.status_code ?? 0;
-
-        if (payload.error?.message) {
-          throw new MiniMaxLessonPlanError(payload.error.message);
-        }
-
-        if (statusCode !== 0) {
-          throw new MiniMaxLessonPlanError(
-            payload.base_resp?.status_msg || "MiniMax returned a non-zero status"
-          );
-        }
-
-        if (!content) {
-          throw new MiniMaxLessonPlanError("MiniMax did not return lesson plan content");
-        }
-
-        generation.update({
-          output: {
-            content: summarizeText(content),
-            characterCount: content.length,
-            statusCode
-          }
-        });
-
-        return content;
-      } catch (error) {
-        generation.update({
-          level: "ERROR",
-          statusMessage:
-            error instanceof Error ? error.message : "MiniMax request failed",
-          output: {
-            error: error instanceof Error ? error.message : String(error),
-            status:
-              error instanceof MiniMaxLessonPlanError ? error.status : undefined
-          }
-        });
-        throw error;
-      }
-    }
-  );
-}
-
-async function requestMimoAnthropicLessonPlan(prompt: {
-  system: string;
-  user: string;
-}) {
-  const apiKey = process.env.MIMO_ANTHROPIC_API_KEY;
-
-  if (!apiKey) {
-    return "";
-  }
-
-  const baseUrl = trimTrailingSlash(
-    process.env.MIMO_ANTHROPIC_BASE_URL || DEFAULT_MIMO_ANTHROPIC_BASE_URL
-  );
-  const model = process.env.MIMO_MODEL || DEFAULT_MIMO_MODEL;
-
-  return observeGeneration(
-    "mimo.lesson_plan.generate",
-    {
-      input: {
-        system: summarizeText(prompt.system, 900),
-        user: summarizeText(prompt.user, 1400)
-      },
-      model,
-      modelParameters: {
-        maxTokens: 4096
-      },
-      metadata: {
-        provider: "mimo-anthropic",
-        baseUrl,
-        stream: false
-      }
-    },
-    async (generation) => {
-      try {
-        const response = await fetch(`${baseUrl}/v1/messages`, {
-          method: "POST",
-          headers: {
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "x-api-key": apiKey
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 4096,
-            stream: false,
-            system: prompt.system,
-            messages: [
-              {
-                role: "user",
-                content: prompt.user
-              }
-            ]
-          })
-        });
-
-        if (!response.ok) {
-          const details = await response.text().catch(() => "");
-          throw new MiniMaxLessonPlanError(
-            details || `MIMO Anthropic request failed with status ${response.status}`,
-            response.status
-          );
-        }
-
-        const payload = (await response.json()) as MimoAnthropicMessageResponse;
-
-        if (payload.error?.message) {
-          throw new MiniMaxLessonPlanError(payload.error.message);
-        }
-
-        const content = (payload.content || [])
-          .filter((block) => block.type === "text" && block.text)
-          .map((block) => block.text)
-          .join("\n")
-          .trim();
-
-        generation.update({
-          output: {
-            content: summarizeText(content),
-            characterCount: content.length
-          }
-        });
-
-        return content;
-      } catch (error) {
-        generation.update({
-          level: "ERROR",
-          statusMessage:
-            error instanceof Error ? error.message : "MIMO lesson plan failed",
-          output: {
-            error: error instanceof Error ? error.message : String(error),
-            status:
-              error instanceof MiniMaxLessonPlanError ? error.status : undefined
-          }
-        });
-        throw error;
-      }
-    }
-  );
 }
 
 function buildLessonPlanSystemPrompt() {
@@ -728,10 +425,6 @@ function cleanExtractedSectionText(value: string) {
 
 function readString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function trimTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

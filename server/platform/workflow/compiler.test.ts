@@ -3,7 +3,7 @@ import test from "node:test";
 import type { WorkflowDefinition, WorkflowNode } from "../types.js";
 import { NODE_KINDS, type NodeKind } from "../types.js";
 import { compileWorkflow, WorkflowCompileError, type CompileOptions } from "./compiler.js";
-import { loadBuiltinWorkflows } from "./dsl.js";
+import { loadBuiltinWorkflows, parseWorkflowDefinition } from "./dsl.js";
 import { COMMON_NODE_FIELDS, NODE_TYPE_SPECS } from "./nodeTypes.js";
 
 function classroomWorkflow(): WorkflowDefinition {
@@ -188,7 +188,7 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
       "capabilities",
       "inputs"
     ],
-    llm: ["prompt", "system", "model", "thinking", "temperature", "maxTokens", "inputs"],
+    llm: ["prompt", "system", "model", "thinking", "temperature", "topP", "maxTokens", "inputs"],
     clarify: [
       "prompt",
       "model",
@@ -200,6 +200,18 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
       "inputs"
     ],
     knowledge: ["query", "knowledgeBaseIds", "topK", "inputs"],
+    extract: [
+      "params",
+      "prompt",
+      "model",
+      "askPrompt",
+      "maxRounds",
+      "onMissing",
+      "assignee",
+      "timeoutMs",
+      "stubOutput",
+      "inputs"
+    ],
     tool: ["tool", "args"],
     http: ["method", "url", "headers", "requestBody", "timeoutMs", "inputs"],
     template: ["template", "inputs"],
@@ -208,7 +220,18 @@ test("node-type contract stays in sync with the parser for all node kinds", () =
     condition: ["when"],
     loop: ["maxIterations", "while", "patience", "budget"],
     approve: ["instructions", "assignee", "timeoutMs", "inputs"],
-    human: ["prompt", "fields", "submitLabel", "assignee", "timeoutMs", "inputs"],
+    human: [
+      "prompt",
+      "fields",
+      "submitLabel",
+      "assignee",
+      "timeoutMs",
+      "inputs",
+      "options",
+      "optionsFrom",
+      "generatePrompt",
+      "model"
+    ],
     verify: [
       "verifier",
       "rubric",
@@ -604,4 +627,126 @@ test("rejects edge conditions with unknown or downstream references", () => {
 
   workflow.edges[1] = { from: "draft", to: "good", when: "${ghost.output} != \"\"" };
   assert.ok(compileError(workflow).issues.some((issue) => issue.code === "unknown-node-ref"));
+});
+
+
+test("accepts a well-formed node error policy", () => {
+  const workflow = singleNodeWorkflow({
+    id: "llm-guarded",
+    kind: "llm",
+    prompt: "写一段话",
+    errorPolicy: { strategy: "continue", retries: 2, retryIntervalMs: 500, timeoutMs: 30_000 }
+  } as WorkflowNode);
+
+  const plan = compileWorkflow(workflow);
+  const node = plan.steps[0]?.node as WorkflowNode;
+  assert.equal(node.errorPolicy?.retries, 2);
+  assert.equal(node.errorPolicy?.strategy, "continue");
+});
+
+test("rejects out-of-range retries and missing fallback value", () => {
+  const tooMany = singleNodeWorkflow({
+    id: "llm-retry",
+    kind: "llm",
+    prompt: "写一段话",
+    errorPolicy: { retries: 9 }
+  } as WorkflowNode);
+  assert.ok(compileError(tooMany).issues.some((issue) => issue.code === "invalid-error-policy"));
+
+  const missingFallback = singleNodeWorkflow({
+    id: "llm-fallback",
+    kind: "llm",
+    prompt: "写一段话",
+    errorPolicy: { strategy: "fallback" }
+  } as WorkflowNode);
+  assert.ok(compileError(missingFallback).issues.some((issue) => issue.code === "invalid-error-policy"));
+
+  const tooFast = singleNodeWorkflow({
+    id: "llm-timeout",
+    kind: "llm",
+    prompt: "写一段话",
+    errorPolicy: { timeoutMs: 10 }
+  } as WorkflowNode);
+  assert.ok(compileError(tooFast).issues.some((issue) => issue.code === "invalid-error-policy"));
+});
+
+test("validates nested output schema names", () => {
+  const workflow = singleNodeWorkflow({
+    id: "llm-output",
+    kind: "llm",
+    prompt: "写一段话",
+    outputSchema: [
+      { name: "output", type: "object", properties: [{ name: "bad name", type: "string" }] }
+    ]
+  } as WorkflowNode);
+  assert.ok(compileError(workflow).issues.some((issue) => issue.code === "invalid-port-name"));
+});
+
+test("参数提取节点：参数表原样解析，重名与非法轮次在编译期报错", () => {
+  const parsed = parseWorkflowDefinition({
+    id: "extract-probe",
+    name: "参数提取探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      {
+        id: "ask",
+        kind: "extract",
+        params: [
+          { name: "title", label: "论文题目", description: "完整的论文标题" },
+          { name: "mode", type: "string", required: false }
+        ],
+        askPrompt: "请提供您的论文题目，我将为您模拟开题答辩。",
+        maxRounds: 2
+      },
+      { id: "end", kind: "end" }
+    ],
+    edges: [
+      { from: "start", to: "ask" },
+      { from: "ask", to: "end" }
+    ]
+  });
+  const node = parsed.nodes.find((item) => item.id === "ask");
+  assert.ok(node && node.kind === "extract");
+  assert.deepEqual(
+    node.params.map((param) => [param.name, param.label, param.required]),
+    [
+      ["title", "论文题目", undefined],
+      ["mode", undefined, false]
+    ]
+  );
+  // 没说 required 的参数默认必填，运行时才会真的拦住。
+  assert.equal(node.maxRounds, 2);
+  assert.equal(node.askPrompt, "请提供您的论文题目，我将为您模拟开题答辩。");
+  compileWorkflow(parsed);
+
+  const duplicated = structuredClone(parsed) as unknown as {
+    nodes: Array<Record<string, unknown>>;
+  };
+  const ask = duplicated.nodes.find((item) => item.id === "ask")!;
+  ask.params = [
+    { name: "title", label: "论文题目" },
+    { name: "title", label: "重复的题目" }
+  ];
+  assert.ok(
+    compileError(duplicated as unknown as WorkflowDefinition).issues.some(
+      (issue) => issue.code === "duplicate-extract-param"
+    )
+  );
+
+  ask.params = [{ name: "bad name", label: "带空格的名字" }];
+  assert.ok(
+    compileError(duplicated as unknown as WorkflowDefinition).issues.some(
+      (issue) => issue.code === "invalid-extract-param"
+    )
+  );
+
+  ask.params = [{ name: "title" }];
+  ask.maxRounds = 9;
+  assert.ok(
+    compileError(duplicated as unknown as WorkflowDefinition).issues.some(
+      (issue) => issue.code === "invalid-extract-rounds"
+    )
+  );
 });

@@ -1,0 +1,149 @@
+/* 聊天正文的 Markdown 排版。只用主题变量，照片模式下自动跟着翻面。 */
+
+.message-markdown {
+  color: inherit;
+  font-size: 15px;
+  font-weight: 520;
+  line-height: 1.68;
+  overflow-wrap: anywhere;
+}
+
+.message-markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown .md-p {
+  margin: 0 0 10px;
+  white-space: normal;
+}
+
+.message-markdown .md-heading {
+  margin: 16px 0 8px;
+  color: var(--n-12);
+  font-weight: 680;
+  line-height: 1.4;
+}
+
+.message-markdown h3.md-heading {
+  font-size: 17px;
+}
+
+.message-markdown h4.md-heading {
+  font-size: 16px;
+}
+
+.message-markdown h5.md-heading,
+.message-markdown h6.md-heading {
+  font-size: 15px;
+}
+
+.message-markdown strong {
+  color: var(--n-12);
+  font-weight: 700;
+}
+
+.message-markdown em {
+  font-style: italic;
+}
+
+.message-markdown del {
+  color: var(--n-48);
+}
+
+.message-markdown a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+
+.message-markdown .md-list {
+  margin: 0 0 10px;
+}
+
+.message-markdown .md-list ul,
+.message-markdown .md-list ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.message-markdown .md-list li {
+  margin: 2px 0;
+}
+
+.message-markdown .md-list li::marker {
+  color: var(--n-42);
+}
+
+.message-markdown .md-quote {
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent-line);
+  border-radius: 0 10px 10px 0;
+  background: rgba(var(--rgb-surface), 0.45);
+  color: var(--n-48);
+}
+
+.message-markdown .md-rule {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid var(--liquid-line);
+}
+
+.message-markdown .md-inline-code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(var(--rgb-surface), 0.72);
+  border: 1px solid var(--liquid-line);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+}
+
+.message-markdown .md-pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 12px;
+  background: rgba(var(--rgb-surface), 0.6);
+  overflow-x: auto;
+}
+
+.message-markdown .md-pre code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.message-markdown .md-table-wrap {
+  margin: 0 0 10px;
+  overflow-x: auto;
+}
+
+.message-markdown .md-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 14px;
+}
+
+.message-markdown .md-table th,
+.message-markdown .md-table td {
+  padding: 7px 10px;
+  border: 1px solid var(--liquid-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message-markdown .md-table th {
+  background: rgba(var(--rgb-surface), 0.6);
+  color: var(--n-12);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.message-markdown .md-table tbody tr:nth-child(even) td {
+  background: rgba(var(--rgb-surface), 0.35);
+}

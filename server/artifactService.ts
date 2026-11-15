@@ -9,6 +9,7 @@ import {
   TextRun
 } from "docx";
 import pptxgen from "pptxgenjs";
+import { recordGeneratedFileOwner } from "./auth/ownership.js";
 
 export type ArtifactType = "md" | "docx" | "pptx";
 
@@ -80,6 +81,7 @@ export async function generateArtifacts(
     }
 
     const fileStats = await stat(outputPath);
+    recordGeneratedFileOwner(id);
     generated.push({
       id,
       name,

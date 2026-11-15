@@ -4,6 +4,7 @@ export const NODE_KINDS = [
   "agent",
   "llm",
   "clarify",
+  "extract",
   "knowledge",
   "tool",
   "http",
@@ -26,6 +27,63 @@ export type WorkflowVariable = {
   type: WorkflowVariableType;
   required?: boolean;
   description?: string;
+  /** DSL 声明的默认值；画布保存与调试运行都要保留，不能在这里丢掉。 */
+  defaultValue?: string | number | boolean;
+};
+
+/** 节点端口的取值类型，与工作流输入类型保持一致并补充数组 / 文件。 */
+export type NodePortType = "string" | "number" | "boolean" | "object" | "array" | "file";
+
+/** 输入参数的取值来源，对齐主流平台 Input.InputType 的四种模式。 */
+export type NodePortSource = "literal" | "reference" | "variable" | "system";
+
+/**
+ * 节点输入参数（平台侧 Inputs 数组的单条记录）。
+ * value 既可以是字面量，也可以是 ${节点ID.output.字段} / ${input.字段} 引用；
+ * 编辑器会把 value 同步写入 node.inputs，执行器因此能真正解析上游产物。
+ */
+export type NodeInputBinding = {
+  name: string;
+  type: NodePortType;
+  required?: boolean;
+  description?: string;
+  defaultValue?: string | number | boolean;
+  source?: NodePortSource;
+  value?: unknown;
+};
+
+/** 节点输出参数（对齐平台侧 Outputs 的 OBJECT Properties 树，支持逐级嵌套子字段）。 */
+export type NodeOutputProperty = {
+  name: string;
+  type: NodePortType;
+  required?: boolean;
+  description?: string;
+  properties?: NodeOutputProperty[];
+};
+
+/** 节点失败后的走向：中断流程 / 跳过该节点继续 / 用兜底值继续。 */
+export type NodeErrorStrategy = "abort" | "continue" | "fallback";
+
+/**
+ * 节点级异常处理。
+ * 未配置时沿用平台全局的重试次数与超时，配置后以节点声明为准，让「一键重试」之外
+ * 还能对单个不稳定的外部调用单独设防。
+ */
+export type NodeErrorPolicy = {
+  /**
+   * 节点级异常处理总开关。开启后失败不再中断流程，错误写入产物的 Error 分支
+   * （FailCode / FailMessage），下游可以按 ${节点.Error.FailMessage} 取值。
+   */
+  enabled?: boolean;
+  strategy?: NodeErrorStrategy;
+  /** 额外重试次数（不含首次执行）；0 表示失败即定性。 */
+  retries?: number;
+  /** 两次重试之间的等待毫秒数，缺省走平台退避策略。 */
+  retryIntervalMs?: number;
+  /** 单次执行的超时毫秒数；缺省走平台全局超时。 */
+  timeoutMs?: number;
+  /** strategy=fallback 时写入该节点输出的兜底值。 */
+  fallbackValue?: unknown;
 };
 
 export type NodeBase = {
@@ -34,6 +92,16 @@ export type NodeBase = {
   title?: string;
   description?: string;
   inputs?: Record<string, unknown>;
+  /** 声明式输入参数表；编辑器与诊断使用，运行时仍走 inputs。 */
+  inputBindings?: NodeInputBinding[];
+  /** 声明式输出契约；下游引用下拉与画布端口徽标使用。 */
+  outputSchema?: NodeOutputProperty[];
+  /** 节点级异常处理；缺省时沿用平台全局的重试与超时。 */
+  errorPolicy?: NodeErrorPolicy;
+  /** 是否为「输出节点」：只有它才能把正文打印到调试会话，其它节点产物只向下游传变量。 */
+  emitOutput?: boolean;
+  /** 打印时是否分片推送（流式效果）；关闭则一次性显示全文。仅对 emitOutput 节点生效。 */
+  streamOutput?: boolean;
 };
 
 export type AgentOutputFormat = "text" | "json";
@@ -112,6 +180,7 @@ export type LlmNode = NodeBase & {
   /** 打开后在产物里保留一段思考摘要。 */
   thinking?: boolean;
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
 };
 
@@ -160,6 +229,52 @@ export type ClarifyNode = NodeBase & {
   /** 暂停等待超时；留空使用平台默认值。 */
   timeoutMs?: number;
   /** 仅 stub 模式使用的离线夹具；可强制 needsClarification 以便演练澄清分支。 */
+  stubOutput?: Record<string, unknown>;
+};
+
+/**
+ * 参数提取节点里的一个参数定义。
+ * 和「输入变量」的区别：输入变量是「上游有什么就传什么」，这里定义的是「这个节点必须拿到什么」，
+ * 拿不到就先问用户，问到了才继续往下走。
+ */
+export type ExtractParam = {
+  /** 变量名：既是追问表单的字段名，也是下游引用的字段名（${节点ID.变量名}）。 */
+  name: string;
+  /** 展示名 / 问题标题；留空用变量名。 */
+  label?: string;
+  /** 抽取说明：告诉模型这个参数长什么样、从哪句话里找。 */
+  description?: string;
+  /** 取值类型，默认 string；number / boolean 会做一次转换。 */
+  type?: "string" | "number" | "boolean";
+  /** 必填（默认 true）：抽不到就暂停追问；false 时抽不到留空继续。 */
+  required?: boolean;
+  /** 追问话术；留空按 label / description 自动拼「请提供…」。 */
+  question?: string;
+  /** 抽不到时的兜底值；有值就不会再追问。 */
+  defaultValue?: string;
+};
+
+/**
+ * 参数提取：按定义好的参数表，从用户输入 / 上游变量里抽值。
+ * 缺必填参数时先暂停追问，拿到才继续——这样后面的大模型节点拿到的一定是完整输入，
+ * 而不是「论文题目：空」这种半成品。
+ */
+export type ExtractNode = NodeBase & {
+  kind: "extract";
+  params: ExtractParam[];
+  /** 抽取提示词：给模型的额外规则，支持 ${input.x} 引用；留空用平台默认抽取指令。 */
+  prompt?: string;
+  model?: string;
+  /** 追问话术前缀；留空用默认的「还需要补充下面这些信息」。 */
+  askPrompt?: string;
+  /** 最多追问几轮，1–5，默认 3。 */
+  maxRounds?: number;
+  /** 轮次用尽还缺必填参数：fail=判定失败（默认）；continue=带空缺继续。 */
+  onMissing?: "fail" | "continue";
+  assignee?: string;
+  /** 追问等待超时；留空使用平台默认值。 */
+  timeoutMs?: number;
+  /** 仅 stub 模式使用的离线夹具：直接给出抽取结果，便于离线演练缺参分支。 */
   stubOutput?: Record<string, unknown>;
 };
 
@@ -265,13 +380,24 @@ export type HumanField = {
 
 export type HumanNode = NodeBase & {
   kind: "human";
-  /** 展示给操作者的说明或问题。 */
+  /** 展示给操作者的说明或问题（选项卡里的「引导语」）。 */
   prompt: string;
   fields?: HumanField[];
   submitLabel?: string;
   assignee?: string;
   /** 超时后运行失败；留空使用平台默认值。 */
   timeoutMs?: number;
+  /**
+   * 选项卡：给用户点的选项。非空时交互卡片渲染成选项列表，
+   * 选中值以 `choice` 字段提交；为空则退回 fields 表单。
+   */
+  options?: string[];
+  /** 选项卡：从变量动态拉取选项（引用一个数组），设置后优先于 options。 */
+  optionsFrom?: string;
+  /** 选项卡：用户选完后据此调用模型生成回复；留空只把选择结果传给下游。 */
+  generatePrompt?: string;
+  /** 选项卡使用的模型 ID；留空跟随平台默认。 */
+  model?: string;
 };
 
 export type InteractionStatus = "pending" | "answered" | "expired" | "cancelled";
@@ -301,6 +427,7 @@ export type WorkflowNode =
   | AgentNode
   | LlmNode
   | ClarifyNode
+  | ExtractNode
   | KnowledgeNode
   | ToolNode
   | HttpNode
@@ -319,6 +446,7 @@ export type LeafNode =
   | AgentNode
   | LlmNode
   | ClarifyNode
+  | ExtractNode
   | KnowledgeNode
   | ToolNode
   | HttpNode
@@ -334,6 +462,12 @@ export type WorkflowEdge = {
   label?: string;
   /** 可选边条件；为假时该边不激活，下游可能被跳过。 */
   when?: string;
+  /**
+   * 出边绑定的来源端口。选项卡按选项各开一个输出端口（choice:0、choice:1…），
+   * 另有 choice:other 兜底口，用户选的东西不在选项里时走它；
+   * 运行期只激活用户选中那条，其它分支不再跟着跑。
+   */
+  fromPort?: string;
 };
 
 export type WorkflowDefinition = {
@@ -408,6 +542,10 @@ export type CompileIssue = {
   code: string;
   path: string;
   message: string;
+  /** 报错归属的节点 ID（含容器内嵌套节点）；前端用它让错误提示可点击跳转。 */
+  nodeId?: string;
+  /** 若落在「参数提取」节点的某个参数上，给出参数下标，前端可滚到那一行。 */
+  paramIndex?: number;
 };
 
 export type CompiledEdge = {
@@ -415,6 +553,8 @@ export type CompiledEdge = {
   to: string;
   label?: string;
   when?: CompiledExpression;
+  /** 与 WorkflowEdge.fromPort 一致，供执行器做分支分派。 */
+  fromPort?: string;
 };
 
 /** 顶层执行图：执行器按依赖就绪度并发调度，容器内部仍按原语义执行。 */
@@ -670,6 +810,29 @@ export type AgentCapability = {
   weight: number;
 };
 
+/** 智能体的对话行为配置。整块存成 JSON，加字段不用改表。 */
+export type AgentChatConfig = {
+  /** 打开会话时的第一句话。 */
+  welcome?: string;
+  /** 输入框上方的快捷指令。 */
+  quickPrompts?: string[];
+  /** 只带最近多少轮历史（一轮 = 一问一答）。 */
+  contextTurns?: number;
+  /** 单次回复的 token 上限；不填跟随模型。 */
+  maxTokens?: number | null;
+  /** 采样温度；不填跟随模型。 */
+  temperature?: number | null;
+  /** 提示词里 {{变量}} 的声明。 */
+  variables?: Array<{
+    key: string;
+    label?: string;
+    required?: boolean;
+    defaultValue?: string;
+  }>;
+  /** 逐字显示；false 时前端攒完一次性渲染。 */
+  typewriter?: boolean;
+};
+
 export type AgentRecord = {
   id: string;
   name: string;
@@ -683,6 +846,14 @@ export type AgentRecord = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  /** builtin = 内置只读；custom = 用户自建（独立表，按账号可见）。 */
+  source?: "builtin" | "custom";
+  /** 一句话介绍，列表和聊天选择器里显示。 */
+  description?: string;
+  /** 头像 data URL（已压缩），空表示用首字生成。 */
+  avatar?: string;
+  /** 对话行为配置，只有自建智能体用到。 */
+  chatConfig?: AgentChatConfig;
 };
 
 export type AgentWrite = Omit<AgentRecord, "createdAt" | "updatedAt">;
@@ -753,9 +924,13 @@ export type ToolRecord = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  /** 内置（全员可见）还是某个账号自建的（只有本人可见）。 */
+  source: ToolSource;
 };
 
-export type ToolWrite = Omit<ToolRecord, "createdAt" | "updatedAt">;
+export type ToolSource = "builtin" | "custom";
+
+export type ToolWrite = Omit<ToolRecord, "createdAt" | "updatedAt" | "source">;
 
 export type McpTransport = "stdio" | "http";
 
@@ -778,11 +953,14 @@ export type McpServerConfig = {
   lastLatencyMs?: number;
   createdAt: string;
   updatedAt: string;
+  /** 归属账号；为空表示是启动时种下的示例连接，全员可见。 */
+  ownerId?: string | null;
 };
 
 export type McpServerView = Omit<McpServerConfig, "env"> & {
   envKeys: string[];
   toolCount: number;
+  source: ToolSource;
 };
 
 export type McpServerWrite = {
@@ -812,6 +990,84 @@ export type McpCallResult = {
   content: unknown[];
   text: string;
   structuredContent?: unknown;
+};
+
+export type PluginType = "api" | "code";
+export type PluginStatus = "active" | "draft" | "error";
+
+/** 服务端落库的内部结构；official 永远由服务端控制，不接收前端覆盖。 */
+export type PluginRecord = {
+  id: string;
+  name: string;
+  type: PluginType;
+  description: string;
+  official: boolean;
+  status: PluginStatus;
+  domain?: string;
+  runtime?: string;
+  endpoint?: string;
+  method?: string;
+  calls: number;
+  toolCount: number;
+  references: number;
+  version: string;
+  updatedAt: string;
+  createdAt: string;
+  /** 预留：鉴权 / 环境变量 / 响应缓存等高级配置，后续编辑器扩展。 */
+  config: Record<string, unknown>;
+};
+
+/** 接口层返回给前端的形状（camelCase，字段名对齐前端 Plugin 类型）。 */
+export type PluginView = {
+  id: string;
+  name: string;
+  type: PluginType;
+  description: string;
+  official: boolean;
+  status: PluginStatus;
+  domain?: string;
+  runtime?: string;
+  endpoint?: string;
+  method?: string;
+  calls: number;
+  tools: number;
+  references: number;
+  version: string;
+  updatedAt: string;
+  config?: Record<string, unknown>;
+};
+
+/** 新建 / 更新插件的入参；official 与调用计数由服务端控制。 */
+export type PluginWrite = {
+  id?: string;
+  name: string;
+  type: PluginType;
+  description?: string;
+  domain?: string;
+  runtime?: string;
+  endpoint?: string;
+  method?: string;
+  status?: PluginStatus;
+  /** 高级配置：代码插件的 run(args)、API 鉴权、参数定义等编辑器产物。 */
+  config?: Record<string, unknown>;
+};
+
+export type PluginInvokeResult = {
+  ok: boolean;
+  kind: PluginType;
+  status?: number;
+  latencyMs: number;
+  preview?: string;
+  error?: string;
+  detail?: unknown;
+  /** 校验面板展示用：实际发出的请求行（不回显密钥头）。 */
+  request?: { method: string; url: string };
+};
+
+export type PluginListResponse = {
+  plugins: PluginView[];
+  total: number;
+  official: number;
 };
 
 export type RegistrySummary = {

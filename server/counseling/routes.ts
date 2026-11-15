@@ -8,6 +8,7 @@ import type { SQLiteChatRepository } from "../storage/chatRepository.js";
 import { counselingCases } from "./cases.js";
 import { CounselingError } from "./engine.js";
 import { CounselingService } from "./service.js";
+import { bindConnectionAuth } from "../auth/context.js";
 
 function errorResponse(response: Response, error: unknown) {
   response.status(error instanceof CounselingError ? error.status : 500).json({ message: error instanceof Error ? error.message : "谈话请求失败。" });
@@ -40,6 +41,8 @@ export function registerCounseling(app: Express, server: Server, repository: SQL
 
   const realtime = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
   realtime.on("connection", socket => {
+    // upgrade 的鉴权只覆盖握手；消息回调要自己把身份带回来。
+    const wrap = bindConnectionAuth();
     let id = "";
     let asr: XfyunIatStream | undefined;
     let audioQueue = Promise.resolve();
@@ -47,11 +50,16 @@ export function registerCounseling(app: Express, server: Server, repository: SQL
     const emit = (event: CounselingServerEvent) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event)); };
     socket.on("message", async raw => {
       try {
+        await wrap(async () => {
         const event = JSON.parse(String(raw)) as Record<string, unknown>;
         if (event.type === "start") {
           if (id) throw new CounselingError("此连接已绑定谈话。");
-          id = String(event.sessionId || "");
-          emit({ type: "session", session: service.view(id) });
+          const requested = String(event.sessionId || "");
+          // 先让 view 校验归属，再绑定 id：校验失败的连接不该留下一个
+          // 别人的会话号，否则 close 时的 cancel 会作用到那场谈话上。
+          const session = service.view(requested);
+          id = requested;
+          emit({ type: "session", session });
           emit({ type: "ready" });
           return;
         }
@@ -83,9 +91,10 @@ export function registerCounseling(app: Express, server: Server, repository: SQL
           await asr?.finish();
           asr = undefined;
         }
+        });
       } catch (error) { emit({ type: "error", message: error instanceof Error ? error.message : "实时连接处理失败。" }); }
     });
-    socket.on("close", () => { if (id) service.cancel(id); asr?.close(); asr = undefined; });
+    socket.on("close", () => wrap(() => { if (id) service.cancel(id); asr?.close(); asr = undefined; }));
   });
   return { realtime, service };
 }

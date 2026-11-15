@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -82,7 +81,7 @@ test("saves an unfinished session into history without creating an evaluation", 
     assert.match(stored?.title || "", /^谈心谈话（未完成）：/);
     assert.equal(repository.getEvaluation(session.id), undefined);
   } finally {
-    new Database(dbPath).close();
+    repository.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

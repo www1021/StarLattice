@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { ownerScope, ownerValue } from "./auth/context.js";
+import { ensureOwnerColumnsFor, PERSONAL_TABLES } from "./auth/ownership.js";
 import { OfficeParser, type SupportedFileType } from "officeparser";
 import { PDFParse } from "pdf-parse";
 import {
@@ -246,7 +248,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.initialize();
   }
 
+  /** 关闭底层连接；测试用完临时库时调用，避免 Windows 上文件被占用。 */
+  close() {
+    if (this.db.open) {
+      this.db.close();
+    }
+  }
+
   listBases(): KnowledgeBaseSummary[] {
+    const owner = ownerScope("bases");
     return this.db
       .prepare(
         `
@@ -259,18 +269,20 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
         FROM knowledge_bases AS bases
         LEFT JOIN knowledge_documents AS documents
           ON documents.base_id = bases.id
+        WHERE ${owner.condition}
         GROUP BY bases.id
         ORDER BY bases.created_at ASC
         `
       )
-      .all() as KnowledgeBaseSummary[];
+      .all(...owner.params) as KnowledgeBaseSummary[];
   }
 
   createBase(name: string): KnowledgeBaseSummary {
     const trimmedName = name.trim() || defaultKnowledgeBaseName;
+    const owner = ownerScope("knowledge_bases");
     const existing = this.db
-      .prepare("SELECT id FROM knowledge_bases WHERE name = ?")
-      .get(trimmedName) as { id: string } | undefined;
+      .prepare(`SELECT id FROM knowledge_bases WHERE name = ?${owner.and}`)
+      .get(trimmedName, ...owner.params) as { id: string } | undefined;
 
     if (existing) {
       return this.listBases().find((base) => base.id === existing.id)!;
@@ -281,9 +293,9 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
 
     this.db
       .prepare(
-        "INSERT INTO knowledge_bases (id, name, source, created_at) VALUES (?, ?, ?, ?)"
+        "INSERT INTO knowledge_bases (id, name, source, created_at, owner_id) VALUES (?, ?, ?, ?, ?)"
       )
-      .run(id, trimmedName, "local", createdAt);
+      .run(id, trimmedName, "local", createdAt, ownerValue());
 
     return {
       id,
@@ -318,6 +330,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   listDocuments(knowledgeBaseId: string): KnowledgeDocumentSummary[] {
+    this.ensureBase(knowledgeBaseId);
     return (
       this.db
         .prepare(
@@ -348,6 +361,13 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
   }
 
   listDocumentChunks(documentId: string): KnowledgeChunkSummary[] {
+    const parent = this.db
+      .prepare("SELECT base_id FROM knowledge_documents WHERE id = ?")
+      .get(documentId) as { base_id: string } | undefined;
+    if (!parent) {
+      return [];
+    }
+    this.ensureBase(parent.base_id);
     return this.db
       .prepare(
         `
@@ -586,7 +606,15 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       return [];
     }
 
-    const uniqueBaseIds = [...new Set(knowledgeBaseIds)];
+    // 检索入口也要挡一道：请求里带别人的资料库 id 时直接忽略，
+    // 否则只靠前端传 id 就能搜出别人的文档片段。
+    const allowed = new Set(this.listBases().map((base) => base.id));
+    const uniqueBaseIds = [...new Set(knowledgeBaseIds)].filter((id) =>
+      allowed.has(id)
+    );
+    if (uniqueBaseIds.length === 0) {
+      return [];
+    }
     return this.searchChunks(trimmedQuery, uniqueBaseIds, topK);
   }
 
@@ -594,7 +622,7 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS knowledge_bases (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
         source TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
@@ -634,20 +662,92 @@ export class LocalKnowledgeProvider implements KnowledgeProvider {
       );
     `);
 
+    this.migrateBaseNameUniqueness();
     this.ensureDocumentColumn("resource_type", "TEXT NOT NULL DEFAULT '其他'");
     this.ensureDocumentColumn("subject", "TEXT");
     this.ensureDocumentColumn("school_stage", "TEXT");
     this.ensureDocumentColumn("tags", "TEXT NOT NULL DEFAULT '[]'");
+    ensureOwnerColumnsFor(this.db, PERSONAL_TABLES.knowledge);
+
+    // 旧库的 name 是全局唯一。多账号后这会让 A 建「备课资料」挡住 B，
+    // 也会在成员删掉自己最后一个库、要补「默认知识库」时撞上 owner 的同名库。
+    // 改成「同一账号内不重名」，NULL 归属视为同一个后台账号。
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ux_knowledge_bases_name_owner
+       ON knowledge_bases(name, IFNULL(owner_id, ''))`
+    );
 
     if (this.listBases().length === 0) {
       this.createBase(defaultKnowledgeBaseName);
     }
   }
 
+  /**
+   * 老的 knowledge_bases 带列级 UNIQUE(name)，SQLite 不允许直接删这种自动索引，
+   * 只能重建表。重建期间必须临时关外键，否则 DROP 父表会级联清掉文档和分块。
+   */
+  private migrateBaseNameUniqueness() {
+    const indexes = this.db
+      .prepare("PRAGMA index_list(knowledge_bases)")
+      .all() as Array<{ name: string; unique: number }>;
+    const legacy = indexes.some((index) => {
+      if (!index.unique || !index.name.startsWith("sqlite_autoindex_")) {
+        return false;
+      }
+      const columns = this.db
+        .prepare(`PRAGMA index_info(${index.name})`)
+        .all() as Array<{ name: string }>;
+      return columns.length === 1 && columns[0].name === "name";
+    });
+    if (!legacy) {
+      return;
+    }
+
+    const columns = this.db
+      .prepare("PRAGMA table_info(knowledge_bases)")
+      .all() as Array<{
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+        pk: number;
+      }>;
+    const definitions = columns
+      .map((column) => {
+        const parts = [column.name, column.type];
+        if (column.pk) {
+          parts.push("PRIMARY KEY");
+        } else if (column.notnull) {
+          parts.push("NOT NULL");
+        }
+        if (column.dflt_value !== null) {
+          parts.push(`DEFAULT ${column.dflt_value}`);
+        }
+        return parts.join(" ");
+      })
+      .join(", ");
+    const names = columns.map((column) => column.name).join(", ");
+
+    this.db.pragma("foreign_keys = OFF");
+    try {
+      this.db.transaction(() => {
+        this.db.exec(`CREATE TABLE knowledge_bases__migrated (${definitions})`);
+        this.db.exec(
+          `INSERT INTO knowledge_bases__migrated (${names}) SELECT ${names} FROM knowledge_bases`
+        );
+        this.db.exec("DROP TABLE knowledge_bases");
+        this.db.exec("ALTER TABLE knowledge_bases__migrated RENAME TO knowledge_bases");
+      })();
+    } finally {
+      this.db.pragma("foreign_keys = ON");
+    }
+  }
+
   private ensureBase(knowledgeBaseId: string) {
+    const owner = ownerScope("knowledge_bases");
     const base = this.db
-      .prepare("SELECT id FROM knowledge_bases WHERE id = ?")
-      .get(knowledgeBaseId);
+      .prepare(`SELECT id FROM knowledge_bases WHERE id = ?${owner.and}`)
+      .get(knowledgeBaseId, ...owner.params);
 
     if (!base) {
       throw new KnowledgeError("知识库不存在。", 404);
@@ -1186,7 +1286,7 @@ function validateKnowledgeFile(file: Express.Multer.File) {
 
   if (!supportedDocumentExtensions.has(extension)) {
     throw new KnowledgeError(
-      "教学资料库支持 PDF、Word、Excel、PPT、TXT、MD、CSV、JSON。",
+      "只支持 PDF、Word（docx）、Excel（xlsx）、PPT（pptx）、TXT、MD、CSV、JSON；旧版 doc / xls / ppt 请先另存为新格式。",
       415
     );
   }
