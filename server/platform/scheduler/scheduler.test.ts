@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import type {
   AgentCapability,
   AgentRecord,
@@ -10,6 +10,40 @@ import type {
 import { BUILTIN_AGENTS } from "../registry/agents.js";
 import { buildWorkflowSchedule, replanForTask } from "./planner.js";
 import { createSchedule, parseScheduleRequest } from "./scheduler.js";
+import { configureTestModels } from "../../testing/modelFixtures.js";
+
+// 模型密钥只能来自账号设置（环境变量不再兜底）。整份用例备三条模型：
+// 快速（低）、推理（高）、低成本推理（低），角色仍用 PLATFORM_MODEL_* 指过去。
+let restoreModels: () => void;
+const previousRoleEnv = {
+  fast: process.env.PLATFORM_MODEL_FAST,
+  reasoning: process.env.PLATFORM_MODEL_REASONING
+};
+before(() => {
+  process.env.PLATFORM_MODEL_FAST = "fast-model";
+  process.env.PLATFORM_MODEL_REASONING = "strong-model";
+  restoreModels = configureTestModels(
+    [
+      { id: "fast-model", model: "fast-model", tags: ["fast", "low-cost"], costTier: "low" },
+      { id: "strong-model", model: "strong-model", tags: ["reasoning", "strong"], costTier: "high" },
+      { id: "reasoning-lite", model: "lite-model", tags: ["reasoning"], costTier: "low" }
+    ],
+    { defaultId: "fast-model" }
+  );
+});
+after(() => {
+  restoreModels();
+  for (const [name, value] of [
+    ["PLATFORM_MODEL_FAST", previousRoleEnv.fast],
+    ["PLATFORM_MODEL_REASONING", previousRoleEnv.reasoning]
+  ] as const) {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+});
 
 function toRecord(write: AgentWrite): AgentRecord {
   return {
@@ -208,35 +242,36 @@ test("validates schedule requests before scheduling", () => {
 });
 
 test("prefers an agent whose model matches the task's model tags", () => {
-  const agents = [
-    agentWithModel("fast-designer", "快速设计 Agent", [{ tag: "设计", weight: 0.9 }], "fast"),
-    agentWithModel("strong-designer", "推理设计 Agent", [{ tag: "设计", weight: 0.9 }], "reasoning")
-  ];
-  const plan = createSchedule(
-    [{ id: "deep-diagnosis", capabilities: ["设计"], priority: 0.5, modelTags: ["reasoning"] }],
-    agents
-  );
+  // 角色档位不再内置，由部署配置的 PLATFORM_MODEL_* 提供（不配就跟随用户默认模型）。
+  const restore = withEnv({
+    PLATFORM_MODEL_FAST: "fast-model",
+    PLATFORM_MODEL_REASONING: "strong-model"
+  });
+  try {
+    const agents = [
+      agentWithModel("fast-designer", "快速设计 Agent", [{ tag: "设计", weight: 0.9 }], "fast"),
+      agentWithModel("strong-designer", "推理设计 Agent", [{ tag: "设计", weight: 0.9 }], "reasoning")
+    ];
+    const plan = createSchedule(
+      [{ id: "deep-diagnosis", capabilities: ["设计"], priority: 0.5, modelTags: ["reasoning"] }],
+      agents
+    );
 
-  const decision = plan.decisions[0];
-  assert.equal(decision.agentId, "strong-designer");
-  assert.equal(decision.model.id, "reasoning");
-  assert.equal(decision.model.costTier, "high");
-  assert.equal(decision.model.fit, 1);
-  assert.equal(decision.breakdown.model, 1);
-  assert.equal(plan.weights.model, 0.15);
+    const decision = plan.decisions[0];
+    assert.equal(decision.agentId, "strong-designer");
+    assert.equal(decision.model.id, "reasoning");
+    assert.equal(decision.model.costTier, "high");
+    assert.equal(decision.model.fit, 1);
+    assert.equal(decision.breakdown.model, 1);
+    assert.equal(plan.weights.model, 0.15);
+  } finally {
+    restore();
+  }
 });
 
 test("cost caps exclude expensive models but keep the cheapest candidate as a marked fallback", () => {
   const restore = withEnv({
-    PLATFORM_MODEL_CATALOG: JSON.stringify([
-      {
-        id: "reasoning-lite",
-        label: "低成本推理",
-        model: "lite-model",
-        tags: ["reasoning"],
-        costTier: "low"
-      }
-    ])
+    PLATFORM_MODEL_REASONING: "strong-model"
   });
   try {
     const agents = [
@@ -369,7 +404,10 @@ test("workflow planning lifts diagnose agents' reasoning model into scheduling c
 });
 
 test("PLATFORM_SCHEDULE_MAX_COST applies a global cap and marks an unavoidable downgrade", () => {
-  const restore = withEnv({ PLATFORM_SCHEDULE_MAX_COST: "low" });
+  const restore = withEnv({
+    PLATFORM_MODEL_REASONING: "strong-model",
+    PLATFORM_SCHEDULE_MAX_COST: "low"
+  });
   try {
     const workflow: WorkflowDefinition = {
       id: "cost-cap-plan",

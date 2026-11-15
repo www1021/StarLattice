@@ -1,4 +1,4 @@
-export type ScenarioPackId = "core" | "education" | "business-analysis";
+export type ScenarioPackId = "core" | "education" | "business-analysis" | "research";
 
 export type ScenePackId = "education" | "business-analysis";
 
@@ -40,13 +40,15 @@ export type ScenarioPackItems = Record<ScenarioPackKind, string[]>;
 export const SCENARIO_PACK_META: Record<ScenarioPackId, { label: string; description: string }> = {
   core: { label: "通用", description: "跨行业复用的规划、检索、执行、复核与报告 Agent" },
   education: { label: "教育场景", description: "师范生教案、课堂演练、学情与选题评审" },
-  "business-analysis": { label: "经营分析", description: "指标计算、归因分析与经营报告" }
+  "business-analysis": { label: "经营分析", description: "指标计算、归因分析与经营报告" },
+  research: { label: "科研成长", description: "研途引航多智能体：文献阅读、实验设计与模拟答辩" }
 };
 
 export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: string }> = [
   { id: "core", label: SCENARIO_PACK_META.core.label },
   { id: "education", label: SCENARIO_PACK_META.education.label },
   { id: "business-analysis", label: SCENARIO_PACK_META["business-analysis"].label },
+  { id: "research", label: SCENARIO_PACK_META.research.label },
   { id: "custom", label: "自定义" }
 ];
 
@@ -134,6 +136,14 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     ],
     workflows: ["business-map-v1", "business-analysis-v1"],
     templates: ["business-analysis"]
+  },
+  research: {
+    // 研途引航系列是对话智能体（住在 chat_agents），不登记在 agents 里；
+    // 这里只挂随代码分发的两条工作流。
+    agents: [],
+    tools: [],
+    workflows: ["ytz-master-v1", "ytz-defense-training-v1"],
+    templates: []
   }
 };
 

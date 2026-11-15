@@ -2,6 +2,7 @@ import type {
   AgentNode,
   AgentRecord,
   ClarifyNode,
+  ExtractNode,
   KnowledgeNode,
   LlmNode,
   McpCallResult,
@@ -11,6 +12,7 @@ import type {
 import {
   completeQwenChat,
   completeQwenToolChat,
+  streamQwenChat,
   type QwenToolCall,
   type QwenToolDefinition,
   type ToolChatMessage
@@ -22,7 +24,10 @@ import {
   resolveModel,
   type ModelResolution
 } from "../models/catalog.js";
+import { configuredModelOwnerIds } from "../models/userModels.js";
+import { currentOwnerId, runWithAuth, type AuthContext } from "../../auth/context.js";
 import type { ClarifyPhase, ExecutionContext, ExecutorHandlers } from "./executor.js";
+import { emitRunToken, hasRunTokenListeners } from "./runStreamBus.js";
 
 type KnowledgeCitation = {
   id?: unknown;
@@ -57,9 +62,39 @@ const REF_PATTERN = /\$\{([^}\s]+)\}/g;
 /**
  * 真实 Agent 与内置工具的实现入口。默认关闭：只有显式设置 PLATFORM_LIVE_AGENTS=1
  * 且至少一个模型目录项具备凭据时才创建 handler，否则执行器继续使用确定性 stub，避免误触发计费。
+ *
+ * 注意判定发生在服务启动时，此时没有请求身份，isAnyModelConfigured() 读的是空的
+ * _system 目录；必须同时扫描各账号的 settings 目录，否则用户在「模型与密钥」里
+ * 明明配好了 Key，执行器仍会永久停在 stub（llm 节点只回 [stub:llm] 夹具文本）。
  */
 export function isPlatformLiveEnabled() {
-  return process.env.PLATFORM_LIVE_AGENTS === "1" && isAnyModelConfigured();
+  if (process.env.PLATFORM_LIVE_AGENTS !== "1") {
+    return false;
+  }
+  return isAnyModelConfigured() || configuredModelOwnerIds().length > 0;
+}
+
+/**
+ * 后台调度（SchedulerService 的定时 tick / Worker 回调）可能已经脱离请求 ALS，
+ * 这时 resolveModel() 读不到账号的 models.json。单账号私有部署里用唯一的模型配置
+ * 目录把身份续上；多账号时不做猜测，保持无身份，避免把某个账号的 Key 用到别人的请求上。
+ */
+function withModelOwner<T>(callback: () => T): T {
+  if (currentOwnerId()) {
+    return callback();
+  }
+  const owners = configuredModelOwnerIds();
+  if (owners.length !== 1) {
+    return callback();
+  }
+  const scope: AuthContext = {
+    userId: owners[0],
+    username: "",
+    displayName: "",
+    role: "owner",
+    sessionId: ""
+  };
+  return runWithAuth(scope, callback);
 }
 
 export function createPlatformLiveHandlers(options: LiveHandlerOptions): ExecutorHandlers {
@@ -72,12 +107,24 @@ export function createPlatformLiveHandlers(options: LiveHandlerOptions): Executo
 
   return {
     agent: (node, input, context) =>
-      runLiveAgent(node, input, context, { ...options, maxTokens, temperature }),
+      withModelOwner(() =>
+        runLiveAgent(node, input, context, { ...options, maxTokens, temperature })
+      ),
     llm: (node, input, context) =>
-      runLiveLlm(node, input, context, { ...options, maxTokens, temperature }),
+      withModelOwner(() =>
+        runLiveLlm(node, input, context, { ...options, maxTokens, temperature })
+      ),
     clarify: (node, input, context, phase) =>
-      runLiveClarify(node, input, context, phase, { ...options, maxTokens }),
-    tool: (node, input, context) => runLiveTool(node, input, context, options)
+      withModelOwner(() =>
+        runLiveClarify(node, input, context, phase, { ...options, maxTokens })
+      ),
+    extract: (node, input, context) =>
+      withModelOwner(() =>
+        // 抽参数是「照着文本抄」，温度压到 0 最稳，也不该占用大段输出额度。
+        runLiveExtract(node, input, context, { ...options, maxTokens: Math.min(maxTokens, 1024) })
+      ),
+    tool: (node, input, context) =>
+      withModelOwner(() => runLiveTool(node, input, context, options))
   };
 }
 
@@ -103,32 +150,28 @@ async function runLiveLlm(
   const model = resolution.model;
   const maxTokens = clampInt(node.maxTokens ?? defaults.maxTokens, 1, 32768);
   const temperature = node.temperature ?? defaults.temperature;
-  let thinking = "";
 
-  const content = await (defaults.completeChat ?? completeQwenChat)({
-    system:
-      node.system?.trim() ||
-      "你是 Agent 编排平台中的通用模型节点。只输出可交付结果，不要复述任务，不要输出占位内容。",
-    messages: [
-      {
-        role: "user",
-        content: [
-          `## 节点任务\n${node.title ?? node.id}`,
-          node.prompt ? `## 任务说明\n${interpolate(node.prompt, context)}` : "",
-          `## 节点输入\n${formatInputs(input)}`
-        ]
-          .filter(Boolean)
-          .join("\n\n")
-      }
-    ],
+  const { content, thinking } = await chatWithOptionalStream({
+    context,
+    system: node.system?.trim()
+      ? interpolate(node.system.trim(), context)
+      : "你是 Agent 编排平台中的通用模型节点。只输出可交付结果，不要复述任务，不要输出占位内容。",
+    // system 与 prompt 走同一套 ${…} 引用解析。元器导入的 systemPrompt 里
+    // 常带 {{var}}，转换器已改成引用；不插值的话模型会收到字面占位符。
+    prompt: [
+      `## 节点任务\n${node.title ?? node.id}`,
+      node.prompt ? `## 任务说明\n${interpolate(node.prompt, context)}` : "",
+      `## 节点输入\n${formatInputs(input)}`
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     model,
     maxTokens,
     temperature,
+    topP: node.topP,
     enableThinking: node.thinking === true,
     provider: providerConfig(resolution),
-    onThinking: (value) => {
-      thinking = value;
-    }
+    completeChat: defaults.completeChat
   });
 
   return {
@@ -142,8 +185,122 @@ async function runLiveLlm(
   };
 }
 
-const CLARIFY_ANALYZE_SYSTEM = [
-  "你是 Agent 编排平台的意图分析器。只依据用户原始需求与已给约束分析，不编造事实。",
+const EXTRACT_SYSTEM = [
+  "你是参数抽取器。任务是从给定文本里摘出指定参数，不做推理、不做补全。",
+  "只输出一个 JSON 对象：键是参数名，值是原文里的片段；找不到的参数给空字符串。",
+  "规则：",
+  "1. 只抄原文，不改写、不缩写、不翻译，也不要把铺垫话术（「我的论文题目是」）带进去；",
+  "2. 找不到就留空，绝对不许编造或用示例值填；",
+  "3. 参数是数字 / 布尔时按声明类型输出，别把整句话塞进去；",
+  "4. 除 JSON 外不要输出任何解释、Markdown 或代码块标记。"
+].join("\n");
+
+/**
+ * 参数提取的模型调用：一次只回一个 JSON。
+ * 上层负责「缺了就追问」，所以这里没抽到就老实留空，不能拿模型猜的值去糊弄下游。
+ */
+async function runLiveExtract(
+  node: ExtractNode,
+  rawInput: Record<string, unknown>,
+  context: ExecutionContext,
+  defaults: {
+    maxTokens: number;
+    completeChat?: typeof completeQwenChat;
+  }
+) {
+  const input = withoutSelfLoop(rawInput);
+  const params = (node.params ?? []).filter(
+    (item) => typeof item?.name === "string" && item.name.trim() !== ""
+  );
+  if (params.length === 0) {
+    return { mode: "live", kind: "extract", output: {}, params: {}, summary: "没有声明参数" };
+  }
+  const text = extractSourceText(input);
+  if (text.trim() === "") {
+    return { mode: "live", kind: "extract", output: {}, params: {}, summary: "没有可抽取的文本" };
+  }
+
+  const resolution = resolveModel(node.model, {
+    source: "node",
+    budgetExceeded: budgetExceeded(context)
+  });
+  const table = params
+    .map((param, index) => {
+      const bits = [
+        param.label?.trim() ? `展示名=${param.label.trim()}` : "",
+        param.type ? `类型=${param.type}` : "",
+        param.required === false ? "必填=否" : "必填=是",
+        param.description?.trim() ? `说明=${param.description.trim()}` : ""
+      ].filter(Boolean);
+      return `${index + 1}. ${param.name}（${bits.join("；")}）`;
+    })
+    .join("\n");
+
+  const content = await (defaults.completeChat ?? completeQwenChat)({
+    system: EXTRACT_SYSTEM,
+    messages: [
+      {
+        role: "user",
+        content: [
+          `## 参数表\n${table}`,
+          `## 待抽取文本\n${text}`,
+          node.prompt?.trim() ? `## 额外规则\n${interpolate(node.prompt.trim(), context)}` : "",
+          "## 输出\n只输出 JSON 对象，键为参数名。"
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      }
+    ],
+    model: resolution.model,
+    maxTokens: clampInt(defaults.maxTokens, 1, 32768),
+    temperature: 0,
+    provider: providerConfig(resolution)
+  });
+
+  const parsed = parseJsonObjectFromText(content) ?? {};
+  // 只收参数表里声明过的键：模型多给的字段一律丢掉，免得下游引用到不存在的变量。
+  const values: Record<string, unknown> = {};
+  for (const param of params) {
+    const value = parsed[param.name];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === "string" && value.trim() === "") {
+      continue;
+    }
+    values[param.name] = value;
+  }
+
+  return {
+    mode: "live",
+    kind: "extract",
+    ...modelTrace(resolution),
+    summary: summarize(content, 160),
+    output: values,
+    params: values,
+    inputs: input
+  };
+}
+
+/** 抽取用的正文：取输入里的字符串，按顺序拼；数组 / 对象整段丢给模型只会干扰判断。 */
+function extractSourceText(input: Record<string, unknown>): string {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const value of Object.values(input)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const text = value.trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    parts.push(text);
+  }
+  return parts.join("\n");
+}
+
+const CLARIFY_ANALYZE_SYSTEM = [  "你是 Agent 编排平台的意图分析器。只依据用户原始需求与已给约束分析，不编造事实。",
   "只输出一个 JSON 对象，字段：taskType、goal、audience、deliverable、constraints（字符串数组）、",
   "ambiguities（数组，元素为 {slot, question, impact}，impact ∈ high/medium/low）、assumptions（字符串数组）、",
   "needsClarification（布尔）、confidence（0-1）。",
@@ -308,14 +465,31 @@ async function runLiveAgent(
   });
 
   if (node.toolCalling !== true) {
-    const content = await (options.completeChat ?? completeQwenChat)({
-      system,
-      messages: [{ role: "user", content: prompt }],
-      model: resolution.model,
-      maxTokens: options.maxTokens ?? 2048,
-      temperature: options.temperature ?? 0.35,
-      provider: providerConfig(resolution)
-    });
+    // JSON 输出模式不做真流式：token 流是原始 JSON 碎片，打印出来没法看，
+    // 反正结束后还有 normalizeAgentJsonOutput 的整篇替换兜底。
+    const streamable = (node.outputFormat ?? "text") === "text";
+    let content: string;
+    if (streamable) {
+      ({ content } = await chatWithOptionalStream({
+        context,
+        system,
+        prompt,
+        model: resolution.model,
+        maxTokens: options.maxTokens ?? 2048,
+        temperature: options.temperature ?? 0.35,
+        provider: providerConfig(resolution),
+        completeChat: options.completeChat
+      }));
+    } else {
+      content = await (options.completeChat ?? completeQwenChat)({
+        system,
+        messages: [{ role: "user", content: prompt }],
+        model: resolution.model,
+        maxTokens: options.maxTokens ?? 2048,
+        temperature: options.temperature ?? 0.35,
+        provider: providerConfig(resolution)
+      });
+    }
 
     return {
       mode: "live",
@@ -1065,19 +1239,27 @@ function interpolate(text: string, context: ExecutionContext) {
 
 function resolveRef(ref: string, context: ExecutionContext): unknown {
   const [head, ...rest] = ref.split(".");
-  let current: unknown =
-    head === "input"
-      ? context.scope.input
-      : head === "loop"
-        ? context.loop
-        : context.scope.outputs.get(head);
-  for (const segment of rest) {
-    if (current === null || typeof current !== "object") {
-      return undefined;
+  const readPath = (source: unknown, segments: string[]): unknown => {
+    let current = source;
+    for (const segment of segments) {
+      if (current === null || typeof current !== "object") {
+        return undefined;
+      }
+      current = (current as Record<string, unknown>)[segment];
     }
-    current = (current as Record<string, unknown>)[segment];
+    return current;
+  };
+  // 节点自己的输入变量排在前面：提示词里 ${template} 指的是「输入变量」表里那一行，
+  // 取不到再走原来的节点输出 / 运行输入，避免同名遮蔽已有引用。
+  if (head !== "loop" && context.locals && Object.prototype.hasOwnProperty.call(context.locals, head)) {
+    const local = readPath(context.locals[head], rest);
+    if (local !== undefined) {
+      return local;
+    }
   }
-  return current;
+  const source: unknown =
+    head === "input" ? context.scope.input : head === "loop" ? context.loop : context.scope.outputs.get(head);
+  return readPath(source, rest);
 }
 
 function renderValue(value: unknown, maxChars: number) {
@@ -1192,6 +1374,66 @@ function providerConfig(resolution: ModelResolution) {
     apiKey: resolution.apiKey,
     label: resolution.provider
   };
+}
+
+/**
+ * 带可选真流式的补全调用：调试面板正在收听本次运行时，改用流式请求，
+ * 每个 token 通过 runStreamBus 实时推给 SSE；没人听（生产运行、测试）保持
+ * 原补全路径，行为与产物完全不变。
+ *
+ * 注意：流式分支不支持 topP（streamQwenChat 未暴露该参数）；llm 节点单独
+ * 配过 topP 且面板在收听时，采样参数以流式请求的上游默认为准，正文不受影响。
+ */
+async function chatWithOptionalStream(args: {
+  context: ExecutionContext;
+  system?: string;
+  prompt: string;
+  model: string;
+  maxTokens: number;
+  temperature?: number;
+  topP?: number;
+  enableThinking?: boolean;
+  provider: { baseUrl: string; apiKey: string; label?: string };
+  completeChat?: typeof completeQwenChat;
+}): Promise<{ content: string; thinking: string }> {
+  const { context, provider } = args;
+  const messages = [{ role: "user" as const, content: args.prompt }];
+  if (hasRunTokenListeners(context.runId) && context.stepPath) {
+    let thinking = "";
+    const streamed = await streamQwenChat({
+      system: args.system,
+      messages,
+      model: args.model,
+      provider,
+      enableThinking: args.enableThinking === true,
+      maxTokens: args.maxTokens,
+      temperature: args.temperature,
+      onThinkingDelta: (value) => {
+        thinking += value;
+      },
+      onDelta: (delta) => {
+        if (delta) {
+          emitRunToken({ runId: context.runId, path: context.stepPath!, delta });
+        }
+      }
+    });
+    return { content: streamed.visibleAssistantContent, thinking };
+  }
+  let thinking = "";
+  const content = await (args.completeChat ?? completeQwenChat)({
+    system: args.system,
+    messages,
+    model: args.model,
+    maxTokens: args.maxTokens,
+    temperature: args.temperature,
+    topP: args.topP,
+    enableThinking: args.enableThinking === true,
+    provider,
+    onThinking: (value) => {
+      thinking = value;
+    }
+  });
+  return { content, thinking };
 }
 
 /** trace 同时记录请求值与解析值，避免“配置了模型却看不出是否生效”。 */

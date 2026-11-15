@@ -3,10 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StarLattice · 多 Agent 编排与自进化平台</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>StarLattice</title>
+    <style>
+      /* 脚本还没跑起来时的占位。React 挂载会把它整个替换掉；
+         模块加载失败（缓存损坏、网络中断）时，至少不会只剩一张纯白页。 */
+      #boot-splash {
+        display: grid;
+        place-items: center;
+        gap: 7px;
+        height: 100vh;
+        background: #fdfdfd;
+        color: #4a4d52;
+        font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+        font-size: 13px;
+        text-align: center;
+      }
+      #boot-splash small {
+        color: #8a8d92;
+        font-size: 11.5px;
+      }
+      @media (prefers-color-scheme: dark) {
+        #boot-splash { background: #17181a; color: #d7d9dc; }
+        #boot-splash small { color: #8d9095; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-splash">
+        <span>正在加载工作区…</span>
+        <small>如果长时间停在这里，请刷新页面</small>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

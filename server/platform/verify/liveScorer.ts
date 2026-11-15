@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { completeQwenChat } from "../../qwenOpenAiClient.js";
 import { isAnyModelConfigured, resolveVerificationModel } from "../models/catalog.js";
+import { configuredModelOwnerIds } from "../models/userModels.js";
 import {
   heuristicDimensionScorer,
   type DimensionScorer,
@@ -14,7 +15,8 @@ export function isLlmVerifyEnabled() {
   return (
     process.env.PLATFORM_LIVE_AGENTS === "1" &&
     process.env.PLATFORM_LIVE_VERIFY === "1" &&
-    isAnyModelConfigured()
+    // 构造执行器时没有账号身份，只看当前作用域会漏掉账号目录里配好的模型。
+    (isAnyModelConfigured() || configuredModelOwnerIds().length > 0)
   );
 }
 

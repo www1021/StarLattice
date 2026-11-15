@@ -1,5 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { PlatformError, type AgentCapability, type AgentWrite } from "../types.js";
 import { validateAgentModel } from "../models/catalog.js";
+import {
+  parseAgentDescription,
+  parseAgentPrompt,
+  parseAvatar,
+  parseChatConfig
+} from "../chat/agentChat.js";
 
 type PromptOptions = {
   id: string;
@@ -509,7 +516,9 @@ export function parseAgentWrite(body: unknown, existing?: AgentWrite): AgentWrit
     throw new PlatformError("请求体必须是 JSON 对象。", 400);
   }
   const record = body as Record<string, unknown>;
-  const id = requireId(record.id);
+  // 界面新建时不填 id，由服务端发一个：自建智能体的 id 只要在库里唯一即可，
+  // 让用户自己想 id 只会撞名（比如两个人都写 my-helper）。
+  const id = record.id === undefined || record.id === "" ? generateAgentId() : requireId(record.id);
   const name = requireText(record.name, "name");
   const version =
     record.version === undefined
@@ -521,7 +530,7 @@ export function parseAgentWrite(body: unknown, existing?: AgentWrite): AgentWrit
     name,
     version,
     role: record.role === undefined ? (existing?.role ?? "") : optionalText(record.role, "role"),
-    prompt: record.prompt === undefined ? (existing?.prompt ?? "") : optionalText(record.prompt, "prompt"),
+    prompt: parseAgentPrompt(record.prompt, existing?.prompt),
     tools: record.tools === undefined ? (existing?.tools ?? []) : parseStringList(record.tools, "tools"),
     // 保存时强校验：不认识的逻辑 id 直接 422，避免“配置了模型但运行时不生效”的静默失败。
     model:
@@ -534,8 +543,15 @@ export function parseAgentWrite(body: unknown, existing?: AgentWrite): AgentWrit
         : parseCapabilities(record.capabilities),
     memory: record.memory === undefined ? (existing?.memory ?? {}) : parseMemory(record.memory),
     enabled:
-      typeof record.enabled === "boolean" ? record.enabled : (existing?.enabled ?? true)
+      typeof record.enabled === "boolean" ? record.enabled : (existing?.enabled ?? true),
+    description: parseAgentDescription(record.description, existing?.description),
+    avatar: parseAvatar(record.avatar, existing?.avatar),
+    chatConfig: parseChatConfig(record.chatConfig, existing?.chatConfig)
   };
+}
+
+function generateAgentId(): string {
+  return `chat-${randomUUID().replace(/-/g, "").slice(0, 10)}`;
 }
 
 function requireId(value: unknown): string {

@@ -1,0 +1,1437 @@
+/* 表面色与描边色：默认原样转发 --n-*，照片模式下统一换成照片同色系的膜。
+   只替换 background / border / box-shadow 等声明，color 声明仍走 --n-* 字色阶梯。 */
+:root {
+  --surf-99: var(--n-99);
+  --line-99: var(--n-99);
+  --surf-98: var(--n-98);
+  --line-98: var(--n-98);
+  --surf-97: var(--n-97);
+  --line-97: var(--n-97);
+  --surf-96: var(--n-96);
+  --line-96: var(--n-96);
+  --surf-95: var(--n-95);
+  --line-95: var(--n-95);
+  --surf-94: var(--n-94);
+  --line-94: var(--n-94);
+  --surf-92: var(--n-92);
+  --line-92: var(--n-92);
+  --surf-90: var(--n-90);
+  --line-90: var(--n-90);
+  --surf-88: var(--n-88);
+  --line-88: var(--n-88);
+  --surf-87: var(--n-87);
+  --line-87: var(--n-87);
+  --surf-84: var(--n-84);
+  --line-84: var(--n-84);
+  --surf-81: var(--n-81);
+  --line-81: var(--n-81);
+  --surf-78: var(--n-78);
+  --line-78: var(--n-78);
+  --surf-75: var(--n-75);
+  --line-75: var(--n-75);
+  --surf-72: var(--n-72);
+  --line-72: var(--n-72);
+  --surf-66: var(--n-66);
+  --line-66: var(--n-66);
+  --surf-63: var(--n-63);
+  --line-63: var(--n-63);
+  --surf-60: var(--n-60);
+  --line-60: var(--n-60);
+  --surf-57: var(--n-57);
+  --line-57: var(--n-57);
+  --surf-51: var(--n-51);
+  --line-51: var(--n-51);
+  --surf-48: var(--n-48);
+  --line-48: var(--n-48);
+  --surf-46: var(--n-46);
+  --line-46: var(--n-46);
+  --surf-45: var(--n-45);
+  --line-45: var(--n-45);
+  --surf-42: var(--n-42);
+  --line-42: var(--n-42);
+  --surf-40: var(--n-40);
+  --line-40: var(--n-40);
+  --surf-39: var(--n-39);
+  --line-39: var(--n-39);
+  --surf-38: var(--n-38);
+  --line-38: var(--n-38);
+  --surf-36: var(--n-36);
+  --line-36: var(--n-36);
+  --surf-33: var(--n-33);
+  --line-33: var(--n-33);
+  --surf-30: var(--n-30);
+  --line-30: var(--n-30);
+  --surf-27: var(--n-27);
+  --line-27: var(--n-27);
+  --surf-25: var(--n-25);
+  --line-25: var(--n-25);
+  --surf-24: var(--n-24);
+  --line-24: var(--n-24);
+  --surf-21: var(--n-21);
+  --line-21: var(--n-21);
+  --surf-18: var(--n-18);
+  --line-18: var(--n-18);
+  --surf-15: var(--n-15);
+  --line-15: var(--n-15);
+  --surf-12: var(--n-12);
+  --line-12: var(--n-12);
+}
+
+/* 主题层：白（默认）/ 深色两套，外加自定义背景照片。
+   变量值由 styles/theme-tokens.css 提供，这里管外壳、照片层与外观设置面板。 */
+
+:root {
+  --rgb-surface: 255, 255, 255;
+  --rgb-shadow: 15, 15, 15;
+  --app-bg: #ffffff;
+  --app-sidebar: #f7f7f8;
+  --app-line: #ececec;
+  --app-photo: none;
+  --app-photo-opacity: 0;
+  /* 强调色：不再用固定的品牌橙，改成跟着主题翻面的中性色。
+     浅色主题=近黑，深色主题=近白，配 --n-99 的字色自动对得上。 */
+  --accent: #1b1c1f;
+  --accent-strong: #000000;
+  --accent-soft: rgba(17, 17, 19, 0.06);
+  --accent-line: rgba(17, 17, 19, 0.14);
+  /* 图标块：调色板/节点/快捷卡里的小方底 */
+  --chip-bg: #ececee;
+  --chip-fg: #3f4146;
+  /* 画布连线 */
+  --edge-idle: #cfd0d4;
+  --edge-active: #1b1c1f;
+  --edge-running: #b8760a;
+  --edge-done: #2563eb;
+  --edge-focus: #2b6cd4;
+  /* 正文里插入的变量引用：紫色胶囊，跟 AI 类节点同一个色相 */
+  --ref-token-fg: #6f5bd4;
+  --ref-token-bg: rgba(111, 91, 212, 0.11);
+  --minimap-mask: rgba(247, 249, 252, 0.78);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --rgb-surface: 255, 255, 255;
+  --rgb-shadow: 15, 15, 15;
+  /* 文字压照片时用的描边色：浅色主题黑字配白雾，深色主题白字配黑雾 */
+  --halo-rgb: 255, 255, 255;
+  --app-bg: #ffffff;
+  --app-sidebar: #f7f7f8;
+  --app-line: #ececec;
+  /* 选中态＝一层中性压色，不掺品牌橙：跟 WorkBuddy 那类侧栏一致 */
+  --nav-hover-bg: rgba(17, 17, 19, 0.045);
+  --nav-active-bg: rgba(17, 17, 19, 0.075);
+  --nav-active-fg: var(--n-12);
+  --nav-active-icon: var(--n-21);
+  /* 主按钮（新建）：白主题里是一块白底浮起，深色里是比侧栏略亮的深灰 */
+  --cta-bg: #ffffff;
+  --cta-bg-hover: #f4f4f5;
+  --cta-fg: var(--n-15);
+  --cta-border: #e3e3e6;
+  --cta-shadow: 0 1px 2px rgba(17, 17, 19, 0.06);
+  --accent: #1b1c1f;
+  --accent-strong: #000000;
+  --accent-soft: rgba(17, 17, 19, 0.06);
+  --accent-line: rgba(17, 17, 19, 0.14);
+  --chip-bg: #ececee;
+  --chip-fg: #3f4146;
+  --edge-idle: #cfd0d4;
+  --edge-active: #1b1c1f;
+  --edge-running: #b8760a;
+  --edge-done: #2563eb;
+  --edge-focus: #2b6cd4;
+  --minimap-mask: rgba(247, 249, 252, 0.78);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --rgb-surface: 44, 45, 47;
+  --rgb-shadow: 0, 0, 0;
+  --halo-rgb: 0, 0, 0;
+  --app-bg: hsl(220 9% 8.5%);
+  --app-sidebar: hsl(220 9% 11.5%);
+  --app-line: hsl(220 9% 18%);
+  --nav-hover-bg: rgba(255, 255, 255, 0.05);
+  --nav-active-bg: rgba(255, 255, 255, 0.09);
+  --nav-active-fg: hsl(220 6% 96%);
+  --nav-active-icon: hsl(220 6% 93%);
+  --cta-bg: hsl(220 9% 16%);
+  --cta-bg-hover: hsl(220 9% 19.5%);
+  --cta-fg: hsl(220 6% 96%);
+  --cta-border: hsl(220 9% 23%);
+  --cta-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  /* 深色下强调色翻成近白：填充按钮变浅底深字，文字强调变亮白 */
+  --accent: hsl(220 6% 93%);
+  --accent-strong: #ffffff;
+  --accent-soft: rgba(255, 255, 255, 0.08);
+  --accent-line: rgba(255, 255, 255, 0.16);
+  --chip-bg: rgba(255, 255, 255, 0.1);
+  --chip-fg: hsl(220 6% 90%);
+  --edge-idle: hsl(220 8% 30%);
+  --edge-active: hsl(220 6% 88%);
+  --edge-running: #d9a559;
+  --edge-done: hsl(215 80% 68%);
+  --edge-focus: hsl(215 78% 66%);
+  --ref-token-fg: #b7a7ff;
+  --ref-token-bg: rgba(139, 120, 255, 0.2);
+  --minimap-mask: rgba(9, 10, 12, 0.6);
+}
+
+/* ---------- 外壳 ---------- */
+
+html[data-theme] .app-shell {
+  background: var(--app-bg);
+}
+
+html[data-theme="light"] .sidebar,
+html[data-theme="dark"] .sidebar {
+  border-right: 1px solid var(--app-line);
+  background: var(--app-sidebar);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+html[data-theme="light"] .sidebar::before,
+html[data-theme="dark"] .sidebar::before {
+  display: none;
+}
+
+/* 深色下玻璃高光是浅色叠加，会脏，换成低亮度版本 */
+html[data-theme="dark"] {
+  --liquid-highlight: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.015) 36%,
+    rgba(0, 0, 0, 0.12) 64%,
+    rgba(255, 255, 255, 0.04)
+  );
+  --liquid-edge: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.02) 46%,
+    rgba(0, 0, 0, 0.16)
+  );
+  --liquid-inner: rgba(255, 255, 255, 0.06);
+  --liquid-shadow: rgba(0, 0, 0, 0.55);
+}
+
+html[data-theme="dark"] .react-flow__background circle {
+  fill: hsl(220 8% 26%) !important;
+}
+
+html[data-theme="dark"] .react-flow__edge-path {
+  stroke-opacity: 0.9;
+}
+
+html[data-theme="dark"] img,
+html[data-theme="dark"] video {
+  filter: brightness(0.92);
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: hsl(220 8% 30%);
+  background-clip: padding-box;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(220 8% 38%);
+  background-clip: padding-box;
+}
+
+/* ---------- 自定义背景照片 ---------- */
+
+/* 照片原图直出：不加 blur、不压 brightness、不铺整幅薄纱。
+   对比度交给文字自己的局部蒙版去解决，画面该清楚的地方一律清楚。 */
+.app-photo {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background-image: var(--app-photo);
+  background-position: center;
+  background-size: cover;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+
+html[data-photo="on"] .app-photo {
+  opacity: var(--app-photo-opacity);
+}
+
+/* 照片模式：只调「蒙版」参数，不再动照片本身。
+   --mask-core 是文字正下方的浓度，--mask-feather-* 是向外渐隐的宽度。
+   两套主题都取 1px 的羽化过渡，避免出现硬边。 */
+html[data-photo="on"] {
+  --mask-tint: var(--rgb-surface);
+  --mask-core: 0.9;
+  --mask-soft: 0.2;
+  --mask-feather-x: 20px;
+  --mask-feather-y: 16px;
+  /* 面板型界面（工作台/画布/知识库/监控）不再靠「一层半透明底」撑可读性。
+     底色全撤，只留一圈淡描边划出结构；文字自己带一圈紧贴笔画的柔光，
+     照片再花也压得住，而画面一个色块都没有。 */
+  --glass-edge: rgba(var(--mask-tint), 0.36);
+  /* 文字光晕：一级给标题/数字，二级给正文小字。
+     颜色取 --halo-rgb（白主题白雾托黑字、深色主题黑雾托白字），
+     这样字压在任何亮度的照片上都能读，又不用给整块区域铺底。 */
+  --ink-halo:
+    0 1px 2px rgba(var(--halo-rgb), 0.92),
+    0 2px 8px rgba(var(--halo-rgb), 0.7),
+    0 0 16px rgba(var(--halo-rgb), 0.42);
+  --ink-halo-sm:
+    0 1px 2px rgba(var(--halo-rgb), 0.86),
+    0 1px 6px rgba(var(--halo-rgb), 0.62),
+    0 0 12px rgba(var(--halo-rgb), 0.38);
+  /* 交互反馈：不用灰底，用一点点同色雾 */
+  --ink-wash: rgba(var(--mask-tint), 0.22);
+  --ink-wash-strong: rgba(var(--mask-tint), 0.3);
+}
+
+/* 暗字压亮照片：底色本来就亮，白雾只留一圈贴边。
+   照片明暗跨度大的地方仍靠卡片那层膜兜底，不靠糊字。 */
+html[data-photo="on"][data-photo-ink="dark"] {
+  /* 亮照片本身就有反差，白雾只留一圈贴边，糊多了小字反而发虚 */
+  --ink-halo: 0 0 2px rgba(255, 255, 255, 0.66), 0 1px 3px rgba(255, 255, 255, 0.4);
+  --ink-halo-sm: 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+html[data-photo="on"] .app-shell {
+  background: transparent;
+}
+
+/* ---------- 外观设置面板 ---------- */
+
+.appearance-mask {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(var(--rgb-shadow), 0.32);
+  backdrop-filter: blur(3px);
+}
+
+.appearance-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: min(86vh, 720px);
+  overflow: hidden;
+  border: 1px solid var(--line-87);
+  border-radius: 16px;
+  background: var(--surf-99);
+  color: var(--n-12);
+  box-shadow: 0 28px 70px rgba(var(--rgb-shadow), 0.24);
+}
+
+.appearance-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-92);
+}
+
+.appearance-head h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.appearance-close {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--n-48);
+  cursor: pointer;
+}
+
+.appearance-close:hover {
+  background: var(--surf-94);
+  color: var(--n-12);
+}
+
+.appearance-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+}
+
+.ap-section + .ap-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-92);
+}
+
+.ap-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 9px;
+  color: var(--n-18);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ap-label small {
+  color: var(--n-45);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ap-themes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ap-theme {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--line-88);
+  border-radius: 11px;
+  background: var(--surf-99);
+  color: var(--n-21);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ap-theme:hover {
+  border-color: var(--accent);
+}
+
+.ap-theme.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* 背景照片与主题是两套互斥的配色来源：有照片时主题卡置灰不可选 */
+.ap-themes.is-locked {
+  opacity: 0.46;
+  filter: saturate(0.6);
+}
+
+.ap-themes.is-locked .ap-theme {
+  cursor: not-allowed;
+}
+
+.ap-section.is-photo-mode .ap-hint {
+  color: var(--n-39);
+}
+
+.ap-theme-swatch {
+  display: flex;
+  width: 100%;
+  gap: 3px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--line-90);
+  border-radius: 7px;
+}
+
+.ap-theme-swatch span {
+  flex: 1;
+}
+
+.ap-theme-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ap-theme-name em {
+  color: var(--a-4a6b52);
+  font-size: 10.5px;
+  font-style: normal;
+}
+
+.ap-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ap-photo-preview {
+  display: grid;
+  flex: none;
+  width: 78px;
+  height: 52px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--line-84);
+  border-radius: 9px;
+  background: var(--surf-96);
+  color: var(--n-46);
+  font-size: 11px;
+  background-position: center;
+  background-size: cover;
+}
+
+.ap-photo-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ap-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line-84);
+  border-radius: 8px;
+  background: var(--surf-99);
+  color: var(--n-21);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ap-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ap-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ap-btn.is-quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--n-45);
+}
+
+.ap-btn.is-quiet:hover {
+  background: var(--surf-94);
+  color: var(--n-21);
+}
+
+.ap-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ap-slider input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.ap-slider output {
+  flex: none;
+  width: 38px;
+  color: var(--n-30);
+  font-size: 12px;
+  text-align: right;
+}
+
+.ap-hint {
+  margin: 9px 0 0;
+  color: var(--n-45);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ap-hint.is-error {
+  color: var(--a-b03a2a);
+}
+
+/* 融合方式：两张并排的选项卡，标题 + 一句说明 */
+.ap-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ap-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-88);
+  border-radius: 11px;
+  background: var(--surf-99);
+  color: var(--n-30);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ap-mode:hover {
+  border-color: var(--accent);
+}
+
+.ap-mode.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.ap-mode-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-18);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ap-mode-name em {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--n-40);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.ap-mode-desc {
+  color: var(--n-48);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* 标题混色开关 */
+.ap-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-90);
+  border-radius: 11px;
+  background: var(--surf-97);
+  cursor: pointer;
+}
+
+.ap-switch input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.ap-switch > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--n-18);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ap-switch small {
+  color: var(--n-48);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.ap-cutout {
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid var(--line-90);
+  border-radius: 11px;
+  background: var(--surf-97);
+}
+
+.ap-cutout-preview {
+  width: 78px;
+  height: 52px;
+  border-style: solid;
+  color: var(--n-48);
+  background-color: var(--surf-94);
+}
+
+.ap-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line-92);
+  background: var(--surf-97);
+}
+
+.ap-foot small {
+  color: var(--n-48);
+  font-size: 11px;
+}
+
+/* 画布底色：白/深色主题下去掉暖色谱渐变，节点卡片才好认 */
+html[data-theme="light"] .platform-canvas .react-flow,
+html[data-theme="dark"] .platform-canvas .react-flow {
+  background: var(--surf-96);
+}
+
+html[data-theme="light"] .platform-canvas {
+  background: var(--surf-96);
+  box-shadow: inset 0 1px 0 var(--surf-99);
+}
+
+html[data-theme="dark"] .platform-canvas {
+  background: var(--surf-96);
+  box-shadow: none;
+}
+
+/* 内容区本身是整块底色，照片模式下要让它透出来，照片才看得见 */
+html[data-photo="on"] .workspace {
+  background: transparent;
+  /* 全站所有「半透明底」都乘了这个系数。照片模式下 --rgb-surface 已经
+     指向照片主色，所以面板是同色系的一层膜：保留框感，但不会是纯黑板。
+     浮层（弹窗/菜单）显式调回 1，好盖住底下的内容。 */
+  --panel-alpha: 0.82;
+}
+
+/* 面板在照片模式下是半透明膜，但弹窗 / 下拉 / 菜单必须盖住底下内容，
+   否则文字会跟背后的工作台叠在一起。这些容器统一换成不透明实底：
+   --n-99 在照片模式下会按照片明暗翻面，所以弹窗不会突然变成一块黑板。 */
+html[data-photo="on"] :is(
+  .settings-dialog,
+  .appearance-dialog,
+  .platform-modal,
+  .platform-subflow-modal,
+  .platform-template-modal,
+  .registry-modal,
+  .speak-report-modal,
+  .growth-record-modal,
+  .knowledge-popover,
+  .platform-flow-menu,
+  .platform-more-menu,
+  .nav-task-menu,
+  .ni-menu,
+  .composer-model-pop,
+  .md-sel-pop,
+  .user-menu
+) {
+  /* 浮层内部一律改回实色：页面卡片可以是膜，弹窗里的分区、输入框、
+     按钮不能透出背后的工作台，否则两层文字会叠在一起。 */
+  --surf-99: var(--n-99);
+  --line-99: var(--n-99);
+  --surf-98: var(--n-98);
+  --line-98: var(--n-98);
+  --surf-97: var(--n-97);
+  --line-97: var(--n-97);
+  --surf-96: var(--n-96);
+  --line-96: var(--n-96);
+  --surf-95: var(--n-95);
+  --line-95: var(--n-95);
+  --surf-94: var(--n-94);
+  --line-94: var(--n-94);
+  --surf-92: var(--n-92);
+  --line-92: var(--n-92);
+  --surf-90: var(--n-90);
+  --line-90: var(--n-90);
+  --surf-88: var(--n-88);
+  --line-88: var(--n-88);
+  --surf-87: var(--n-87);
+  --line-87: var(--n-87);
+  --surf-84: var(--n-84);
+  --line-84: var(--n-84);
+  --surf-81: var(--n-81);
+  --line-81: var(--n-81);
+  --surf-78: var(--n-78);
+  --line-78: var(--n-78);
+  --surf-75: var(--n-75);
+  --line-75: var(--n-75);
+  --surf-72: var(--n-72);
+  --line-72: var(--n-72);
+  --surf-66: var(--n-66);
+  --line-66: var(--n-66);
+  --surf-63: var(--n-63);
+  --line-63: var(--n-63);
+  --surf-60: var(--n-60);
+  --line-60: var(--n-60);
+  --surf-57: var(--n-57);
+  --line-57: var(--n-57);
+  --surf-51: var(--n-51);
+  --line-51: var(--n-51);
+  --surf-48: var(--n-48);
+  --line-48: var(--n-48);
+  --surf-46: var(--n-46);
+  --line-46: var(--n-46);
+  --surf-45: var(--n-45);
+  --line-45: var(--n-45);
+  --surf-42: var(--n-42);
+  --line-42: var(--n-42);
+  --surf-40: var(--n-40);
+  --line-40: var(--n-40);
+  --surf-39: var(--n-39);
+  --line-39: var(--n-39);
+  --surf-38: var(--n-38);
+  --line-38: var(--n-38);
+  --surf-36: var(--n-36);
+  --line-36: var(--n-36);
+  --surf-33: var(--n-33);
+  --line-33: var(--n-33);
+  --surf-30: var(--n-30);
+  --line-30: var(--n-30);
+  --surf-27: var(--n-27);
+  --line-27: var(--n-27);
+  --surf-25: var(--n-25);
+  --line-25: var(--n-25);
+  --surf-24: var(--n-24);
+  --line-24: var(--n-24);
+  --surf-21: var(--n-21);
+  --line-21: var(--n-21);
+  --surf-18: var(--n-18);
+  --line-18: var(--n-18);
+  --surf-15: var(--n-15);
+  --line-15: var(--n-15);
+  --surf-12: var(--n-12);
+  --line-12: var(--n-12);
+  --panel-alpha: 1;
+  background: var(--n-99);
+  backdrop-filter: none;
+}
+
+/* ---------- 照片模式：文字容器用局部渐变蒙版 ----------
+   照片原样铺满、原样清晰。只有真正承载文字的那一小块被托住：
+   蒙版核心铺满文字盒，靠边 16~20px 向内渐隐到全透明，之外一个像素都没动。
+   这样既没有整幅薄纱，也没有整块白底，画面是通透的，字也压得住。 */
+
+/* 侧栏：在照片自己的色系上盖一层膜，把左右分开。
+   不再用主题给的灰实底，也不做「整幅压暗」；膜是半透明同色，
+   右侧留一道淡边，跟 IDEA 那种背景图 + 半透明工具窗一个意思。 */
+html[data-photo="on"] .sidebar {
+  border-right: 1px solid rgba(var(--photo-tint), 0.42);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--photo-tint), 0.64) 0%,
+    rgba(var(--photo-tint), 0.6) 62%,
+    rgba(var(--photo-tint), 0.48) 100%
+  );
+  box-shadow: 6px 0 26px rgba(0, 0, 0, 0.16);
+  backdrop-filter: none;
+}
+
+html[data-photo="on"] .sidebar::before {
+  display: none;
+}
+
+/* 收起状态只剩图标列，给浓度稍高一点的实膜，图标才立得住 */
+html[data-photo="on"] .sidebar[data-collapsed="true"] {
+  background: rgba(var(--photo-tint), 0.66);
+}
+
+/* 气泡：把边框、投影、毛玻璃全部撤掉，换一张羽化的托底 */
+html[data-photo="on"] .message-bubble {
+  border-color: rgba(var(--mask-tint), 0.46);
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  isolation: isolate;
+  padding: 16px 22px;
+}
+
+html[data-photo="on"] .message-bubble::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  border-radius: 26px;
+  background: rgba(var(--mask-tint), 0.44);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 var(--mask-feather-x), #000 calc(100% - var(--mask-feather-x)), transparent),
+    linear-gradient(to bottom, transparent, #000 var(--mask-feather-y), #000 calc(100% - var(--mask-feather-y)), transparent);
+  mask-image:
+    linear-gradient(to right, transparent, #000 var(--mask-feather-x), #000 calc(100% - var(--mask-feather-x)), transparent),
+    linear-gradient(to bottom, transparent, #000 var(--mask-feather-y), #000 calc(100% - var(--mask-feather-y)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  mask-repeat: no-repeat;
+}
+
+html[data-photo="on"] .message-user .message-bubble::before {
+  background: rgba(var(--mask-tint), 0.5);
+}
+
+/* 输入框：同样是羽化托底，核心浓度略低，让照片还是能透一点 */
+html[data-photo="on"] .composer {
+  border-color: rgba(var(--mask-tint), 0.46);
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  isolation: isolate;
+  padding: 16px 18px 13px;
+}
+
+html[data-photo="on"] .composer::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  border-radius: 26px;
+  background: rgba(var(--mask-tint), 0.46);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 var(--mask-feather-x), #000 calc(100% - var(--mask-feather-x)), transparent),
+    linear-gradient(to bottom, transparent, #000 calc(var(--mask-feather-y) + 4px), #000 calc(100% - var(--mask-feather-y)), transparent);
+  mask-image:
+    linear-gradient(to right, transparent, #000 var(--mask-feather-x), #000 calc(100% - var(--mask-feather-x)), transparent),
+    linear-gradient(to bottom, transparent, #000 calc(var(--mask-feather-y) + 4px), #000 calc(100% - var(--mask-feather-y)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  mask-repeat: no-repeat;
+}
+
+html[data-photo="on"] .composer-input {
+  background: transparent;
+}
+
+html[data-photo="on"] .composer {
+  text-shadow: var(--ink-halo-sm);
+}
+
+/* 小挂件（思考折叠条、回到底部、工作流横条、新会话设置条）：
+   面积小，给一层半透明底 + 一圈同色柔光就够，不做硬边 */
+html[data-photo="on"] .message-thought-toggle,
+html[data-photo="on"] .scroll-bottom-button,
+html[data-photo="on"] .workflow-chat-bar,
+html[data-photo="on"] .new-chat-setup {
+  border-color: rgba(var(--mask-tint), 0.24);
+  background: rgba(var(--mask-tint), var(--mask-soft));
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* ---------- 照片模式：画布页 ----------
+   画布完全透出去，只有节点和两侧面板留一层很淡的雾——淡到几乎看不出来
+   是「一块底」，主要靠边线和文字光晕维持结构。 */
+
+html[data-photo="on"] .platform-canvas {
+  border-color: var(--glass-edge);
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-photo="on"] .platform-canvas .react-flow {
+  background: transparent;
+}
+
+html[data-photo="on"] .platform-canvas .react-flow__background {
+  opacity: 0.4;
+}
+
+html[data-photo="on"] .platform-canvas-badge {
+  border-color: var(--glass-edge);
+  background: rgba(var(--mask-tint), 0.16);
+}
+
+/* 节点是交互控件不是正文，信息密度又高（一行十几字），
+   留一层薄雾让框体立得住，照片仍能透出六成以上 */
+html[data-photo="on"] .platform-node {
+  border-color: rgba(var(--mask-tint), 0.4);
+  background: rgba(var(--mask-tint), 0.34);
+  box-shadow: none;
+}
+
+html[data-photo="on"] .platform-container-node {
+  border-color: rgba(var(--mask-tint), 0.26);
+  background: rgba(var(--mask-tint), 0.08);
+  backdrop-filter: none;
+}
+
+html[data-photo="on"] .platform-palette,
+html[data-photo="on"] .platform-toolbar,
+html[data-photo="on"] .platform-run-strip,
+html[data-photo="on"] .platform-banner {
+  border-color: var(--glass-edge);
+  background: rgba(var(--mask-tint), 0.12);
+  backdrop-filter: none;
+}
+
+html[data-photo="on"] .platform-inspector,
+html[data-photo="on"] .platform-run-panel,
+html[data-photo="on"] .platform-side .platform-inspector,
+html[data-photo="on"] .platform-side .platform-inspector.ni-panel {
+  border-color: var(--glass-edge);
+  background: rgba(var(--mask-tint), 0.16);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+html[data-photo="on"] .platform-template-card,
+html[data-photo="on"] .platform-loading,
+html[data-photo="on"] .platform-empty {
+  border-color: var(--glass-edge);
+  background: rgba(var(--mask-tint), 0.1);
+  backdrop-filter: none;
+}
+
+
+/* 开场标题：一块只包住标题区的软蒙版，向外渐隐；
+   浅色主题用白雾托黑字，深色主题用暗雾托白字，照片本身依旧原样。 */
+html[data-photo="on"][data-title-blend="plain"] .hero {
+  position: relative;
+  isolation: isolate;
+}
+
+html[data-photo="on"][data-title-blend="plain"] .hero::before {
+  position: absolute;
+  z-index: -1;
+  /* 不再给标题铺一块托底：任何一块都会在照片上露出边界 */
+  display: none;
+}
+
+/* 开场标题直接压在照片上，不再铺一层整幅柔光。
+   可读性靠「柔光阴影」：浅色主题用白晕把深色像素提亮，深色主题用暗晕压住高光。
+   阴影是跟着文字走的，不动照片本身。 */
+html[data-photo="on"] .hero h1 {
+  color: var(--n-15);
+  /* 只靠贴笔画的光晕：字的边缘有暗/亮一圈，画面本身一个像素没动 */
+  text-shadow: var(--ink-halo);
+}
+
+html[data-photo="on"] .hero p,
+html[data-photo="on"] .workspace-inner.chat-workspace .hero p {
+  color: var(--n-25);
+  font-weight: 560;
+  text-shadow: var(--ink-halo-sm);
+}
+
+/* 「标题融入画面」：mix-blend-mode 让字的颜色取自底下的像素，
+   照片亮的地方字转深、暗的地方字转亮，不是硬贴一层白字。
+   只有大号标题用，正文和气泡不上混合模式，保证可读。 */
+/* 混色要能“看见”照片，就不能有栈上下文把它隔开。
+   .workspace 平时带 z-index: 1，会自成一层，混色只会在这一层内找背景；
+   照片模式下把它退回 auto，层级顺序仍然在 .app-photo 之上（DOM 在它后面）。 */
+html[data-photo="on"][data-title-blend="blend"] .workspace {
+  z-index: auto;
+}
+
+html[data-photo="on"][data-title-blend="blend"] .hero h1 {
+  color: #ffffff;
+  mix-blend-mode: difference;
+  text-shadow: none;
+}
+
+html[data-photo="on"] .composer-input::placeholder {
+  color: var(--n-48);
+}
+
+/* ---------- 照片模式：主体分层（高级） ----------
+   一张带透明通道的 PNG（主体抠图）盖在标题上层，标题就「钻」到主体后面。
+   图层跟照片同一套 cover 几何，所以叠上去能对得上位置。 */
+.app-photo-cutout {
+  position: fixed;
+  z-index: 3;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+  background-image: var(--app-photo-cutout);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+html[data-photo="on"][data-photo-blend="layered"] .app-photo-cutout {
+  display: block;
+}
+
+/* 层级：标题在最下 → 抠图压在上面 → 可点的控件（设置条、快捷任务、输入框）再压回来 */
+html[data-photo="on"][data-photo-blend="layered"] .hero {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-photo="on"][data-photo-blend="layered"] .new-chat-setup,
+html[data-photo="on"][data-photo-blend="layered"] .quick-row,
+html[data-photo="on"][data-photo-blend="layered"] .composer-stack {
+  position: relative;
+  z-index: 4;
+}
+
+/* ---------- 照片模式：工作台与知识库 ----------
+   这两页的卡片各有一套自己的白底变量，不像画布那样集中在 platform.css。
+   统一口径：卡片不铺底，只留一圈淡描边；文字靠 --ink-halo 立在照片上。 */
+
+html[data-photo="on"] .workspace:has(.wb-workspace) {
+  background: transparent;
+}
+
+html[data-photo="on"] .wb {
+  --wb-bg: transparent;
+  --wb-surface: rgba(var(--photo-tint), 0.44);
+  --wb-line: rgba(var(--photo-tint), 0.32);
+  --wb-line-strong: rgba(var(--photo-tint), 0.46);
+  /* 次要文字原来是 39%/46% 灰，压照片直接消失，这里按主题各抬一档 */
+  --wb-text-2: var(--n-27);
+  --wb-text-3: var(--n-33);
+  text-shadow: var(--ink-halo-sm);
+}
+
+/* 浅色主题是黑字压照片，灰色次要文字会直接沉进暗部，提到接近正文的深度 */
+html[data-photo="on"][data-photo-ink="dark"] .wb {
+  --wb-text-2: var(--n-15);
+  --wb-text-3: var(--n-21);
+}
+
+/* 深色主题下这组状态色是为深色卡片配的深绿/深红，压照片会直接沉下去 */
+html[data-photo="on"][data-photo-ink="light"] .wb {
+  --wb-ok: #74c98d;
+  --wb-bad: #f08b7b;
+  --wb-warn: #e2b25c;
+}
+
+/* 卡片本身透明了，自然也不需要毛玻璃——留着反而把照片糊掉 */
+html[data-photo="on"] .wb-card,
+html[data-photo="on"] .wb-act,
+html[data-photo="on"] .wb-guide,
+html[data-photo="on"] .wb-stats {
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* 原来靠 --n-97/--n-99 铺的小灰块，改成同色一点的雾，只够看出「这是个块」 */
+html[data-photo="on"] .wb .wb-tag,
+html[data-photo="on"] .wb .wb-tpl,
+html[data-photo="on"] .wb .wb-step {
+  background: var(--ink-wash);
+}
+
+html[data-photo="on"] .wb .wb-btn {
+  background: transparent;
+}
+
+html[data-photo="on"] .wb .wb-btn:hover,
+html[data-photo="on"] .wb .wb-run:hover,
+html[data-photo="on"] .wb .wb-wf:hover {
+  background: var(--ink-wash);
+}
+
+html[data-photo="on"] .wb .wb-tpl:hover,
+html[data-photo="on"] .wb .wb-step:hover {
+  background: var(--ink-wash-strong);
+}
+
+/* 首页那排大标题和数字要更亮一点，光晕给宽一档 */
+html[data-photo="on"] .wb .wb-head h1,
+html[data-photo="on"] .wb .wb-stat-value,
+html[data-photo="on"] .wb .wb-act strong,
+html[data-photo="on"] .wb .wb-card-head h2 {
+  text-shadow: var(--ink-halo);
+}
+
+/* 6px 的状态点压在照片上会直接消失，给一圈细描边把它托起来 */
+html[data-photo="on"] .wb .wb-dot {
+  box-shadow: 0 0 0 1.5px rgba(var(--halo-rgb), 0.7);
+}
+
+html[data-photo="on"] .knowledge-starter-packs,
+html[data-photo="on"] .knowledge-starter-grid article,
+html[data-photo="on"] .knowledge-list,
+html[data-photo="on"] .knowledge-card,
+html[data-photo="on"] .knowledge-detail,
+html[data-photo="on"] .knowledge-note,
+html[data-photo="on"] .knowledge-search {
+  border-color: var(--glass-edge);
+  background: rgba(var(--photo-tint), 0.44);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* 其余页面的主卡片：同一条口径，避免只有对话页通透、切页又冒出灰块 */
+html[data-photo="on"] .monitor-list,
+html[data-photo="on"] .monitor-detail,
+html[data-photo="on"] .registry-section,
+html[data-photo="on"] .registry-tool-card,
+html[data-photo="on"] .registry-group,
+html[data-photo="on"] .mcp-list,
+html[data-photo="on"] .mcp-detail,
+html[data-photo="on"] .report-card,
+html[data-photo="on"] .report-metric-card,
+html[data-photo="on"] .evolution-card,
+html[data-photo="on"] .scenario-pack-head,
+html[data-photo="on"] .registry-agent,
+html[data-photo="on"] .registry-team,
+html[data-photo="on"] .registry-team-grid {
+  border-color: var(--glass-edge);
+  background: rgba(var(--photo-tint), 0.44);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* 这些页的文字同样需要立得住 */
+html[data-photo="on"] .knowledge-workspace,
+html[data-photo="on"] .platform-canvas,
+html[data-photo="on"] .monitor-page,
+html[data-photo="on"] .registry-page,
+html[data-photo="on"] .mcp-page,
+html[data-photo="on"] .report-page,
+html[data-photo="on"] .evolution-page {
+  text-shadow: var(--ink-halo-sm);
+}
+
+
+/* ===========================================================================
+ * 照片模式：配色完全交给照片，主题（白 / 深色）不再参与
+ * ---------------------------------------------------------------------------
+ * 之前照片叠在主题之上：深色主题下卡片还是 --n-99 那块近黑的实底，
+ * 于是照片再好看，面板也像一块黑板压上去。这里用更高优先级把整套中性色
+ * 拆成两半：
+ *   · 背景 / 描边声明已在各 css 里换成 --surf-* / --line-*，统一映射到
+ *     rgba(var(--photo-tint), a) —— 膜的颜色就是从照片里取出来的主色，
+ *     半透明叠在原图上，同色、但遮掉细节并留一圈淡边，所以看得出是个框。
+ *   · 文字声明仍用 --n-*，这里按照片明暗整条翻面：暗照片走亮字阶梯，
+ *     亮照片走暗字阶梯。用户当前选白还是黑，对照片模式没有任何影响。
+ * ======================================================================== */
+
+html[data-photo="on"][data-photo-ink="light"],
+html[data-photo="on"][data-photo-ink="dark"] {
+  color-scheme: dark;
+  --rgb-surface: var(--photo-tint);
+  --mask-tint: var(--photo-tint);
+  --app-bg: transparent;
+  --app-sidebar: rgba(var(--photo-tint), 0.5);
+  --app-line: rgba(var(--photo-tint), 0.32);
+  --panel-alpha: 0.82;
+  --glass-edge: rgba(var(--photo-tint), 0.36);
+  --ink-wash: rgba(var(--photo-tint), 0.22);
+  --ink-wash-strong: rgba(var(--photo-tint), 0.3);
+  --chip-bg: rgba(var(--photo-tint), 0.4);
+  --edge-idle: rgba(var(--photo-tint), 0.52);
+  --edge-focus: #5b95ee;
+  --nav-hover-bg: rgba(var(--photo-tint), 0.2);
+  --nav-active-bg: rgba(var(--photo-tint), 0.32);
+  --cta-bg: rgba(var(--photo-tint), 0.58);
+  --cta-bg-hover: rgba(var(--photo-tint), 0.7);
+  --cta-border: rgba(var(--photo-tint), 0.44);
+  --accent-soft: rgba(var(--photo-tint), 0.18);
+  --accent-line: rgba(var(--photo-tint), 0.34);
+  --minimap-mask: rgba(var(--photo-tint), 0.6);
+  --surf-99: rgba(var(--photo-tint), 0.46);
+  --surf-98: rgba(var(--photo-tint), 0.458);
+  --surf-97: rgba(var(--photo-tint), 0.455);
+  --surf-96: rgba(var(--photo-tint), 0.453);
+  --surf-95: rgba(var(--photo-tint), 0.45);
+  --surf-94: rgba(var(--photo-tint), 0.448);
+  --surf-92: rgba(var(--photo-tint), 0.443);
+  --surf-90: rgba(var(--photo-tint), 0.438);
+  --surf-88: rgba(var(--photo-tint), 0.433);
+  --surf-87: rgba(var(--photo-tint), 0.431);
+  --surf-84: rgba(var(--photo-tint), 0.424);
+  --surf-81: rgba(var(--photo-tint), 0.416);
+  --surf-78: rgba(var(--photo-tint), 0.409);
+  --surf-75: rgba(var(--photo-tint), 0.402);
+  --surf-72: rgba(var(--photo-tint), 0.395);
+  --surf-66: rgba(var(--photo-tint), 0.38);
+  --surf-63: rgba(var(--photo-tint), 0.373);
+  --surf-60: rgba(var(--photo-tint), 0.365);
+  --surf-57: rgba(var(--photo-tint), 0.358);
+  --surf-51: rgba(var(--photo-tint), 0.344);
+  --surf-48: rgba(var(--photo-tint), 0.336);
+  --surf-46: rgba(var(--photo-tint), 0.332);
+  --surf-45: rgba(var(--photo-tint), 0.329);
+  --surf-42: rgba(var(--photo-tint), 0.322);
+  --surf-40: rgba(var(--photo-tint), 0.317);
+  --surf-39: rgba(var(--photo-tint), 0.315);
+  --surf-38: rgba(var(--photo-tint), 0.312);
+  --surf-36: rgba(var(--photo-tint), 0.307);
+  --surf-33: rgba(var(--photo-tint), 0.3);
+  --surf-30: rgba(var(--photo-tint), 0.293);
+  --surf-27: rgba(var(--photo-tint), 0.285);
+  --surf-25: rgba(var(--photo-tint), 0.281);
+  --surf-24: rgba(var(--photo-tint), 0.278);
+  --surf-21: rgba(var(--photo-tint), 0.271);
+  --surf-18: rgba(var(--photo-tint), 0.264);
+  --surf-15: rgba(var(--photo-tint), 0.256);
+  --surf-12: rgba(var(--photo-tint), 0.249);
+  --line-99: rgba(var(--photo-tint), 0.36);
+  --line-98: rgba(var(--photo-tint), 0.358);
+  --line-97: rgba(var(--photo-tint), 0.356);
+  --line-96: rgba(var(--photo-tint), 0.355);
+  --line-95: rgba(var(--photo-tint), 0.353);
+  --line-94: rgba(var(--photo-tint), 0.351);
+  --line-92: rgba(var(--photo-tint), 0.347);
+  --line-90: rgba(var(--photo-tint), 0.344);
+  --line-88: rgba(var(--photo-tint), 0.34);
+  --line-87: rgba(var(--photo-tint), 0.338);
+  --line-84: rgba(var(--photo-tint), 0.333);
+  --line-81: rgba(var(--photo-tint), 0.327);
+  --line-78: rgba(var(--photo-tint), 0.322);
+  --line-75: rgba(var(--photo-tint), 0.316);
+  --line-72: rgba(var(--photo-tint), 0.311);
+  --line-66: rgba(var(--photo-tint), 0.3);
+  --line-63: rgba(var(--photo-tint), 0.295);
+  --line-60: rgba(var(--photo-tint), 0.289);
+  --line-57: rgba(var(--photo-tint), 0.284);
+  --line-51: rgba(var(--photo-tint), 0.273);
+  --line-48: rgba(var(--photo-tint), 0.267);
+  --line-46: rgba(var(--photo-tint), 0.264);
+  --line-45: rgba(var(--photo-tint), 0.262);
+  --line-42: rgba(var(--photo-tint), 0.256);
+  --line-40: rgba(var(--photo-tint), 0.253);
+  --line-39: rgba(var(--photo-tint), 0.251);
+  --line-38: rgba(var(--photo-tint), 0.249);
+  --line-36: rgba(var(--photo-tint), 0.245);
+  --line-33: rgba(var(--photo-tint), 0.24);
+  --line-30: rgba(var(--photo-tint), 0.235);
+  --line-27: rgba(var(--photo-tint), 0.229);
+  --line-25: rgba(var(--photo-tint), 0.225);
+  --line-24: rgba(var(--photo-tint), 0.224);
+  --line-21: rgba(var(--photo-tint), 0.218);
+  --line-18: rgba(var(--photo-tint), 0.213);
+  --line-15: rgba(var(--photo-tint), 0.207);
+  --line-12: rgba(var(--photo-tint), 0.202);
+}
+
+/* 暗照片 → 亮字（等价于深色主题的字色阶梯）；黑雾托字 */
+html[data-photo="on"][data-photo-ink="light"] {
+  --halo-rgb: 0, 0, 0;
+  --rgb-shadow: 0, 0, 0;
+  --accent: hsl(220 6% 93%);
+  --accent-strong: #ffffff;
+  --nav-active-fg: hsl(220 6% 96%);
+  --nav-active-icon: hsl(220 6% 93%);
+  --cta-fg: hsl(220 6% 96%);
+  --chip-fg: hsl(220 6% 90%);
+  --edge-active: hsl(220 6% 88%);
+  --n-99: hsl(220 9% 10.5%);
+  --n-98: hsl(220 9% 11%);
+  --n-97: hsl(220 9% 11.8%);
+  --n-96: hsl(220 9% 12.5%);
+  --n-94: hsl(220 9% 14%);
+  --n-92: hsl(220 9% 15.5%);
+  --n-90: hsl(220 9% 17%);
+  --n-88: hsl(220 9% 19%);
+  --n-87: hsl(220 9% 20%);
+  --n-84: hsl(220 9% 23%);
+  --n-81: hsl(220 9% 26%);
+  --n-78: hsl(220 9% 29%);
+  --n-75: hsl(220 9% 32%);
+  --n-72: hsl(220 9% 34.5%);
+  --n-66: hsl(220 9% 40%);
+  --n-63: hsl(220 9% 43%);
+  --n-60: hsl(220 9% 46.5%);
+  --n-57: hsl(220 9% 50.3%);
+  --n-54: hsl(220 6% 54%);
+  --n-51: hsl(220 6% 57.8%);
+  --n-48: hsl(220 6% 61.5%);
+  --n-45: hsl(220 6% 65.3%);
+  --n-42: hsl(220 6% 69%);
+  --n-39: hsl(220 6% 72.8%);
+  --n-36: hsl(220 6% 76%);
+  --n-33: hsl(220 6% 79%);
+  --n-30: hsl(220 6% 82%);
+  --n-27: hsl(220 6% 84.3%);
+  --n-24: hsl(220 6% 86.5%);
+  --n-21: hsl(220 6% 88.5%);
+  --n-18: hsl(220 6% 90%);
+  --n-15: hsl(220 6% 91.5%);
+  --n-12: hsl(220 6% 92.8%);
+}
+
+/* 亮照片 → 暗字（等价于白主题的字色阶梯）；白雾托字 */
+html[data-photo="on"][data-photo-ink="dark"] {
+  color-scheme: light;
+  --halo-rgb: 255, 255, 255;
+  --rgb-shadow: 15, 15, 15;
+  --accent: #1b1c1f;
+  --accent-strong: #000000;
+  --nav-active-fg: var(--n-12);
+  --nav-active-icon: var(--n-21);
+  --cta-fg: var(--n-15);
+  --chip-fg: #3f4146;
+  --edge-active: #1b1c1f;
+  --n-99: hsl(220 6% 99.6%);
+  --n-98: hsl(220 6% 99.2%);
+  --n-97: hsl(220 6% 98.9%);
+  --n-96: hsl(220 6% 98.5%);
+  --n-94: hsl(220 6% 97.4%);
+  --n-92: hsl(220 6% 95.4%);
+  --n-90: hsl(220 6% 93.4%);
+  --n-88: hsl(220 6% 91.4%);
+  --n-87: hsl(220 6% 88.6%);
+  --n-84: hsl(220 6% 82%);
+  --n-81: hsl(220 6% 78%);
+  --n-78: hsl(220 6% 73%);
+  --n-75: hsl(220 6% 69%);
+  --n-72: hsl(220 6% 66%);
+  --n-66: hsl(220 6% 60%);
+  --n-63: hsl(220 6% 57%);
+  --n-60: hsl(220 6% 54%);
+  --n-57: hsl(220 6% 49.5%);
+  --n-54: hsl(220 4% 46.5%);
+  --n-51: hsl(220 4% 43.5%);
+  --n-48: hsl(220 4% 40.5%);
+  --n-45: hsl(220 4% 37.5%);
+  --n-42: hsl(220 4% 35%);
+  --n-39: hsl(220 4% 38%);
+  --n-36: hsl(220 4% 35%);
+  --n-33: hsl(220 4% 32%);
+  --n-30: hsl(220 4% 29%);
+  --n-27: hsl(220 4% 26%);
+  --n-24: hsl(220 4% 23%);
+  --n-21: hsl(220 4% 20%);
+  --n-18: hsl(220 4% 17%);
+  --n-15: hsl(220 4% 14%);
+  --n-12: hsl(220 4% 11%);
+}
+
+
+/* 主题层还留着几条「按 data-theme 改观感」的规则（图片压暗、玻璃高光、
+   滚动条配色、画布圆点）。照片模式既然不看主题，这些也一并中和掉，
+   免得同一张照片在白/深色主题下呈现两种亮度。 */
+html[data-photo="on"] img,
+html[data-photo="on"] video {
+  filter: none;
+}
+
+html[data-photo="on"] .react-flow__background circle {
+  fill: rgba(var(--photo-tint), 0.62) !important;
+}
+
+html[data-photo="on"] ::-webkit-scrollbar-thumb {
+  background: rgba(var(--photo-tint), 0.6);
+  background-clip: padding-box;
+}
+
+html[data-photo="on"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--photo-tint), 0.8);
+  background-clip: padding-box;
+}
+
+html[data-photo="on"] {
+  --liquid-highlight: linear-gradient(
+    135deg,
+    rgba(var(--photo-tint), 0.12),
+    rgba(var(--photo-tint), 0.02) 40%,
+    rgba(var(--photo-tint), 0.16) 70%,
+    rgba(var(--photo-tint), 0.06)
+  );
+  --liquid-edge: linear-gradient(145deg, rgba(var(--photo-tint), 0.26), rgba(var(--photo-tint), 0.08));
+  --liquid-inner: rgba(var(--photo-tint), 0.16);
+  --liquid-shadow: rgba(0, 0, 0, 0.28);
+}

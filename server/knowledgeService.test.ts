@@ -38,6 +38,7 @@ test("local teaching resource library preserves metadata and removes its FTS ent
   provider.deleteBase(base.id);
   assert.equal(provider.search({ query: "分数 常见误区", knowledgeBaseIds: [base.id] }).length, 0);
 
+  provider.close();
   rmSync(folder, { recursive: true, force: true });
 });
 
@@ -69,6 +70,7 @@ test("imports GBK text uploads without mojibake", async () => {
   assert.equal(hit?.snippet.includes("初中数学分数的意义"), true);
   assert.equal(hit?.snippet.includes("\uFFFD"), false);
 
+  provider.close();
   rmSync(folder, { recursive: true, force: true });
 });
 
@@ -104,6 +106,7 @@ test("ranks Chinese documents by bigram idf instead of common-character overlap"
   assert.equal(rows.some((row) => row.documentName === "静夜思资料.md"), false);
   assert.equal(new Set(rows.map((row) => row.documentId)).size, rows.length);
 
+  provider.close();
   rmSync(folder, { recursive: true, force: true });
 });
 
@@ -135,5 +138,6 @@ test("long topic queries keep recall across multiple relevant documents", async 
   assert.equal(rows.some((row) => row.documentName === "作业管理政策.md"), true);
   assert.equal(rows.some((row) => row.documentName === "古诗词教学.md"), false);
 
+  provider.close();
   rmSync(folder, { recursive: true, force: true });
 });

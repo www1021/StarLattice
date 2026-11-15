@@ -1,0 +1,661 @@
+.workspace:has(.wb-workspace) {
+  background: var(--n-96);
+  padding: 0;
+}
+
+.workspace-inner.wb-workspace {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  overflow-y: auto;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.wb {
+  --wb-bg: var(--n-96);
+  /* 宽屏下不再把仪表盘压在 1240 里，否则 1920 窗口两侧各空 220px */
+  --wb-surface: var(--n-99);
+  --wb-line: var(--n-87);
+  --wb-line-strong: var(--n-81);
+  --wb-text: var(--n-12);
+  --wb-text-2: var(--n-39);
+  --wb-text-3: var(--n-46);
+  --wb-accent: var(--accent);
+  --wb-accent-soft: var(--accent-soft);
+  --wb-ok: var(--a-2d6432);
+  --wb-warn: var(--a-a5711d);
+  --wb-bad: var(--a-b0423b);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1720px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 18px 30px 16px;
+  box-sizing: border-box;
+  color: var(--wb-text);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.wb *,
+.wb *::before,
+.wb *::after {
+  box-sizing: border-box;
+}
+
+/* 页面内容超过一屏时靠滚动，不要让 flex 把卡片压扁 */
+.wb > * {
+  flex-shrink: 0;
+}
+
+.wb h1,
+.wb h2,
+.wb h3 {
+  margin: 0;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+}
+
+.wb button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* 顶部问候 */
+.wb-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.wb-head h1 {
+  font-size: 22px;
+  line-height: 1.3;
+}
+
+.wb-head p {
+  margin: 5px 0 0;
+  color: var(--wb-text-3);
+  font-size: 13px;
+}
+
+.wb-head-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.wb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--wb-line-strong);
+  border-radius: 8px;
+  background: var(--wb-surface);
+  color: var(--wb-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wb-btn:hover {
+  border-color: var(--n-72);
+  background: var(--n-99);
+}
+
+/* 刷新这种纯图标按钮，宽度跟文字按钮对齐 */
+.wb-btn.is-icon {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+  color: var(--wb-text-2);
+}
+
+/* 快捷动作卡：默认三张，宽屏补第四张，卡片宽度始终跟原来接近 */
+.wb-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.wb-act.is-run {
+  display: none;
+}
+
+.wb-act {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  padding: 16px;
+  border: 1px solid var(--wb-line);
+  border-radius: 14px;
+  background: var(--wb-surface);
+  text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.wb-act:hover {
+  border-color: var(--accent-line);
+  box-shadow: 0 6px 18px rgba(var(--rgb-shadow),  0.06);
+  transform: translateY(-1px);
+}
+
+.wb-act-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--wb-accent-soft);
+  color: var(--wb-accent);
+}
+
+/* 四张卡片的图标块统一走中性强调色，不再各染一色 */
+.wb-act-icon.is-tpl,
+.wb-act-icon.is-canvas,
+.wb-act-icon.is-run {
+  background: var(--wb-accent-soft);
+  color: var(--wb-accent);
+}
+
+.wb-act strong {
+  margin-top: 12px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.wb-act-desc {
+  display: block;
+  min-height: 38px;
+  margin-top: 5px;
+  color: var(--wb-text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.wb-act-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 21px;
+  margin-top: 10px;
+}
+
+.wb-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 21px;
+  max-width: 150px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--wb-line);
+  border-radius: 20px;
+  background: var(--n-97);
+  color: var(--wb-text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-act-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 12px;
+  color: var(--wb-accent);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* 主区：窄屏是「运行 + 工作流」两栏，三步引导在下方占满一行 */
+.wb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 12px;
+  align-items: stretch;
+  /* 去掉底部状态条后，让主区吃掉剩下一屏的高度，页面不再压在上面留一条灰底 */
+  flex: 1 1 auto;
+  min-height: 420px;
+}
+
+.wb-grid > .wb-guide {
+  grid-column: 1 / -1;
+}.wb-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--wb-line);
+  border-radius: 14px;
+  background: var(--wb-surface);
+  overflow: hidden;
+}
+
+.wb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 15px 18px 0;
+}
+
+.wb-card-head h2 {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--wb-text-3);
+  font-size: 12px;
+}
+
+.wb-link:hover {
+  color: var(--wb-accent);
+}
+
+.wb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 26px 18px;
+  color: var(--wb-text-3);
+  font-size: 12px;
+}
+
+.wb-spin {
+  animation: wb-spin 900ms linear infinite;
+}
+
+@keyframes wb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 最近运行 */
+.wb-runs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.wb-run {
+  display: grid;
+  /* 行跟着卡片高度长，但别长成一条空带 */
+  flex: 1 1 auto;
+  max-height: 62px;
+  grid-template-columns: 12px minmax(0, 1fr) 84px 62px 52px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 18px;
+  border: 0;
+  border-top: 1px solid var(--wb-line);
+  background: transparent;
+  text-align: left;
+}
+
+.wb-run:hover {
+  background: var(--n-97);
+}
+
+.wb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wb-text-3);
+}
+
+.wb-dot.is-ok {
+  background: var(--wb-ok);
+}
+
+.wb-dot.is-bad {
+  background: var(--wb-bad);
+}
+
+.wb-dot.is-run {
+  background: var(--wb-warn);
+}
+
+.wb-run-name {
+  min-width: 0;
+}
+
+.wb-run-name b {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-run-name em {
+  display: block;
+  margin-top: 2px;
+  color: var(--wb-text-3);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.wb-run-when {
+  color: var(--wb-text-3);
+  font-size: 12px;
+}
+
+.wb-run-dur {
+  color: var(--wb-text-2);
+  font-size: 12px;
+  text-align: right;
+}
+
+.wb-run-status {
+  font-size: 12px;
+  text-align: right;
+}
+
+.wb-run-status.is-ok {
+  color: var(--wb-ok);
+}
+
+.wb-run-status.is-bad {
+  color: var(--wb-bad);
+}
+
+.wb-run-status.is-run {
+  color: var(--wb-warn);
+}
+
+.wb-run-status.is-muted {
+  color: var(--wb-text-3);
+}
+
+/* 我的工作流 */
+.wb-wfs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.wb-wf {
+  display: flex;
+  flex: 1 1 auto;
+  max-height: 62px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 18px;
+  border: 0;
+  border-top: 1px solid var(--wb-line);
+  background: transparent;
+  text-align: left;
+}
+
+.wb-wf:hover {
+  background: var(--n-97);
+}
+
+.wb-wf-bar {
+  flex: none;
+  width: 3px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--accent-line);
+}
+
+.wb-wf-name {
+  min-width: 0;
+}
+
+.wb-wf-name b {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-wf-name em {
+  display: block;
+  margin-top: 2px;
+  color: var(--wb-text-3);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.wb-wf-go {
+  margin-left: auto;
+  color: var(--wb-text-3);
+}
+
+.wb-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--wb-line);
+}
+
+.wb-stats div {
+  padding: 12px 14px;
+  border-right: 1px solid var(--wb-line);
+}
+
+.wb-stats div:last-child {
+  border-right: 0;
+}
+
+.wb-stats b {
+  display: block;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.wb-stats span {
+  display: block;
+  margin-top: 2px;
+  color: var(--wb-text-3);
+  font-size: 11.5px;
+}
+
+/* 三步引导：独立一条横带，不再挤进主区抢高度 */
+.wb-guide {
+  display: grid;
+  /* 字号上调后 210px 会把这行说明挤成「…运行记
+     录」，加宽到正好放满一行 */
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 12px 18px;
+  border: 1px solid var(--wb-line);
+  border-radius: 14px;
+  background: var(--wb-surface);
+}
+
+.wb-guide-lead h3 {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wb-guide-lead p {
+  margin: 3px 0 0;
+  color: var(--wb-text-3);
+  font-size: 12px;
+}
+
+.wb-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wb-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--wb-line);
+  border-radius: 10px;
+  background: var(--n-97);
+  text-align: left;
+}
+
+.wb-step:hover {
+  border-color: var(--accent-line);
+  background: var(--n-99);
+}
+
+.wb-step-n {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--wb-accent-soft);
+  color: var(--wb-accent);
+}
+
+.wb-step b {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wb-step em {
+  display: block;
+  color: var(--wb-text-3);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+/* 常用模板：一条横向快选，不再占一整块卡片高度 */
+.wb-tpls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--wb-line);
+  border-radius: 14px;
+  background: var(--wb-surface);
+}
+
+.wb-tpls-label {
+  flex: none;
+  color: var(--wb-text-3);
+  font-size: 12px;
+}
+
+.wb-tpls-row {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wb-tpl {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  background: var(--n-97);
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.wb-tpl:hover {
+  border-color: var(--accent-line);
+  background: var(--n-99);
+}
+
+.wb-tpl b {
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.wb-tpl span {
+  color: var(--wb-text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 宽度不够时先舍掉分类小字，保证六个模板排成一行 */
+@media (max-width: 1560px) {
+  .wb-tpl span {
+    display: none;
+  }
+}
+
+.wb-tpls .wb-link {
+  flex: none;
+}
+
+/* 宽屏：动作卡铺成四列，主区仍是「运行 + 工作流」两栏，引导条压在下面占满一行 */
+@media (min-width: 1560px) {
+  .wb-actions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .wb-act.is-run {
+    display: flex;
+  }
+
+  .wb-run {
+    padding: 11px 18px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .wb {
+    padding: 20px 18px 10px;
+  }
+
+  .wb-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 屏幕不够高时少铺两行，宁可少列也不要让卡片把行裁掉一半 */
+@media (max-height: 950px) {
+  .wb-run:nth-child(n + 7),
+  .wb-wf:nth-child(n + 6) {
+    display: none;
+  }
+}
+
+@media (max-width: 980px) {
+  .wb-actions,
+  .wb-grid,
+  .wb-guide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wb-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

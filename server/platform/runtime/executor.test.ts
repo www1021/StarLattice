@@ -3155,7 +3155,7 @@ test("counseling-session-v1 turns each counselor speech into a human pause and f
 
 test("self-loop swaps the execution model after a stalled round and records the transition", async () => {
   const restoreEnv = withEnv({
-    PLATFORM_MODEL_FAST: "fast-model",
+    PLATFORM_MODEL_FAST: "cheap-model",
     PLATFORM_MODEL_REASONING: "strong-model"
   });
   const { store, dispose } = createStore();
@@ -3491,6 +3491,438 @@ test("serves a higher-priority run first on the shared global queue", async () =
     assert.equal(store.listRunNodes(high.id)[0]?.status, "succeeded");
     assert.equal(executor.schedulerSnapshot().pending, 0);
     assert.equal(executor.schedulerSnapshot().running, 0);
+  } finally {
+    dispose();
+  }
+});
+
+
+test("node error policy keeps the run alive after retries are exhausted", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const workflow: WorkflowDefinition = {
+      id: "guard-continue",
+      name: "异常继续探针",
+      version: 1,
+      inputs: [],
+      nodes: [
+        { id: "start", kind: "start" },
+        {
+          id: "flaky",
+          kind: "llm",
+          prompt: "必然失败的节点",
+          errorPolicy: { strategy: "continue", retries: 1, retryIntervalMs: 0 }
+        },
+        { id: "after", kind: "template", template: "后续节点照常执行" }
+      ],
+      edges: [
+        { from: "start", to: "flaky" },
+        { from: "flaky", to: "after" }
+      ]
+    };
+
+    const { run, steps } = await new WorkflowExecutor(store, {
+      llm: () => {
+        throw new Error("上游模型不可用");
+      }
+    }).run(workflow, {});
+
+    assert.equal(run.status, "succeeded");
+    const flakyStep = steps.find((step) => step.nodeId === "flaky");
+    const afterStep = steps.find((step) => step.nodeId === "after");
+    assert.equal(flakyStep?.status, "succeeded");
+    assert.match(String(flakyStep?.error), /已降级/);
+    assert.equal(afterStep?.status, "succeeded");
+  } finally {
+    dispose();
+  }
+});
+
+test("error guard writes failures into the Error branch for downstream refs", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const workflow: WorkflowDefinition = {
+      id: "guard-error-branch",
+      name: "Error 分支探针",
+      version: 1,
+      inputs: [],
+      nodes: [
+        { id: "start", kind: "start" },
+        {
+          id: "flaky",
+          kind: "llm",
+          prompt: "必然失败的节点",
+          errorPolicy: { enabled: true, retries: 0 }
+        },
+        { id: "after", kind: "template", template: "失败原因：${flaky.Error.FailMessage}" }
+      ],
+      edges: [
+        { from: "start", to: "flaky" },
+        { from: "flaky", to: "after" }
+      ]
+    };
+
+    const { run, steps } = await new WorkflowExecutor(store, {
+      llm: () => {
+        throw new Error("上游模型不可用");
+      }
+    }).run(workflow, {});
+
+    assert.equal(run.status, "succeeded");
+    const flakyStep = steps.find((step) => step.nodeId === "flaky");
+    assert.match(JSON.stringify(flakyStep?.output), /runtime_error/);
+    const afterStep = steps.find((step) => step.nodeId === "after");
+    assert.match(JSON.stringify(afterStep?.output), /上游模型不可用/);
+  } finally {
+    dispose();
+  }
+});
+
+test("node error policy abort still fails the run", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const workflow: WorkflowDefinition = {
+      id: "guard-abort",
+      name: "异常中断探针",
+      version: 1,
+      inputs: [],
+      nodes: [
+        { id: "start", kind: "start" },
+        {
+          id: "flaky",
+          kind: "llm",
+          prompt: "必然失败的节点",
+          errorPolicy: { strategy: "abort", retries: 0 }
+        }
+      ],
+      edges: [{ from: "start", to: "flaky" }]
+    };
+
+    const { run } = await new WorkflowExecutor(store, {
+      llm: () => {
+        throw new Error("上游模型不可用");
+      }
+    }).run(workflow, {});
+
+    assert.equal(run.status, "failed");
+  } finally {
+    dispose();
+  }
+});
+
+/** 复刻「新老连线混着」的选项卡：一条老线只有条件，两条新线直接绑端口。 */
+function mixedChoiceProbe(): WorkflowDefinition {
+  return {
+    id: "mixed-choice",
+    name: "选项卡混合连线",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      {
+        id: "ask",
+        kind: "human",
+        title: "选项卡",
+        prompt: "你想通过什么方式来模拟开题答辩？",
+        options: ["根据论文题目进行模拟开题答辩", "上传相关论文材料进行模拟开题答辩"],
+        fields: [
+          {
+            key: "choice",
+            label: "选项",
+            type: "select",
+            options: [
+              "根据论文题目进行模拟开题答辩",
+              "上传相关论文材料进行模拟开题答辩",
+              "其他情况"
+            ]
+          }
+        ]
+      },
+      { id: "title", kind: "template", title: "论文题目分支", template: "请提供论文题目" },
+      { id: "material", kind: "template", title: "材料分支", template: "请上传材料" },
+      { id: "fallback", kind: "template", title: "兜底分支", template: "只支持前两项" },
+      { id: "end", kind: "end", inputs: { result: "${title.output}" } }
+    ],
+    edges: [
+      { from: "start", to: "ask" },
+      // 老连线：只有条件，没有 fromPort。
+      { from: "ask", to: "title", when: "${ask.choice} == 根据论文题目进行模拟开题答辩" },
+      { from: "ask", to: "material", fromPort: "choice:1" },
+      { from: "ask", to: "fallback", fromPort: "choice:other" },
+      { from: "title", to: "end" },
+      { from: "material", to: "end" },
+      { from: "fallback", to: "end" }
+    ]
+  };
+}
+
+test("选项卡选第一项时走第一条分支，不会再滑到兜底分支", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(mixedChoiceProbe(), {});
+    const interaction = await waitFor("选项卡待输入", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    executor.respondInteraction(interaction.id, {
+      values: { choice: "根据论文题目进行模拟开题答辩" }
+    });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const statusOf = (nodeId: string) =>
+      store.listSteps(finished.id).find((step) => step.nodeId === nodeId)?.status;
+    assert.equal(statusOf("title"), "succeeded");
+    assert.equal(statusOf("material"), "skipped");
+    assert.equal(statusOf("fallback"), "skipped");
+  } finally {
+    dispose();
+  }
+});
+
+test("选项卡自由输入时走兜底分支，选项分支保持跳过", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(mixedChoiceProbe(), {});
+    const interaction = await waitFor("选项卡待输入", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    executor.respondInteraction(interaction.id, { values: { choice: "先随便聊聊" } });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const statusOf = (nodeId: string) =>
+      store.listSteps(finished.id).find((step) => step.nodeId === nodeId)?.status;
+    assert.equal(statusOf("fallback"), "succeeded");
+    assert.equal(statusOf("title"), "skipped");
+    assert.equal(statusOf("material"), "skipped");
+  } finally {
+    dispose();
+  }
+});
+
+/** 参数提取探针：用户只说「模拟答辩」，参数表要的论文题目没给。 */
+function extractProbe(options?: {
+  maxRounds?: number;
+  onMissing?: "fail" | "continue";
+}): WorkflowDefinition {
+  return {
+    id: "extract-probe",
+    name: "参数提取探针",
+    version: 1,
+    inputs: [],
+    nodes: [
+      { id: "start", kind: "start" },
+      {
+        id: "ask",
+        kind: "extract",
+        title: "参数提取",
+        params: [
+          {
+            name: "title",
+            label: "论文题目",
+            description: "用户要练的那篇论文的完整标题",
+            required: true
+          }
+        ],
+        askPrompt: "请提供您的论文题目，我将为您模拟开题答辩。",
+        maxRounds: options?.maxRounds ?? 2,
+        onMissing: options?.onMissing ?? "fail"
+      },
+      { id: "render", kind: "template", title: "下游节点", template: "题目=${ask.title}" },
+      { id: "end", kind: "end", inputs: { result: "${render.output}" } }
+    ],
+    edges: [
+      { from: "start", to: "ask" },
+      { from: "ask", to: "render" },
+      { from: "render", to: "end" }
+    ]
+  };
+}
+
+test("参数提取：输入变量里已经有值就直接放行，不再追问", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(extractProbe(), {
+      title: "《基于深度学习的图像识别研究》"
+    });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    assert.equal(store.listInteractions({ runId: started.id }).length, 0);
+    const steps = store.listSteps(finished.id);
+    const ask = steps.find((step) => step.nodeId === "ask");
+    assert.equal(ask?.status, "succeeded");
+    const payload = ask?.output as Record<string, unknown>;
+    assert.equal(payload.title, "《基于深度学习的图像识别研究》");
+    assert.equal(payload.complete, true);
+    assert.equal(payload.rounds, 0);
+    const render = steps.find((step) => step.nodeId === "render")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.match(String(render.output), /基于深度学习的图像识别研究/);
+  } finally {
+    dispose();
+  }
+});
+
+test("参数提取：缺必填参数先暂停追问，用户补齐后才走下游", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(extractProbe(), { request: "模拟答辩" });
+    const interaction = await waitFor("参数追问", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal(interaction.nodeId, "ask");
+    assert.match(interaction.prompt, /请提供您的论文题目/);
+    assert.equal(store.getRun(started.id)?.status, "waiting_input");
+    // 没拿到参数之前，下游一步都不能跑。
+    assert.equal(
+      store.listSteps(started.id).find((step) => step.nodeId === "render")?.status,
+      undefined
+    );
+
+    executor.respondInteraction(interaction.id, {
+      values: { title: "《基于深度学习的图像识别研究》" }
+    });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const steps = store.listSteps(finished.id);
+    const payload = steps.find((step) => step.nodeId === "ask")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.equal(payload.title, "《基于深度学习的图像识别研究》");
+    assert.equal(payload.complete, true);
+    assert.equal(payload.rounds, 1);
+    const render = steps.find((step) => step.nodeId === "render")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.match(String(render.output), /基于深度学习的图像识别研究/);
+    assert.equal(store.listInteractions({ runId: finished.id, status: "pending" }).length, 0);
+  } finally {
+    dispose();
+  }
+});
+
+test("参数提取：追问轮次用尽仍没拿到就失败，不会把空参数传给下游", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(extractProbe({ maxRounds: 1 }), { request: "模拟答辩" });
+    const interaction = await waitFor("参数追问", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    // 空白回答不算「拿到了」，一轮用尽就该停。
+    executor.respondInteraction(interaction.id, { values: { title: "   " } });
+    const failed = await waitFor("运行失败", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "failed" ? run : undefined;
+    });
+    assert.match(failed.error ?? "", /还没有拿到/);
+    const steps = store.listSteps(failed.id);
+    assert.equal(steps.find((step) => step.nodeId === "ask")?.status, "failed");
+    assert.equal(steps.find((step) => step.nodeId === "render")?.status, undefined);
+  } finally {
+    dispose();
+  }
+});
+
+/** 两个必填参数：验证追问是一轮一个，不会一次生成多行必填表单。 */
+function extractMultiProbe(): WorkflowDefinition {
+  const probe = extractProbe();
+  const ask = probe.nodes.find((node) => node.id === "ask") as Record<string, unknown>;
+  ask.params = [
+    { name: "title", label: "论文题目", description: "完整的论文标题", required: true },
+    { name: "advisor", label: "指导教师", description: "带这组答辩的老师", required: true }
+  ];
+  const render = probe.nodes.find((node) => node.id === "render") as Record<string, unknown>;
+  render.template = "题目=${ask.title}；导师=${ask.advisor}";
+  return probe;
+}
+
+test("参数提取：多个必填参数一轮只问一个，逐项补齐才放行", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(extractMultiProbe(), { request: "模拟答辩" });
+    const first = await waitFor("第一次追问", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    assert.equal((first.fields ?? []).length, 1);
+    assert.equal(first.fields?.[0]?.key, "title");
+    assert.match(first.prompt, /论文题目/);
+    executor.respondInteraction(first.id, {
+      values: { title: "《基于深度学习的图像识别研究》" }
+    });
+
+    const second = await waitFor("第二次追问", () =>
+      store
+        .listInteractions({ runId: started.id, status: "pending" })
+        .find((item) => item.id !== first.id)
+    );
+    assert.equal((second.fields ?? []).length, 1);
+    assert.equal(second.fields?.[0]?.key, "advisor");
+    assert.match(second.prompt, /指导教师/);
+    executor.respondInteraction(second.id, { values: { advisor: "李教授" } });
+
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const steps = store.listSteps(finished.id);
+    const payload = steps.find((step) => step.nodeId === "ask")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.equal(payload.complete, true);
+    assert.equal(payload.title, "《基于深度学习的图像识别研究》");
+    assert.equal(payload.advisor, "李教授");
+    assert.equal(payload.rounds, 2);
+    const render = steps.find((step) => step.nodeId === "render")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.match(String(render.output), /李教授/);
+  } finally {
+    dispose();
+  }
+});
+
+test("参数提取：允许缺参放行时标记 complete=false，下游照常执行", async () => {
+  const { store, dispose } = createStore();
+  try {
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(
+      extractProbe({ maxRounds: 1, onMissing: "continue" }),
+      { request: "模拟答辩" }
+    );
+    const interaction = await waitFor("参数追问", () =>
+      store.listInteractions({ runId: started.id, status: "pending" })[0]
+    );
+    executor.respondInteraction(interaction.id, { values: { title: "   " } });
+    const finished = await waitFor("运行完成", () => {
+      const run = store.getRun(started.id);
+      return run?.status === "succeeded" ? run : undefined;
+    });
+    const steps = store.listSteps(finished.id);
+    const payload = steps.find((step) => step.nodeId === "ask")?.output as Record<
+      string,
+      unknown
+    >;
+    assert.equal(payload.complete, false);
+    assert.deepEqual(payload.missing, ["title"]);
+    assert.equal(steps.find((step) => step.nodeId === "render")?.status, "succeeded");
   } finally {
     dispose();
   }

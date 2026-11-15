@@ -2,7 +2,8 @@ import { useContext } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ChevronsDownUp } from "lucide-react";
 import { CanvasContainerContext } from "./canvasContainerContext";
-import { NODE_VISUALS } from "./nodeVisuals";
+import { NODE_VISUALS, nodeTintStyle } from "./nodeVisuals";
+import { EditableNodeTitle } from "./PlatformNodeCard";
 import type { NodeKind, WorkflowNode } from "./types";
 
 function containerBadgeLabel(kind: NodeKind, columns: number): string {
@@ -18,13 +19,15 @@ export type PlatformContainerData = {
   height: number;
   childCount: number;
   columns: number;
+  /** 点击标题就地改名。 */
+  onRename?: (nodeId: string, title: string) => void;
 };
 
 export type PlatformContainerFlowNode = Node<PlatformContainerData, "container">;
 
 export function PlatformContainerNode({ data, selected }: NodeProps<PlatformContainerFlowNode>) {
   const { toggle } = useContext(CanvasContainerContext);
-  const { definition, accent, width, height, childCount, columns } = data;
+  const { definition, width, height, childCount, columns } = data;
   const Icon = NODE_VISUALS[definition.kind].icon;
 
   return (
@@ -36,16 +39,16 @@ export function PlatformContainerNode({ data, selected }: NodeProps<PlatformCont
       <header className="platform-container-head">
         <span
           className="platform-node-icon"
-          style={{ background: `${accent}14`, color: accent }}
+          style={nodeTintStyle(definition.kind)}
           aria-hidden
         >
           <Icon size={17} strokeWidth={1.9} />
         </span>
         <div className="platform-node-ident">
-          <strong className="platform-node-title">{definition.title || definition.id}</strong>
+          <EditableNodeTitle node={definition} onRename={data.onRename} />
           <code className="platform-node-id">{definition.id}</code>
         </div>
-        <span className="platform-container-badge" style={{ color: accent, background: `${accent}12` }}>
+        <span className="platform-container-badge">
           {containerBadgeLabel(definition.kind, columns)} · {childCount} 个内部步骤
         </span>
         <button

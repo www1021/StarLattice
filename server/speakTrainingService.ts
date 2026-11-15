@@ -4,6 +4,7 @@ import type {
   StoredCitation,
   TrainingEvaluation
 } from "./storage/chatRepository.js";
+import { currentOwnerId } from "./auth/context.js";
 
 export type SpeakStageId =
   | "textbook"
@@ -469,12 +470,23 @@ const roleDefinitions: Record<SpeakRoleId, RoleDefinition> = {
   }
 };
 
+/**
+ * 内存键带上账号前缀：落库那层虽然有 owner 条件，但这里命中缓存就直接返回，
+ * 根本走不到 SQL。同一个 conversationId 在不同账号下是两条互不相干的会话，
+ * 拿别人的 id 只会得到一个空会话，不会读到内容，也不会把原会话覆盖掉。
+ * 无身份的后台任务与单元测试统一落在 ":id" 上，保持旧行为。
+ */
 export class SpeakTrainingSession {
   private readonly sessions = new Map<string, SpeakTrainingSessionState>();
 
+  private key(conversationId: string): string {
+    return `${currentOwnerId() ?? ""}:${conversationId}`;
+  }
+
   getOrCreate(conversationId?: string, currentStageId?: SpeakStageId) {
     const id = conversationId || `speak_${randomUUID()}`;
-    const existing = this.sessions.get(id);
+    const key = this.key(id);
+    const existing = this.sessions.get(key);
 
     if (existing) {
       return ensureSessionShape(existing);
@@ -493,18 +505,18 @@ export class SpeakTrainingSession {
       createdAt: now,
       updatedAt: now
     };
-    this.sessions.set(id, session);
+    this.sessions.set(key, session);
     return session;
   }
 
   update(session: SpeakTrainingSessionState) {
     session.updatedAt = new Date().toISOString();
-    this.sessions.set(session.conversationId, ensureSessionShape(session));
+    this.sessions.set(this.key(session.conversationId), ensureSessionShape(session));
     return session;
   }
 
   forget(conversationId: string) {
-    this.sessions.delete(conversationId);
+    this.sessions.delete(this.key(conversationId));
   }
 }
 

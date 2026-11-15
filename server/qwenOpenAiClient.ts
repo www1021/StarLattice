@@ -3,6 +3,8 @@ import {
   summarizeMessages,
   summarizeText
 } from "./observability.js";
+import { getModelProfile } from "./platform/models/catalog.js";
+import { normalizeBaseUrl } from "./platform/models/baseUrl.js";
 
 export type ChatRole = "user" | "assistant";
 
@@ -30,8 +32,16 @@ export type ChatMessage = {
 export type StreamChatOptions = {
   system?: string;
   messages: ChatMessage[];
+  /** 调用点可指定低成本模型；缺省沿用 QWEN_MODEL，避免为纯文本场景付多模态的钱。 */
+  model?: string;
+  /** 用户在设置里配好的那套地址与密钥；不传时回落到环境变量。 */
+  provider?: ModelProviderConfig;
+  /** 显式关闭上游思考链；部分 Flash 模型默认会先生成 reasoning_content，拖慢正文首帧。 */
+  disableThinking?: boolean;
   enableThinking?: boolean;
   maxTokens?: number;
+  /** 采样温度；智能体可以单独设，没设就走上游默认。 */
+  temperature?: number;
   signal?: AbortSignal;
   onDelta: (content: string) => void;
   onThinkingDelta: (content: string) => void;
@@ -50,6 +60,8 @@ export type CompleteChatOptions = {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /** 节点级核采样参数；不传时沿用上游默认值，避免改变既有调用行为。 */
+  topP?: number;
   enableThinking?: boolean;
   onThinking?: (content: string) => void;
   signal?: AbortSignal;
@@ -160,12 +172,33 @@ export class UpstreamModelError extends Error {
   }
 }
 
+/**
+ * 设置面板里配好的默认模型优先于环境变量：用户在界面上显式填过的模型、地址、密钥，
+ * 就应该真的生效，而不是被后端写死的变量盖住。读配置失败时静默退回环境变量。
+ */
+function configuredDefaultProfile() {
+  try {
+    const profile = getModelProfile("platform-default");
+    if (profile?.apiKey && profile?.baseUrl) {
+      return profile;
+    }
+  } catch {
+    // 配置文件损坏等情况下不影响对话可用性。
+  }
+  return undefined;
+}
+
 export function isQwenConfigured() {
   return Boolean(getQwenApiKey());
 }
 
 export function getQwenModel() {
-  return process.env.QWEN_MODEL || process.env.AI_MODEL || DEFAULT_MODEL;
+  return (
+    configuredDefaultProfile()?.model ||
+    process.env.QWEN_MODEL ||
+    process.env.AI_MODEL ||
+    DEFAULT_MODEL
+  );
 }
 
 /** 平台工作流节点可单独指定文本模型，避免与聊天/多模态场景共用同一个高成本模型。 */
@@ -176,20 +209,26 @@ export function getPlatformLiveModel() {
 export async function streamQwenChat({
   system,
   messages,
+  model: requestedModel,
+  provider,
+  disableThinking = false,
   enableThinking = false,
   maxTokens = 2048,
+  temperature,
   signal,
   onDelta,
   onThinkingDelta
 }: StreamChatOptions): Promise<StreamQwenChatResult> {
-  const apiKey = getQwenApiKey();
+  const apiKey = provider?.apiKey || getQwenApiKey();
 
   if (!apiKey) {
-    throw new UpstreamModelError("QWEN_API_KEY or DASHSCOPE_API_KEY is not configured");
+    throw new UpstreamModelError(
+      "还没有可用的模型密钥。请打开「设置 → 模型与密钥」，添加一个模型并填入自己的 API Key。"
+    );
   }
 
-  const baseUrl = getQwenBaseUrl();
-  const model = getQwenModel();
+  const baseUrl = trimTrailingSlash(provider?.baseUrl || getQwenBaseUrl());
+  const model = requestedModel?.trim() || getQwenModel();
   const compactedMessages = compactMessages(messages);
 
   return observeGeneration(
@@ -199,6 +238,7 @@ export async function streamQwenChat({
       model,
       modelParameters: {
         maxTokens,
+        ...(typeof temperature === "number" ? { temperature } : {}),
         stream: "true",
         enableThinking: String(enableThinking)
       },
@@ -220,7 +260,9 @@ export async function streamQwenChat({
           body: JSON.stringify({
             model,
             max_tokens: maxTokens,
+            ...(typeof temperature === "number" ? { temperature } : {}),
             stream: true,
+            ...(disableThinking ? { enable_thinking: false } : {}),
             messages: [
               {
                 role: "system",
@@ -299,6 +341,7 @@ export async function completeQwenChat({
   model: requestedModel,
   maxTokens = 4096,
   temperature = 0.35,
+  topP,
   enableThinking = false,
   onThinking,
   signal,
@@ -308,8 +351,8 @@ export async function completeQwenChat({
 
   if (!apiKey) {
     throw new UpstreamModelError(
-      `QWEN_API_KEY or DASHSCOPE_API_KEY is not configured${
-        provider?.label ? ` for provider ${provider.label}` : ""
+      `还没有可用的模型密钥。请打开「设置 → 模型与密钥」，添加一个模型并填入自己的 API Key。${
+        provider?.label ? `（当前模型：${provider.label}）` : ""
       }`
     );
   }
@@ -329,7 +372,8 @@ export async function completeQwenChat({
       model,
       modelParameters: {
         temperature,
-        maxTokens
+        maxTokens,
+        ...(topP === undefined ? {} : { topP })
       },
       metadata: {
         provider: providerLabel,
@@ -348,6 +392,7 @@ export async function completeQwenChat({
           body: JSON.stringify({
             model,
             temperature,
+            ...(topP === undefined ? {} : { top_p: topP }),
             max_tokens: maxTokens,
             enable_thinking: enableThinking,
             messages: [
@@ -426,8 +471,8 @@ export async function completeQwenToolChat({
 
   if (!apiKey) {
     throw new UpstreamModelError(
-      `QWEN_API_KEY or DASHSCOPE_API_KEY is not configured${
-        provider?.label ? ` for provider ${provider.label}` : ""
+      `还没有可用的模型密钥。请打开「设置 → 模型与密钥」，添加一个模型并填入自己的 API Key。${
+        provider?.label ? `（当前模型：${provider.label}）` : ""
       }`
     );
   }
@@ -549,13 +594,21 @@ function summarizeToolMessages(messages: ToolChatMessage[]) {
   });
 }
 
+/**
+ * 密钥只有一个来源：这个账号在「设置 → 模型与密钥」里配好的那条模型。
+ *
+ * 环境变量不再参与。`QUEEN_ACCESS_KEY` 那类进程级兜底已经删掉：一把全进程共用的
+ * Key 分不清是谁在用、用掉多少，等于让没配模型的账号绕开账号隔离。
+ * 没配就是没配，直接报错，让人去设置里补 —— 不在响应里假装成功。
+ */
 function getQwenApiKey() {
-  return process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.AI_API_KEY;
+  return configuredDefaultProfile()?.apiKey;
 }
 
 function getQwenBaseUrl() {
   return trimTrailingSlash(
-    process.env.QWEN_BASE_URL ||
+    configuredDefaultProfile()?.baseUrl ||
+      process.env.QWEN_BASE_URL ||
       process.env.DASHSCOPE_BASE_URL ||
       process.env.AI_BASE_URL ||
       DEFAULT_BASE_URL
@@ -684,8 +737,9 @@ function handleStreamEvent(
   }
 }
 
+/** 用户可能把完整端点粘进设置里，这里统一退回 /v1 这一层再拼路径。 */
 function trimTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
+  return normalizeBaseUrl(value);
 }
 
 function requestSignal(signal?: AbortSignal): AbortSignal | undefined {

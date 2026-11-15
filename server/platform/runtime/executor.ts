@@ -9,8 +9,11 @@ import {
   type ClarifyAmbiguity,
   type ClarifyAnswer,
   type ClarifyNode,
+  type ExtractNode,
+  type ExtractParam,
   type IntentAnalysis,
   type CompiledBlock,
+  type CompiledEdge,
   type CompiledExpression,
   type CompiledPlan,
   type CompiledStatement,
@@ -34,10 +37,13 @@ import {
   type ToolNode,
   type VerifyDimension,
   type VerifyNode,
-  type WorkflowDefinition
+  type WorkflowDefinition,
+  type WorkflowNode
 } from "../types.js";
 import { ApprovalGate, type ApprovalOutcome } from "./approvalGate.js";
 import { HumanGate } from "./humanGate.js";
+import { CHOICE_FIELD_KEY, normalizeChoices, withChoiceField } from "./humanChoices.js";
+import { CHOICE_OTHER_PORT, choicePortOf, inferChoicePorts, type ChoicePortEdge } from "../workflow/choicePorts.js";
 import { compileWorkflow } from "../workflow/compiler.js";
 import { assignmentsOf, buildWorkflowSchedule, replanForTask } from "../scheduler/planner.js";
 import {
@@ -72,6 +78,8 @@ import {
 
 const REF_PATTERN = /^\$\{([^}\s]+)\}$/;
 const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
+/** 节点级重试的硬上限，防止单节点把整条流程的时延拖穿。 */
+const MAX_NODE_ATTEMPTS = 6;
 
 export type RunOptions = {
   /** 试跑：执行到该顶层节点完成后停下，后续节点保持未执行。 */
@@ -90,7 +98,7 @@ export type RunOptions = {
   deadlineAt?: string;
 };
 
-type RunScope = {
+export type RunScope = {
   input: Record<string, unknown>;
   outputs: Map<string, unknown>;
   /** 运行时证据池：任一节点产生的 citation 都会进入这里，并跨子流程继承。 */
@@ -138,6 +146,11 @@ export type ExecutionContext = {
   iteration: number;
   scope: RunScope;
   loop?: LoopScope;
+  /**
+   * 当前节点自己声明的输入变量（name → 已解析的值）。
+   * 正文里 ${template} 这类引用优先按它解析，取不到再回落到节点输出与运行输入。
+   */
+  locals?: Record<string, unknown>;
   /** 工作流级知识库范围，供 Agent 自主调用 knowledge.search 时使用。 */
   knowledgeBaseIds?: string[];
   /** 当前运行已消耗的估算 token，供模型解析做预算降级。 */
@@ -148,6 +161,12 @@ export type ExecutionContext = {
   agentSnapshots?: Map<string, AgentRecord>;
   /** 本次运行的发布与实验标记。 */
   release?: { releaseId: string; experimentId?: string; arm?: string };
+  /**
+   * 当前步骤的台账 path（容器内是 loopId/childId）。live handler 用它把模型
+   * token 推给调试 SSE（runStreamBus 按 runId + path 开流式消息），与
+   * platform_run_steps.path 同源，前端才能把流式正文对到画布节点上。
+   */
+  stepPath?: string;
 };
 
 /** clarify 节点分两阶段调用模型：先分析意图，再按澄清结果改写 Prompt。 */
@@ -173,6 +192,8 @@ export type ExecutorHandlers = {
   trainingTool?: (node: ToolNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** 独立的 knowledge 节点；与工具节点共用同一检索服务，但语义更清晰。 */
   knowledgeNode?: (node: KnowledgeNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
+  /** 参数提取：只做「从文本里抽参数」这一步；返回 undefined 时执行器回落规则抽取。 */
+  extract?: (node: ExtractNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   /** HTTP 节点；实现方必须负责 SSRF 防护与响应大小限制。 */
   http?: (node: HttpNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
   verify?: (node: VerifyNode, input: Record<string, unknown>, context: ExecutionContext) => unknown | Promise<unknown>;
@@ -814,6 +835,9 @@ export class WorkflowExecutor {
     if (compiled.node.kind === "human") {
       throw new PlatformError("人工交互步骤不支持单步重跑，请重新发起训练。", 400);
     }
+    if (compiled.node.kind === "extract") {
+      throw new PlatformError("参数提取步骤会等待用户补充参数，不支持单步重跑，请重新发起运行。", 400);
+    }
 
     const input = isRecord(original.input) ? original.input : {};
     const previousVerifications = this.store.listVerifyResults(runId);
@@ -1281,6 +1305,39 @@ export class WorkflowExecutor {
     );
     const edgeResolved = new Array<boolean>(plan.graph.edges.length).fill(false);
     const edgeSourceSucceeded = new Array<boolean>(plan.graph.edges.length).fill(false);
+    // 选项卡这类「一个选项一个端口」的节点：一旦有端口连线，未绑端口的出边就不再无条件放行。
+    // 老流程的边没有端口（都从卡片同一个点拉出来），先看边上的「选项 == 文本」条件落位，
+    // 条件也没写的才按数量顺序补，具体规则见 workflow/choicePorts.ts。
+    const choiceOptions = new Map<string, string[]>();
+    for (const node of plan.workflow.nodes) {
+      if (node.kind !== "human" || node.optionsFrom) {
+        continue;
+      }
+      const options = normalizeChoices(node.options ?? []);
+      if (options.length > 0) {
+        choiceOptions.set(node.id, options);
+      }
+    }
+    const inferredPorts = inferChoicePorts(
+      plan.graph.edges.map((edge, index) => ({
+        from: edge.from,
+        fromPort: edge.fromPort,
+        choiceValue: choiceConditionValue(plan.graph.edges[index])
+      })),
+      choiceOptions
+    );
+    // 记下每个节点「哪些端口真的接了线」：命中项的端口没接线时要回落到兜底口，
+    // 只看「有没有端口」不够，得知道具体接了哪几个。
+    const wiredPorts = new Map<string, Set<string>>();
+    plan.graph.edges.forEach((edge, index) => {
+      const port = edge.fromPort ?? inferredPorts.get(index);
+      if (!port || !nodeSet.has(edge.from)) {
+        return;
+      }
+      const ports = wiredPorts.get(edge.from) ?? new Set<string>();
+      ports.add(port);
+      wiredPorts.set(edge.from, ports);
+    });
     const outgoingNodes = new Map<string, string[]>(nodeIds.map((nodeId) => [nodeId, []]));
     for (const edge of plan.graph.edges) {
       if (nodeSet.has(edge.from) && nodeSet.has(edge.to)) {
@@ -1330,8 +1387,70 @@ export class WorkflowExecutor {
       this.scheduler.cancelRun(state.runId, reason);
     };
 
+    /**
+     * 被「条件兄弟」压住的兜底边。
+     *
+     * 一个节点同时连出「带条件的分支」和「不带条件的主线」时，直觉上应该是二选一：
+     * 条件成立走分支，不成立走主线。按边各判各的会变成两条一起跑——
+     * 用户画的是分支，看到的是并行，于是后面两条链全亮了。
+     * 所以这里统一按「条件优先、无条件兜底」处理，只有所有条件分支都没走通才放行无条件那条。
+     * 全都是无条件边、或全都有条件时不干预，正常的并行编排照旧。
+     */
+    const suppressedEdges = new Set<number>();
+
+    /**
+     * 节点被跳过时给一句能对上号的原因。
+     * 以前几乎全是「条件未满足」，端口没绑、选项没接线、走了兜底都糊成同一句，
+     * 用户看到分支没跑也查不出是连线问题还是选择问题。
+     */
+    const explainBranchBlock = (candidates: number[]): string => {
+      if (candidates.length === 0) {
+        return "上游分支未执行。";
+      }
+      if (candidates.some((index) => suppressedEdges.has(index))) {
+        return "同一条分支上已有条件成立，这条兜底线让位了。";
+      }
+      for (const index of candidates) {
+        const candidate = plan.graph.edges[index];
+        const port = candidate.fromPort ?? inferredPorts.get(index);
+        if (branchAllows(candidate, state.scope, wiredPorts, port)) {
+          continue;
+        }
+        const picked = choiceIndexOf(state.scope, candidate.from);
+        if (picked < 0) {
+          return "选项卡走了「其他」兜底分支，这条选项分支没有激活。";
+        }
+        if (!wiredPorts.get(candidate.from)?.has(choicePortOf(picked))) {
+          return `选项卡选中的是第 ${picked + 1} 项，但那个选项没有连线，这条分支不会被触发。`;
+        }
+        if (port === undefined) {
+          return "这条连线没有落在选项卡的选项端口上，运行期不会激活它，请在画布上重新从对应选项拉一次线。";
+        }
+        return "上游选项卡选的是别的选项，这条分支没有激活。";
+      }
+      return "上游边条件未满足。";
+    };
+
     const resolveOutgoing = (nodeId: string, succeeded: boolean) => {
-      for (const edgeIndex of outgoing.get(nodeId) ?? []) {
+      const outIndexes = outgoing.get(nodeId) ?? [];
+      if (succeeded) {
+        const open = outIndexes.map((index) => {
+          const edge = plan.graph.edges[index];
+          const port = edge.fromPort ?? inferredPorts.get(index);
+          return (
+            branchAllows(edge, state.scope, wiredPorts, port) &&
+            (!edge.when || evaluateExpression(edge.when, state.scope))
+          );
+        });
+        const localSuppressed = suppressedFallbacks(
+          outIndexes.map((index) => plan.graph.edges[index]),
+          open
+        );
+        for (const offset of localSuppressed) {
+          suppressedEdges.add(outIndexes[offset]);
+        }
+      }
+      for (const edgeIndex of outIndexes) {
         if (edgeResolved[edgeIndex]) {
           continue;
         }
@@ -1345,13 +1464,21 @@ export class WorkflowExecutor {
             (index) => edgeResolved[index] && edgeSourceSucceeded[index]
           );
           const selected = candidates.filter((index) => {
-            const condition = plan.graph.edges[index].when;
+            const candidate = plan.graph.edges[index];
+            const port = candidate.fromPort ?? inferredPorts.get(index);
+            if (!branchAllows(candidate, state.scope, wiredPorts, port)) {
+              return false;
+            }
+            if (suppressedEdges.has(index)) {
+              return false;
+            }
+            const condition = candidate.when;
             return !condition || evaluateExpression(condition, state.scope);
           });
           if (selected.length > 0) {
             enqueueNode(edge.to);
           } else {
-            skipNode(edge.to, candidates.length > 0 ? "上游边条件未满足。" : "上游分支未执行。");
+            skipNode(edge.to, explainBranchBlock(candidates));
           }
         }
       }
@@ -1933,14 +2060,20 @@ export class WorkflowExecutor {
                   body: node.requestBody,
                   ...(node.inputs ?? {})
                 }
-              : node.kind === "clarify"
+                : node.kind === "clarify"
                 ? {
                     // 澄清读的是本次运行的原始需求；inputs 可覆盖 request 或补充领域上下文。
                     ...state.scope.input,
                     ...(node.inputs ?? {}),
                     ...(node.prompt ? { hint: node.prompt } : {})
                   }
-                : node.inputs ?? {};
+                : node.kind === "extract"
+                  ? {
+                      // 参数提取默认就看用户这句话；映射了 inputs 就在其上覆盖 / 追加变量。
+                      ...state.scope.input,
+                      ...(node.inputs ?? {})
+                    }
+                  : node.inputs ?? {};
     let input = resolveValue(rawInput, state.scope, frame) as Record<string, unknown>;
     if (node.kind === "verify") {
       // 未显式映射时，默认验证最近一个非验证节点的输出，证据取当前运行已收集的引用池。
@@ -2024,6 +2157,10 @@ export class WorkflowExecutor {
     }
     if (node.kind === "clarify") {
       await this.executeClarifyStep(effectiveStep, input, state, stepId);
+      return;
+    }
+    if (node.kind === "extract") {
+      await this.executeExtractStep(effectiveStep, input, state, stepId);
       return;
     }
     if (node.kind !== "verify") {
@@ -2218,6 +2355,9 @@ export class WorkflowExecutor {
   /**
    * 人工交互：落待输入记录 → 运行挂起 → API 提交后唤醒。
    * 提交值同时成为节点输出（扁平字段 + values 副本），供下游模板与条件直接引用。
+   *
+   * 配了选项时它就是「选项卡」：表单里多一个 choice 字段，前端渲染成可点按钮；
+   * 提交后若还写了提示词，再按「用户选了什么」调一次模型，把生成的回复写回 output。
    */
   private async executeHumanStep(
     step: CompiledStep,
@@ -2227,14 +2367,22 @@ export class WorkflowExecutor {
   ) {
     const node = step.node as HumanNode;
     const timeoutMs = node.timeoutMs ?? this.options.humanTimeoutMs;
+    const locals = nodeLocals(node, input, state.scope);
+    const frame = findLoopFrame(state, step.path);
+    const choices = humanChoices(node, state.scope, locals);
+    // 追问文案支持 ${节点.output} 引用：让“导师提问”这类内容随上游生成结果走，
+    // 而不是写死一句没有上下文的“请输入回答”。
+    const resolvedPrompt = node.prompt?.trim()
+      ? String(resolveValue(node.prompt, state.scope, frame, locals))
+      : "";
     const interaction = this.store.createInteraction({
       runId: state.runId,
       stepId,
       nodeId: node.id,
       path: step.path,
       title: node.title ?? node.id,
-      prompt: node.prompt,
-      fields: node.fields ?? [],
+      prompt: resolvedPrompt,
+      fields: withChoiceField(node.fields ?? [], choices),
       context: input,
       expiresAt: timeoutMs > 0 ? new Date(Date.now() + timeoutMs).toISOString() : undefined
     });
@@ -2278,9 +2426,288 @@ export class WorkflowExecutor {
       actor: outcome.actor,
       input
     };
+    if (choices.length > 0) {
+      payload.choices = choices;
+    }
+
+    const picked = outcome.values[CHOICE_FIELD_KEY];
+    const choice = typeof picked === "string" ? picked.trim() : "";
+    if (choice) {
+      payload.choice = choice;
+      // 序号决定走哪条出边；-1 表示没命中预置选项（自由输入或「其他」），这条路走兜底出口。
+      const index = matchChoiceIndex(choices, choice);
+      payload.choiceIndex = index;
+      if (index < 0) {
+        payload.choiceOther = true;
+      }
+      const reply = await this.generateChoiceReply(node, choice, outcome.values, input, state);
+      if (reply) {
+        payload.reply = reply.text;
+        payload.output = reply.text;
+        payload.summary = `已选择「${choice}」并生成回复`;
+        payload.generation = {
+          mode: reply.mode,
+          model: reply.model,
+          thinking: reply.thinking
+        };
+      }
+    }
+
     state.scope.outputs.set(node.id, payload);
     state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
     this.store.completeStep(stepId, "succeeded", payload, undefined, { attempts: 1 });
+  }
+
+  /**
+   * 选项卡选完后的那次模型调用。
+   * 提示词和模型都没配就完全不调模型——只把选择结果交给下游，避免用户没打算花钱却产生调用。
+   * 只配了模型、没写提示词时用一句默认指令兜底，否则「选了模型却没有回复」会让人以为坏了。
+   */
+  private async generateChoiceReply(
+    node: HumanNode,
+    choice: string,
+    values: Record<string, unknown>,
+    input: Record<string, unknown>,
+    state: RunState
+  ): Promise<{ text: string; mode: RunMode; model?: string; thinking?: string } | undefined> {
+    const configured = node.generatePrompt?.trim();
+    if (!configured && !node.model) {
+      return undefined;
+    }
+    const instruction =
+      configured ||
+      `用户在上一步选择了「${choice}」。请按这个方向继续推进任务，直接输出要回复给用户的内容，不要复述选项、不要解释流程。`;
+    // 提示词里 ${choice} 取选中项，${某字段} 取用户同时填的其它输入。
+    const context: ExecutionContext = {
+      runId: state.runId,
+      workflowId: state.workflowId,
+      iteration: state.iteration,
+      scope: state.scope,
+      knowledgeBaseIds: state.workflowKnowledgeBaseIds,
+      tokensUsed: state.tokensUsed,
+      tokenBudget: state.tokenBudget,
+      locals: { ...nodeLocals(node, input, state.scope), ...values, choice, values }
+    };
+    const synthetic: LlmNode = {
+      ...(node as unknown as LlmNode),
+      kind: "llm",
+      // 不是画布上的节点，id 只用来在 trace 里区分是哪一次选项卡生成。
+      id: `${node.id}__choice`,
+      prompt: instruction,
+      inputs: { ...input, choice, values }
+    };
+    const raw = this.handlers.llm
+      ? await this.handlers.llm(synthetic, { ...input, choice, values }, context)
+      : stubLlm(synthetic, { ...input, choice, values });
+    const record = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const text =
+      typeof record.output === "string"
+        ? record.output
+        : typeof record.value === "string"
+          ? record.value
+          : typeof record.content === "string"
+            ? record.content
+            : "";
+    return {
+      text,
+      mode: (record.mode === "live" ? "live" : this.mode) as RunMode,
+      model: typeof record.model === "string" ? record.model : node.model,
+      thinking: typeof record.thinking === "string" ? record.thinking : undefined
+    };
+  }
+
+  /**
+   * 参数提取：先把「已经能拿到」的值收齐（输入变量直给 → 模型抽取 → 默认值），
+   * 还缺必填参数就挂一张待输入卡片追问；用户答完重新抽一次，抽到才继续往下走。
+   *
+   * 和「在提示词里让模型顺嘴问一句」的区别就在这里：模型节点问完也会继续往下跑，
+   * 下游拿到的是空参数；这里拿不到就停在原地，下游只会收到抽好的值。
+   */
+  private async executeExtractStep(
+    step: CompiledStep,
+    input: Record<string, unknown>,
+    state: RunState,
+    stepId: string
+  ) {
+    const node = step.node as ExtractNode;
+    const frame = findLoopFrame(state, step.path);
+    const params = normalizeExtractParams(node.params);
+    const timeoutMs = node.timeoutMs ?? this.options.humanTimeoutMs;
+    // 一轮只问一个参数：调试面板的回答走底部单输入框，一次弹多行必填表单会提交失败。
+    // 默认轮次按参数个数放宽，保证每个参数至少有一次被问到的机会。
+    const maxRounds = clampExtractRounds(node.maxRounds, params.length);
+    const collected: Record<string, unknown> = {};
+    const sources: Record<string, string> = {};
+    let transcript = extractTranscriptOf(input);
+    let rounds = 0;
+
+    // 输入变量里已经有同名变量就等于已经拿到：用户给过的东西不该再问一遍。
+    for (const param of params) {
+      const direct = directParamValue(input, param.name);
+      if (direct !== undefined) {
+        collected[param.name] = coerceExtractValue(direct, param);
+        sources[param.name] = "input";
+      }
+    }
+
+    const applyExtraction = (raw: unknown) => {
+      const record = extractRecordOf(raw);
+      for (const param of params) {
+        if (isFilledValue(collected[param.name])) {
+          continue;
+        }
+        const value = record[param.name];
+        if (!isFilledValue(value)) {
+          continue;
+        }
+        collected[param.name] = coerceExtractValue(value, param);
+        sources[param.name] = "extract";
+      }
+    };
+
+    let missing = missingExtractParams(params, collected);
+    if (missing.length > 0) {
+      this.throwIfCancelled(state.runId);
+      applyExtraction(
+        await this.runExtractHandler(node, input, transcript, state, frame)
+      );
+      // 模型也没抽到、但参数表给了默认值：算作已拿到，不再追问。
+      for (const param of params) {
+        if (!isFilledValue(collected[param.name]) && param.defaultValue !== undefined) {
+          collected[param.name] = coerceExtractValue(param.defaultValue, param);
+          sources[param.name] = "default";
+        }
+      }
+      missing = missingExtractParams(params, collected);
+    }
+
+    while (missing.length > 0 && rounds < maxRounds) {
+      rounds += 1;
+      // 一轮只问一个：用户答完这句常常顺带写了别的参数，整段并回正文重新抽一次，
+      // 下一轮往往就不用再问了。这样底部一句话输入框永远只需要收一个字段。
+      const focus = missing[0];
+      const ask = buildExtractAskPrompt(node, [focus], input, state, frame);
+      const interaction = this.store.createInteraction({
+        runId: state.runId,
+        stepId,
+        nodeId: node.id,
+        path: step.path,
+        title: node.title ?? "参数提取",
+        prompt: ask,
+        fields: [extractFieldOf(focus)],
+        context: {
+          params: params.map((param) => param.name),
+          collected,
+          missing: missing.map((p) => p.name),
+          asking: focus.name
+        },
+        expiresAt: timeoutMs > 0 ? new Date(Date.now() + timeoutMs).toISOString() : undefined
+      });
+
+      this.store.updateStepStatus(stepId, "waiting");
+      this.setStatus(state.runId, "waiting_input");
+
+      let outcome;
+      try {
+        outcome = await this.humans.wait(interaction.id, timeoutMs);
+      } finally {
+        if (this.store.getRun(state.runId)?.status === "waiting_input") {
+          this.setStatus(state.runId, "running");
+        }
+      }
+
+      if (outcome.status === "cancelled") {
+        this.store.decideInteraction(interaction.id, "cancelled");
+        this.store.completeStep(stepId, "failed", undefined, "运行已取消。", { attempts: 1 });
+        throw new RunCancelledError();
+      }
+      if (outcome.status === "expired") {
+        this.store.decideInteraction(interaction.id, "expired");
+        const message = `参数提取追问超时（${timeoutMs}ms），运行已终止。`;
+        this.store.completeStep(stepId, "failed", undefined, message, { attempts: 1 });
+        throw new HumanInputError(message);
+      }
+
+      this.store.decideInteraction(interaction.id, "answered", outcome.values, outcome.actor);
+      // 回答里经常顺带写了别的参数（「题目是《X》，帮我练答辩」），所以整段并回正文再抽一次，
+      // 而不是只认这一个字段。
+      const answerText = missing
+        .map((param) => stringify(outcome.values[param.name] ?? ""))
+        .filter((value) => value.trim() !== "")
+        .join("\n");
+      for (const param of missing) {
+        const value = outcome.values[param.name];
+        if (isFilledValue(value)) {
+          collected[param.name] = coerceExtractValue(value, param);
+          sources[param.name] = "answer";
+        }
+      }
+      if (answerText) {
+        transcript = `${transcript}\n${answerText}`.trim();
+      }
+      this.throwIfCancelled(state.runId);
+      applyExtraction(await this.runExtractHandler(node, input, transcript, state, frame));
+      missing = missingExtractParams(params, collected);
+    }
+
+    if (missing.length > 0 && node.onMissing !== "continue") {
+      const message = `参数提取未完成：还没有拿到 ${missing
+        .map((param) => extractLabelOf(param))
+        .join("、")}，请补充后重新运行。`;
+      this.store.completeStep(stepId, "failed", undefined, message, { attempts: 1 });
+      throw new HumanInputError(message);
+    }
+
+    const filled = params.filter((param) => isFilledValue(collected[param.name]));
+    const text = filled
+      .map((param) => `${extractLabelOf(param)}：${stringify(collected[param.name])}`)
+      .join("\n");
+    const payload: Record<string, unknown> = {
+      kind: "extract",
+      // 扁平写入，下游可以直接 ${节点.论文题目}；params 保留一份结构化副本。
+      ...collected,
+      params: collected,
+      missing: missing.map((param) => param.name),
+      complete: missing.length === 0,
+      rounds,
+      sources,
+      output: text,
+      text,
+      summary:
+        missing.length === 0
+          ? `已提取 ${filled.length} 个参数`
+          : `已提取 ${filled.length} 个参数，仍缺 ${missing.length} 个`
+    };
+
+    state.scope.outputs.set(node.id, payload);
+    state.tokensUsed += estimateTokens(input) + estimateTokens(payload);
+    this.store.completeStep(stepId, "succeeded", payload, undefined, { attempts: 1 });
+  }
+
+  /** 调一次抽取：live 走模型，离线走规则；返回原始结果交给上层合并。 */
+  private async runExtractHandler(
+    node: ExtractNode,
+    input: Record<string, unknown>,
+    transcript: string,
+    state: RunState,
+    frame?: LoopProfile
+  ): Promise<unknown> {
+    const context: ExecutionContext = {
+      runId: state.runId,
+      workflowId: state.workflowId,
+      iteration: state.iteration,
+      scope: state.scope,
+      loop: frame ? loopScopeOf(frame) : undefined,
+      locals: nodeLocals(node, input, state.scope, frame),
+      knowledgeBaseIds: state.workflowKnowledgeBaseIds,
+      tokensUsed: state.tokensUsed,
+      tokenBudget: state.tokenBudget
+    };
+    const payload = { ...input, text: transcript };
+    if (!this.handlers.extract) {
+      return stubExtract(node, normalizeExtractParams(node.params), transcript);
+    }
+    return this.handlers.extract(node, payload, context);
   }
 
   /**
@@ -2301,6 +2728,7 @@ export class WorkflowExecutor {
       iteration: state.iteration,
       scope: state.scope,
       loop: frame ? loopScopeOf(frame) : undefined,
+      locals: nodeLocals(node, input, state.scope, frame),
       knowledgeBaseIds: state.workflowKnowledgeBaseIds,
       tokensUsed: state.tokensUsed,
       tokenBudget: this.options.tokenBudget
@@ -2427,10 +2855,16 @@ export class WorkflowExecutor {
     let lastError: unknown;
     let currentStep = step;
     const attemptedAgents: string[] = [];
-    for (let attempt = 1; attempt <= this.options.maxAttempts; attempt += 1) {
+    // 节点级异常处理优先：配置了重试次数就按节点的来，否则沿用平台全局策略。
+    const policy = step.node.errorPolicy;
+    const maxAttempts =
+      policy?.retries !== undefined
+        ? Math.max(1, Math.min(policy.retries + 1, MAX_NODE_ATTEMPTS))
+        : this.options.maxAttempts;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.throwIfCancelled(state.runId);
       if (attempt > 1) {
-        await sleep(this.retryDelay(attempt));
+        await sleep(policy?.retryIntervalMs ?? this.retryDelay(attempt));
       }
       await this.stubDelay();
       // 租约只观测真实在飞任务：不阻塞并发分支，但让调度器看到当前负载。
@@ -2558,7 +2992,7 @@ export class WorkflowExecutor {
           this.workerPool.killWorker(worker.workerId);
         }
         lastError = error;
-        if (currentStep.node.kind === "agent" && attempt < this.options.maxAttempts) {
+        if (currentStep.node.kind === "agent" && attempt < maxAttempts) {
           attemptedAgents.push(currentStep.node.agent);
           const next = state.reschedule?.(currentStep.path, attemptedAgents);
           const swapped =
@@ -2612,8 +3046,31 @@ export class WorkflowExecutor {
       }
     }
 
+    // 走到这里说明重试已用尽。打开异常处理（或显式配了跳过 / 兜底）的节点不再卡住整条流程：
+    // 错误写进产物的 Error 分支，下游按 ${节点.Error.FailMessage} 就能取到原因。
+    const guarded =
+      policy?.enabled === true || policy?.strategy === "continue" || policy?.strategy === "fallback";
+    if (guarded) {
+      const message = errorDetail(lastError);
+      const degraded =
+        policy?.strategy === "fallback"
+          ? policy.fallbackValue
+          : { Error: { FailCode: "runtime_error", FailMessage: message } };
+      state.scope.outputs.set(step.nodeId, degraded);
+      this.store.completeStep(
+        stepId,
+        "succeeded",
+        degraded,
+        policy?.strategy === "fallback"
+          ? `已降级：使用兜底产物继续。原因：${message}`
+          : `已降级：跳过该节点继续。原因：${message}`,
+        { attempts: maxAttempts }
+      );
+      return;
+    }
+
     this.store.completeStep(stepId, "failed", undefined, errorDetail(lastError), {
-      attempts: this.options.maxAttempts
+      attempts: maxAttempts
     });
     throw lastError;
   }
@@ -2625,7 +3082,7 @@ export class WorkflowExecutor {
     abort?: Promise<never>,
     remote?: (step: CompiledStep, input: Record<string, unknown>, state: LeafExecutionState) => Promise<unknown>
   ): Promise<unknown> {
-    const timeoutMs = this.options.timeoutMs;
+    const timeoutMs = step.node.errorPolicy?.timeoutMs ?? this.options.timeoutMs;
     const start = () => (remote ? remote(step, input, state) : this.invoker.invoke(step, input, state));
     if (timeoutMs <= 0 && !abort) {
       return start();
@@ -2744,9 +3201,11 @@ export class WorkflowExecutor {
       iteration: state.iteration,
       scope: state.scope,
       loop: profile ? loopScopeOf(profile) : undefined,
+      locals: nodeLocals(step.node, input, state.scope, profile),
       knowledgeBaseIds: state.workflowKnowledgeBaseIds,
       tokensUsed: state.tokensUsed,
-      tokenBudget
+      tokenBudget,
+      stepPath: step.path
     };
     const node = step.node;
     // 演示/演练用：PLATFORM_FAIL_NODE_IDS 让 stub 在指定节点抛错，用于验证重试与回滚。
@@ -2790,7 +3249,7 @@ export class WorkflowExecutor {
       return this.handlers.llm ? await this.handlers.llm(node, input, context) : stubLlm(node, input);
     }
     if (node.kind === "template") {
-      const rendered = resolveValue(node.template, state.scope, profile);
+      const rendered = resolveValue(node.template, state.scope, profile, context.locals);
       return {
         mode: this.mode,
         kind: "template",
@@ -3272,6 +3731,10 @@ function lockModeForStatement(statement: CompiledStatement): "read" | "write" | 
   if (statement.step.node.kind === "human" || statement.step.node.kind === "clarify") {
     return undefined;
   }
+  // 参数提取可能在等用户补参数，占着锁会把别的分支一起冻住。
+  if (statement.step.node.kind === "extract") {
+    return undefined;
+  }
   return "read";
 }
 
@@ -3745,7 +4208,13 @@ function resolveExecutorOptions(options: ExecutorOptions): ResolvedExecutorOptio
 }
 
 function envInt(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
+  const raw = process.env[name];
+  // .env 里「留空表示用默认」的配置项必须走 fallback：Number("") 是 0，
+  // 会被 clampInt 抬到下限（调度容量因此被压成 1，一个人工等待点就堵死全局队列）。
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? Math.trunc(value) : fallback;
 }
 
@@ -3753,43 +4222,318 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
-function resolveValue(value: unknown, scope: RunScope, frame?: LoopProfile): unknown {
+/**
+ * 选项来源：手动填的 options，或 optionsFrom 指向的数组（动态拉取）。
+ * 引用解析留在这里（要用 scope/locals），收敛与去重交给 humanChoices 模块。
+ */
+function humanChoices(
+  node: HumanNode,
+  scope: RunScope,
+  locals: Record<string, unknown>
+): string[] {
+  const raw = node.optionsFrom?.trim()
+    ? resolveValue(node.optionsFrom, scope, undefined, locals)
+    : node.options;
+  return normalizeChoices(raw);
+}
+
+/**
+ * 节点自己声明的输入变量：name → 已解析的值。
+ * 执行器取上游产物一直只认 ${节点id.字段}，入参表因此只能看不能用；
+ * 补上这层后，正文里写 ${template} 就能直接拿到「输入变量」里配的那份值。
+ */
+function nodeLocals(
+  node: WorkflowNode,
+  input: Record<string, unknown>,
+  scope: RunScope,
+  frame?: LoopProfile
+): Record<string, unknown> {
+  const locals: Record<string, unknown> = { ...input };
+  for (const binding of node.inputBindings ?? []) {
+    const name = typeof binding.name === "string" ? binding.name.trim() : "";
+    if (!name) {
+      continue;
+    }
+    if (binding.value !== undefined && binding.value !== null && binding.value !== "") {
+      locals[name] = resolveValue(binding.value, scope, frame);
+    } else if (locals[name] === undefined && binding.defaultValue !== undefined) {
+      locals[name] = binding.defaultValue;
+    }
+  }
+  return locals;
+}
+
+/** 追问轮次上限：再多也是在原地打转，重跑一次比无限追问更省事。 */
+const EXTRACT_MAX_ROUNDS = 5;
+
+/** 参数表去重、补默认值；名字为空的草稿行直接丢掉，不让它变成空表单。 */
+export function normalizeExtractParams(params: ExtractParam[] | undefined): ExtractParam[] {
+  const seen = new Set<string>();
+  const list: ExtractParam[] = [];
+  for (const raw of params ?? []) {
+    const name = typeof raw?.name === "string" ? raw.name.trim() : "";
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    list.push({ ...raw, name, required: raw.required !== false });
+  }
+  return list;
+}
+
+function clampExtractRounds(value: number | undefined, paramCount = 1): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return Math.min(EXTRACT_MAX_ROUNDS, Math.max(3, paramCount));
+  }
+  return Math.min(EXTRACT_MAX_ROUNDS, Math.max(1, Math.trunc(value)));
+}
+
+/**
+ * 待抽取的正文：输入里的字符串值按顺序拼起来。
+ * 数组 / 对象不拼——上游整段 JSON 丢给模型只会稀释注意力，反而抽不准。
+ */
+function extractTranscriptOf(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const value of Object.values(input)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const text = value.trim();
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    parts.push(text);
+  }
+  return parts.join("\n");
+}
+
+/** 输入变量里同名参数的直接取值；空串、空数组一律当作「没有」。 */
+function directParamValue(input: Record<string, unknown>, name: string): unknown {
+  const value = input[name];
+  if (typeof value === "string") {
+    return value.trim() === "" ? undefined : value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return undefined;
+}
+
+function coerceExtractValue(value: unknown, param: ExtractParam): unknown {
+  if (param.type === "number") {
+    const numeric = typeof value === "number" ? value : Number(String(value).trim());
+    return Number.isFinite(numeric) ? numeric : value;
+  }
+  if (param.type === "boolean") {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    const text = String(value).trim().toLowerCase();
+    if (["true", "是", "yes", "1"].includes(text)) {
+      return true;
+    }
+    if (["false", "否", "no", "0"].includes(text)) {
+      return false;
+    }
+    return value;
+  }
+  return typeof value === "string" ? value.trim() : value;
+}
+
+function isFilledValue(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim() !== "";
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return true;
+}
+
+function missingExtractParams(
+  params: ExtractParam[],
+  collected: Record<string, unknown>
+): ExtractParam[] {
+  return params.filter((param) => param.required !== false && !isFilledValue(collected[param.name]));
+}
+
+/**
+ * 模型 / 夹具返回的结果统一成「参数名 → 值」。
+ * 有的模型会套一层 params / fields / values，这里就地摊平，不要求提示词百分百听话。
+ */
+function extractRecordOf(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const record = raw as Record<string, unknown>;
+  const nested = record.params ?? record.fields ?? record.values;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return { ...record, ...(nested as Record<string, unknown>) };
+  }
+  return record;
+}
+
+function extractLabelOf(param: ExtractParam): string {
+  const label = param.label?.trim();
+  return label || param.name;
+}
+
+/** 追问表单里的一个字段：就是参数本身，名字用参数名，答案才能直接落回变量。 */
+function extractFieldOf(param: ExtractParam): HumanField {
+  return {
+    key: param.name,
+    label: extractLabelOf(param),
+    type: param.type === "number" ? "number" : "textarea",
+    required: true,
+    placeholder: param.description?.trim() || `请输入${extractLabelOf(param)}`
+  };
+}
+
+/**
+ * 追问话术：askPrompt 是用户自己写的主句，参数说明补在后面。
+ * 两句都空的时候给一句通用说明，总比弹一张没有标题的空表单强。
+ */
+function buildExtractAskPrompt(
+  node: ExtractNode,
+  missing: ExtractParam[],
+  input: Record<string, unknown>,
+  state: RunState,
+  frame?: LoopProfile
+): string {
+  const locals = nodeLocals(node, input, state.scope, frame);
+  const configured = node.askPrompt?.trim()
+    ? String(resolveValue(node.askPrompt.trim(), state.scope, frame, locals))
+    : "";
+  const head = configured || "继续之前还需要你补充下面这些信息：";
+  const lines = missing.map((param) => {
+    // 参数描述只供模型理解「要抽什么」，是内部元数据，不能进回复；
+    // 追问话术优先用参数自己的 question，没有才只显示参数名（标签）。
+    const hint = param.question?.trim()
+      ? String(resolveValue(param.question.trim(), state.scope, frame, locals))
+      : "";
+    return `· ${extractLabelOf(param)}${hint ? `：${hint}` : ""}`;
+  });
+  return [head, ...lines].join("\n");
+}
+
+/**
+ * 离线抽取：只认《》和引号里的内容，抽不到就空着，让追问流程跑起来。
+ * 不做花哨猜测——stub 模式下瞎猜一个标题，比明确说「没拿到」更误导人。
+ */
+export function stubExtract(
+  node: ExtractNode,
+  params: ExtractParam[],
+  transcript: string
+): Record<string, unknown> {
+  if (node.stubOutput) {
+    return node.stubOutput;
+  }
+  const text = transcript.replace(/\s+/g, " ").trim();
+  const quoted = /[《“"]([^》”"]{2,80})[》”"]/.exec(text);
+  const result: Record<string, unknown> = {};
+  if (!quoted) {
+    return result;
+  }
+  for (const param of params) {
+    const probe = `${param.name} ${param.label ?? ""} ${param.description ?? ""}`;
+    if (/title|题目|标题|课题/i.test(probe)) {
+      result[param.name] = quoted[1].trim();
+    }
+  }
+  return result;
+}
+
+function resolveValue(
+  value: unknown,
+  scope: RunScope,
+  frame?: LoopProfile,
+  locals?: Record<string, unknown>
+): unknown {
   if (typeof value === "string") {
     const whole = value.match(REF_PATTERN);
     if (whole) {
-      return resolveRef(whole[1], scope, frame);
+      return resolveRef(whole[1], scope, frame, locals);
     }
     if (value.includes("${")) {
       return value.replace(EMBEDDED_REF_PATTERN, (_match, ref: string) =>
-        stringify(resolveRef(ref, scope, frame))
+        stringify(resolveRef(ref, scope, frame, locals))
       );
     }
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => resolveValue(item, scope, frame));
+    return value.map((item) => resolveValue(item, scope, frame, locals));
   }
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, resolveValue(item, scope, frame)])
+      Object.entries(value).map(([key, item]) => [key, resolveValue(item, scope, frame, locals)])
     );
   }
   return value;
 }
 
-function resolveRef(ref: string, scope: RunScope, frame?: LoopProfile): unknown {
+/**
+ * 面板上输出契约的预设字段名（Output 分支下的 Answer / Content / Thought）
+ * 是展示名，运行时真实产物写在 output / thinking 字段里。
+ * 只在原路径完全取不到值时才回退，既有 ${节点.output} 等引用不受影响。
+ */
+const OUTPUT_CONTRACT_ALIASES: Record<string, string> = {
+  Answer: "output",
+  Content: "output",
+  Thought: "thinking",
+  "Output.Answer": "output",
+  "Output.Content": "output",
+  "Output.Thought": "thinking"
+};
+
+function resolveRef(
+  ref: string,
+  scope: RunScope,
+  frame?: LoopProfile,
+  locals?: Record<string, unknown>
+): unknown {
   const [head, ...rest] = ref.split(".");
   if (head === "loop") {
     return resolveLoopRef(rest, frame);
   }
-  let current: unknown = head === "input" ? scope.input : scope.outputs.get(head);
-  for (const segment of rest) {
-    if (current === null || typeof current !== "object") {
-      return undefined;
+  const readFrom = (source: unknown, segments: string[]): unknown => {
+    let current = source;
+    for (const segment of segments) {
+      if (current === null || typeof current !== "object") {
+        return undefined;
+      }
+      current = (current as Record<string, unknown>)[segment];
     }
-    current = (current as Record<string, unknown>)[segment];
+    return current;
+  };
+  // 本节点输入变量优先：${template} 说的是这个节点声明的入参，不是某个同名节点。
+  // 取不到（比如变量名下没有这个子字段）再回落到原来的节点输出 / 运行输入。
+  if (locals && Object.prototype.hasOwnProperty.call(locals, head)) {
+    const local = readFrom(locals[head], rest);
+    if (local !== undefined) {
+      return local;
+    }
   }
-  return current;
+  const source: unknown = head === "input" ? scope.input : scope.outputs.get(head);
+  const read = (segments: string[]): unknown => readFrom(source, segments);
+  const direct = read(rest);
+  if (direct !== undefined || head === "input" || rest.length === 0) {
+    return direct;
+  }
+  const alias = OUTPUT_CONTRACT_ALIASES[rest.join(".")];
+  if (alias) {
+    return read(alias.split("."));
+  }
+  // ${节点.Output.<自定义字段>}：Output 只是面板里的分组名，运行时字段挂在节点产物根上。
+  if (rest[0] === "Output" && rest.length > 1) {
+    return read(rest.slice(1));
+  }
+  return direct;
 }
 
 /** 循环作用域：artifact/issues/score/iteration/retrievalQuery 均指向进入本轮前的状态。 */
@@ -3817,6 +4561,121 @@ function loopScopeOf(frame: LoopProfile): LoopScope {
     retrievalQuery: frame.retrievalQuery
   };
 }
+
+/** 选项卡的兜底端口在这里只做转出，实现在 workflow/choicePorts.ts，诊断也用同一份。 */
+
+/**
+ * 同一条出边里，哪些无条件边要给成立的条件分支让位。
+ *
+ * 「分支节点」在画布上的直觉是二选一：带条件的那条成立就走它，不成立走默认那条。
+ * 如果各条边各判各的，两条会一起跑，用户看到的是后面整条链同时亮起来。
+ * 所以：只要这个节点存在「带条件的边」，并且其中有条件成立了，
+ * 所有「不带条件的边」这一轮都不走。
+ * 全无条件（并行编排）或全有条件时完全不干预。
+ *
+ * @param edges 该节点的出边，只看 when
+ * @param open  与 edges 对齐的「这条边本身走不走得通」（端口 + 条件）
+ * @returns 被压制的边在 edges 里的下标
+ */
+export function suppressedFallbacks(
+  edges: Array<{ when?: unknown }>,
+  open: boolean[]
+): Set<number> {
+  const suppressed = new Set<number>();
+  const gated: number[] = [];
+  const plain: number[] = [];
+  edges.forEach((edge, index) => {
+    (edge.when ? gated : plain).push(index);
+  });
+  if (gated.length === 0 || plain.length === 0) {
+    return suppressed;
+  }
+  if (!gated.some((index) => open[index])) {
+    return suppressed;
+  }
+  for (const index of plain) {
+    suppressed.add(index);
+  }
+  return suppressed;
+}
+
+/**
+ * 判断用户选的是第几项。
+ *
+ * 先精确匹配，再按「忽略空白」匹配一次：选项文本常是从文档里粘过来的，
+ * 末尾多个换行、中间夹全角空格都很常见，精确比较会把正常的选择误判成「其他」，
+ * 用户点了第一项却走了兜底分支。返回 -1 才是真的没命中。
+ */
+export function matchChoiceIndex(choices: string[], choice: string): number {
+  const exact = choices.indexOf(choice);
+  if (exact >= 0) {
+    return exact;
+  }
+  const squash = (value: string) => value.replace(/\s+/g, "");
+  const target = squash(choice);
+  if (!target) {
+    return -1;
+  }
+  return choices.findIndex((item) => squash(item) === target);
+}
+
+/**
+ * 出边是否允许激活。
+ * 绑了端口的边只认「用户选中的那一项」；没绑端口的边在端口图里一律不放行，
+ * 否则一个选项卡连出去的三条分支会同时跑起来。
+ *
+ * 兜底规则：只有「用户选中的选项压根没画分支、而兜底口确实接了线」时才落到兜底。
+ * 以前是命中项没接线就无条件回落，配上一条没绑端口的老连线，就变成
+ * 「明明选了第一项、却静悄悄跑去执行兜底分支」——正是这条回落把正常分支顶掉的。
+ */
+export function branchAllows(
+  edge: CompiledEdge,
+  scope: RunScope,
+  wiredPorts: Map<string, Set<string>>,
+  port: string | undefined = edge.fromPort
+): boolean {
+  const wired = wiredPorts.get(edge.from);
+  if (!port) {
+    return !wired;
+  }
+  const index = choiceIndexOf(scope, edge.from);
+  const hit = index >= 0 ? choicePortOf(index) : CHOICE_OTHER_PORT;
+  if (hit !== CHOICE_OTHER_PORT && !wired?.has(hit)) {
+    // 选中的那个选项没有出边：兜底口接了线才算「这一轮走兜底」，没接就什么都不走。
+    return port === CHOICE_OTHER_PORT && Boolean(wired?.has(CHOICE_OTHER_PORT));
+  }
+  return port === hit;
+}
+
+/** 选项卡这次选中的是第几项；-1 表示没命中预置选项（走了兜底）。 */
+function choiceIndexOf(scope: RunScope, nodeId: string): number {
+  const payload = scope.outputs.get(nodeId);
+  const record =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : undefined;
+  const index = record?.choiceIndex;
+  return typeof index === "number" ? index : -1;
+}
+
+/**
+ * 边上如果是「源节点的 choice == 某个文本」这种条件，把文本取出来。
+ *
+ * 这是端口功能上线前表达选项卡分支的唯一办法，升级后这些线没有 fromPort，
+ * 只能靠条件里的文本认回对应选项口。认不出或不是这个形状就返回 undefined。
+ */
+export function choiceConditionValue(edge: CompiledEdge): string | undefined {
+  const when = edge.when;
+  if (!when || when.operator !== "==") {
+    return undefined;
+  }
+  const [head, ...rest] = when.ref.split(".");
+  if (head !== edge.from || rest.join(".") !== CHOICE_FIELD_KEY) {
+    return undefined;
+  }
+  return typeof when.value === "string" ? when.value : undefined;
+}
+
+/** 选项端口补位规则在 workflow/choicePorts.ts，运行期与画布共用一份实现。 */
+export { CHOICE_OTHER_PORT, choicePortOf, inferChoicePorts, type ChoicePortEdge };
 
 function evaluateExpression(expression: CompiledExpression, scope: RunScope, frame?: LoopFrame): boolean {
   const actual = resolveRef(expression.ref, scope, frame);
@@ -3889,24 +4748,51 @@ function normalizeHumanResponse(
     if (typeof value !== "string") {
       throw new PlatformError(`字段「${field.label}」必须是字符串。`, 400);
     }
-    if (type === "select" && !(field.options ?? []).includes(value)) {
-      throw new PlatformError(
-        `字段「${field.label}」只能是 ${field.options?.join(" / ") ?? "预置选项"}。`,
-        400
-      );
+    if (type === "select") {
+      // 选项卡的 choice 字段允许写不在列表里的内容——那就是「其他」兜底口。
+      // 其余下拉字段仍然只认预置值。
+      if (field.key === CHOICE_FIELD_KEY) {
+        values[field.key] = value.trim();
+        continue;
+      }
+      if (!(field.options ?? []).includes(value)) {
+        throw new PlatformError(
+          `字段「${field.label}」只能是 ${field.options?.join(" / ") ?? "预置选项"}。`,
+          400
+        );
+      }
     }
   }
 
   return values;
 }
 
-function looseEquals(actual: unknown, expected: unknown): boolean {  if (typeof expected === "number") {
+function looseEquals(actual: unknown, expected: unknown): boolean {
+  if (typeof expected === "number") {
     return Number(actual) === expected;
   }
   if (typeof expected === "boolean") {
     return Boolean(actual) === expected;
   }
-  return String(actual) === String(expected);
+  // 条件比较前先归一化：推理模型会把答案包在思考块里，分类词后常带句号或引号，
+  // 不剥掉的话「分类词 == 科研规划」这种路由条件永远匹配不上，整条流程全部跳过。
+  return normalizeConditionText(String(actual)) === normalizeConditionText(String(expected));
+}
+
+/**
+ * 边条件比较用的文本归一化：
+ * 1) 剥掉推理模型的 <think>…</think> 思考块；
+ * 2) 去掉包裹整段值的成对引号（中英皆可）；
+ * 3) 去掉首尾空白和句末标点。
+ * 只做首尾清理，不动中间内容，避免误伤正常比较。
+ */
+export function normalizeConditionText(value: string): string {
+  return value
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^["'“”「『]+/, "")
+    .replace(/["'“”」』]+$/, "")
+    .replace(/[。．.!！?？、,，；;：:\s]+$/g, "")
+    .trim();
 }
 
 function stringify(value: unknown): string {

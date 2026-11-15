@@ -1,0 +1,975 @@
+/* 登录 / 注册：独立整页，主题与背景照片都沿用主界面的变量，
+   这样浅色、深色、照片三种状态下的观感是连着的，不会像外挂了一个页面。 */
+
+.auth-page {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: var(--app-bg);
+  color: var(--n-12);
+}
+
+html[data-photo="on"] .auth-page {
+  background: transparent;
+}
+
+.auth-page-photo {
+  position: absolute;
+  inset: 0;
+  background-image: var(--app-photo);
+  background-position: center;
+  background-size: cover;
+  opacity: 0;
+  pointer-events: none;
+}
+
+html[data-photo="on"] .auth-page-photo {
+  opacity: var(--app-photo-opacity, 0.86);
+}
+
+.auth-page-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(400px, 520px);
+  gap: clamp(32px, 6vw, 96px);
+  align-items: center;
+  width: min(1120px, calc(100% - 96px));
+  padding: 48px 0;
+}
+
+/* ---------- 左侧品牌区 ---------- */
+
+.auth-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  padding: 16px 0;
+}
+
+html[data-photo="on"] .auth-brand {
+  text-shadow: var(--ink-halo, none);
+}
+
+.auth-brand-top {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.auth-brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--line-87);
+  border-radius: 11px;
+  background: var(--surf-96);
+  color: var(--accent);
+}
+
+.auth-brand-name {
+  color: var(--n-15);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.auth-brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-eyebrow {
+  margin: 0;
+  color: var(--n-45);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+}
+
+.auth-brand h1 {
+  margin: 0;
+  color: var(--n-12);
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: 600;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
+}
+
+.auth-brand-lead {
+  max-width: 420px;
+  margin: 0;
+  color: var(--n-36);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.auth-points {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.auth-points li > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--n-42);
+}
+
+.auth-points span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.auth-points strong {
+  color: var(--n-18);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.auth-points small {
+  color: var(--n-45);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-brand-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--n-48);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* ---------- 右侧卡片 ---------- */
+
+.auth-panel {
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  padding: 30px 30px 26px;
+  border: 1px solid var(--line-90);
+  border-radius: 20px;
+  background: var(--surf-99);
+  box-shadow: 0 24px 70px rgba(var(--rgb-shadow), 0.18), 0 2px 8px rgba(var(--rgb-shadow), 0.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+  animation: auth-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes auth-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.auth-card-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 24px;
+}
+
+.auth-card-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 5px;
+  place-items: center;
+  border: 1px solid var(--line-90);
+  border-radius: 12px;
+  background: var(--surf-96);
+  color: var(--accent);
+}
+
+.auth-card-head h2 {
+  margin: 0;
+  color: var(--n-12);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.auth-card-head p {
+  margin: 0;
+  color: var(--n-45);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.auth-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-90);
+  border-radius: 9px;
+  background: var(--surf-96);
+  color: var(--n-30);
+  font-size: 12px;
+}
+
+.auth-notice.is-wrap {
+  align-items: flex-start;
+  line-height: 1.6;
+}
+
+.auth-notice.is-wrap svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* ---------- 表单 ---------- */
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-field > label {
+  color: var(--n-27);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.auth-field > label em {
+  margin-left: 5px;
+  color: var(--n-48);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.auth-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 43px;
+  padding: 0 11px;
+  border: 1px solid var(--line-90);
+  border-radius: 10px;
+  background: var(--surf-96);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.auth-input > svg {
+  flex: 0 0 auto;
+  color: var(--n-48);
+}
+
+.auth-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.auth-input:has(input[aria-invalid="true"]) {
+  border-color: var(--color-danger, #d9534f);
+}
+
+.auth-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--n-12);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.auth-input input::placeholder {
+  color: var(--n-51);
+}
+
+.auth-input input:disabled {
+  opacity: 0.65;
+}
+
+.auth-reveal {
+  display: grid;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--n-45);
+  cursor: pointer;
+}
+
+.auth-reveal:hover,
+.auth-reveal:focus-visible {
+  background: var(--ink-wash, rgba(var(--rgb-shadow), 0.08));
+  color: var(--n-21);
+  outline: none;
+}
+
+.auth-field-hint {
+  margin: 0;
+  color: var(--n-51);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.auth-field-hint.is-error {
+  color: #d06a66;
+}
+
+.auth-remember {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--n-36);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.auth-remember input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.auth-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, #d06a66 35%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, #d06a66 9%, transparent);
+  color: #c45b57;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.auth-error svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.auth-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  height: 44px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  /* 填充按钮跟主界面一致：accent 底色配 n-99 字色，两套主题各自翻面。
+     cta-fg 是给「白底浮起」那种按钮用的，套在这儿会变成深底深字。 */
+  color: var(--n-99);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.16s ease, transform 0.16s ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.auth-submit:disabled {
+  /* 空表单时按钮是禁用的，但整块降透明度会让字一起糊掉；
+     改成明确的「未激活」配色，字仍然读得清。
+     补一圈内描边，让它仍然看得出是个按钮，而不是一片空白。 */
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--accent) 16%, var(--app-bg));
+  color: var(--n-21);
+  box-shadow: inset 0 0 0 1px var(--line-87);
+}
+
+.auth-spin {
+  animation: auth-spin 0.9s linear infinite;
+}
+
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 登录 / 注册分段切换：任何状态下都常驻，不再由 hasUsers && signupOpen 决定显隐。 */
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 22px;
+  padding: 4px;
+  border: 1px solid var(--line-90);
+  border-radius: 11px;
+  background: var(--surf-96);
+}
+
+.auth-tabs button {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--n-48);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.auth-tabs button:hover {
+  color: var(--n-15);
+}
+
+.auth-tabs button.is-active {
+  background: var(--surf-99);
+  color: var(--accent);
+  box-shadow: 0 1px 5px rgba(var(--rgb-shadow), 0.12);
+}
+
+.auth-tabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.auth-legal {
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-94);
+  color: var(--n-51);
+  font-size: 11.5px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* ---------- 启动态 ---------- */
+
+.auth-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--app-bg);
+  color: var(--n-45);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+.auth-boot-mark {
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--line-90);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: auth-spin 0.9s linear infinite;
+}
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 960px) {
+  .auth-page-inner {
+    grid-template-columns: minmax(0, 460px);
+    justify-content: center;
+    width: min(460px, calc(100% - 40px));
+    padding: 28px 0;
+  }
+
+  .auth-brand {
+    gap: 14px;
+    padding: 0;
+  }
+
+  .auth-brand-copy h1 {
+    font-size: 22px;
+  }
+
+  .auth-brand-copy h1 br,
+  .auth-brand-lead,
+  .auth-points,
+  .auth-brand-foot {
+    display: none;
+  }
+
+  .auth-card {
+    padding: 26px 24px 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-card,
+  .auth-spin,
+  .auth-boot-mark {
+    animation: none;
+  }
+}
+
+
+/* ---------- 账号与安全弹窗 ---------- */
+
+.auth-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 12, 16, 0.42);
+  backdrop-filter: blur(5px);
+}
+
+.account-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  border: 1px solid var(--line-90);
+  border-radius: 18px;
+  background: var(--n-99);
+  box-shadow: 0 28px 80px rgba(var(--rgb-shadow), 0.28);
+  overflow: hidden;
+  animation: auth-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.account-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line-94);
+}
+
+.account-eyebrow {
+  margin: 0 0 6px;
+  color: var(--n-48);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+
+.account-head h2 {
+  margin: 0;
+  color: var(--n-12);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.account-sub {
+  margin: 5px 0 0;
+  color: var(--n-45);
+  font-size: 12px;
+}
+
+.account-close {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--n-45);
+  cursor: pointer;
+}
+
+.account-close:hover {
+  background: var(--ink-wash, rgba(var(--rgb-shadow), 0.08));
+  color: var(--n-18);
+}
+
+.account-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--line-94);
+}
+
+.account-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px 11px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--n-45);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.account-tabs button:hover {
+  color: var(--n-21);
+}
+
+.account-tabs button.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--n-12);
+  font-weight: 600;
+}
+
+.account-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+}
+
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-section-title {
+  margin: 0;
+  color: var(--n-15);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.account-section-hint {
+  margin: -7px 0 2px;
+  color: var(--n-48);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.account-form .auth-submit {
+  margin-top: 4px;
+  height: 40px;
+  font-size: 13px;
+}
+
+.account-divider {
+  height: 1px;
+  margin: 22px 0 16px;
+  background: var(--line-94);
+}
+
+.account-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line-90);
+  border-radius: 10px;
+  background: var(--surf-96);
+  color: var(--n-21);
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-row:hover {
+  border-color: var(--line-87);
+  background: var(--ink-wash, rgba(var(--rgb-shadow), 0.06));
+}
+
+.account-row > svg:first-child {
+  flex: 0 0 auto;
+  color: var(--n-42);
+}
+
+.account-row > span {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.account-row strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-row small {
+  color: var(--n-48);
+  font-size: 11.5px;
+}
+
+.account-danger {
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, #d06a66 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, #d06a66 6%, transparent);
+}
+
+.account-danger p {
+  margin: 0 0 10px;
+  color: var(--n-36);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.account-danger > button,
+.account-danger-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--line-90);
+  border-radius: 8px;
+  background: var(--surf-99);
+  color: var(--n-21);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.account-danger-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.account-danger-actions .is-danger {
+  border-color: transparent;
+  background: #c45b57;
+  color: #fff;
+}
+
+.account-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 9px;
+  background: var(--surf-96);
+  color: var(--n-27);
+  font-size: 12px;
+}
+
+.account-audit ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-audit li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.account-audit li:nth-child(odd) {
+  background: var(--surf-96);
+}
+
+.account-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--n-51);
+}
+
+.account-dot.is-ok { background: #4b9d72; }
+.account-dot.is-denied { background: #c45b57; }
+.account-dot.is-failed { background: #d09a3c; }
+
+.account-event-action {
+  flex: 1 1 auto;
+  color: var(--n-21);
+  font-family: var(--font-mono, monospace);
+}
+
+.account-event-result {
+  color: var(--n-48);
+  font-size: 11px;
+}
+
+.account-audit time {
+  flex: 0 0 auto;
+  color: var(--n-51);
+  font-size: 11px;
+}
+
+.account-empty {
+  margin: 20px 0;
+  color: var(--n-51);
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 600px) {
+  .auth-modal-mask { padding: 12px; }
+  .account-head, .account-body { padding-left: 18px; padding-right: 18px; }
+  .account-tabs { padding-left: 12px; padding-right: 12px; overflow-x: auto; }
+}
+
+/* ---------- 渲染兜底：出错时给出原因，而不是一片空白 ---------- */
+
+.app-boundary {
+  display: contents;
+}
+
+.app-crash {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  overflow: auto;
+  background: var(--n-99);
+  color: var(--n-12);
+}
+
+.app-crash-card {
+  display: grid;
+  gap: 12px;
+  width: min(600px, 100%);
+  padding: 30px 30px 24px;
+  border: 1px solid var(--line-87);
+  border-radius: 18px;
+  background: var(--n-99);
+  box-shadow: 0 24px 60px var(--line-92, rgba(0, 0, 0, 0.06));
+}
+
+.app-crash-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--n-12);
+  color: var(--n-99);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.app-crash-card h1 {
+  margin: 2px 0 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.app-crash-card p {
+  margin: 0;
+  color: var(--n-21);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.app-crash-message {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-87);
+  border-radius: 10px;
+  background: var(--surf-96, rgba(0, 0, 0, 0.03));
+  color: var(--n-21);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-crash-detail summary {
+  color: var(--n-48);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.app-crash-detail pre {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--line-87);
+  border-radius: 10px;
+  background: var(--surf-96, rgba(0, 0, 0, 0.03));
+  color: var(--n-48);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.app-crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.app-crash-actions button {
+  height: 34px;
+  padding: 0 15px;
+  border: 1px solid var(--line-87);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--n-12);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.app-crash-actions button:hover {
+  background: var(--surf-96, rgba(0, 0, 0, 0.04));
+}
+
+.app-crash-actions button.is-primary {
+  border-color: var(--n-12);
+  background: var(--n-12);
+  color: var(--n-99);
+}
+
+.app-crash-actions button.is-primary:hover {
+  opacity: 0.88;
+}
+
+.app-crash-actions button.is-quiet {
+  border-color: transparent;
+  color: var(--n-48);
+}
+
+.app-crash-foot {
+  margin-top: 2px;
+  color: var(--n-48) !important;
+  font-size: 11.5px !important;
+}

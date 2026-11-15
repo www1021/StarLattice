@@ -54,6 +54,8 @@ const CLASS_BY_KIND: Record<NodeKind, TaskClass> = {
   agent: "reasoning",
   llm: "reasoning",
   clarify: "reasoning",
+  // 参数提取也是一次模型调用，只是输出很短，按 reasoning 排队即可。
+  extract: "reasoning",
   knowledge: "io",
   tool: "tool",
   http: "io",
