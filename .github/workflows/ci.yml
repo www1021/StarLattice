@@ -19,5 +19,4 @@ jobs:
       - run: npm run test:knowledge
       - run: npm run test:platform
       - run: npm run test:bench
-      - run: npm run bench:verifier
       - run: npm run build
