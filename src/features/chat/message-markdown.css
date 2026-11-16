@@ -2,9 +2,9 @@
 
 .message-markdown {
   color: inherit;
-  font-size: 15px;
+  font-size: 16.5px;
   font-weight: 520;
-  line-height: 1.68;
+  line-height: 1.72;
   overflow-wrap: anywhere;
 }
 
@@ -29,16 +29,16 @@
 }
 
 .message-markdown h3.md-heading {
-  font-size: 17px;
+  font-size: 19px;
 }
 
 .message-markdown h4.md-heading {
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .message-markdown h5.md-heading,
 .message-markdown h6.md-heading {
-  font-size: 15px;
+  font-size: 17px;
 }
 
 .message-markdown strong {

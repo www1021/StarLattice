@@ -21,6 +21,20 @@
   right: calc(var(--insight-panel-width, 408px) - 6px);
 }
 
+/* 右栏收起时，把手贴屏幕最右；展开时才落在对话区与右栏的交界处 */
+.app-shell:not(.insight-open) .pane-resizer-right {
+  right: -2px;
+}
+
+.pane-resizer.is-disabled {
+  cursor: default;
+}
+
+/* 侧栏折叠时不显示左把手 */
+.app-shell.sidebar-collapsed .pane-resizer-left {
+  display: none;
+}
+
 .pane-resizer-grip {
   display: flex;
   flex-direction: column;

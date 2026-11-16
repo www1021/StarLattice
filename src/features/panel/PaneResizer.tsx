@@ -32,11 +32,8 @@ export function PaneResizer({
 }: PaneResizerProps) {
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
-  if (disabled) {
-    return null;
-  }
-
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (disabled) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { startX: event.clientX, startWidth: value };
@@ -68,7 +65,7 @@ export function PaneResizer({
 
   return (
     <div
-      className={`pane-resizer pane-resizer-${side}`}
+      className={`pane-resizer pane-resizer-${side}${disabled ? " is-disabled" : ""}`}
       role="separator"
       aria-orientation="vertical"
       aria-label={side === "left" ? "拖动调整左侧栏宽度" : "拖动调整右侧面板宽度"}
@@ -81,6 +78,7 @@ export function PaneResizer({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onKeyDown={(event) => {
+        if (disabled) return;
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
           return;
         }

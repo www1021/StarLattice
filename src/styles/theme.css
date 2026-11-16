@@ -846,7 +846,7 @@ html[data-photo="on"] .sidebar[data-collapsed="true"] {
 
 /* 气泡：把边框、投影、毛玻璃全部撤掉，换一张羽化的托底 */
 html[data-photo="on"] .message-bubble {
-  border-color: rgba(var(--mask-tint), 0.46);
+  border: 0;
   background: none;
   box-shadow: none;
   backdrop-filter: none;

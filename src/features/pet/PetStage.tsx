@@ -89,14 +89,14 @@ function Figure({
   );
 }
 
-export function PetStage() {
+export function PetStage({ castId, motionId }: { castId?: string; motionId?: string }) {
   const mood = usePetStore((state) => state.mood);
   const caption = usePetStore((state) => state.caption);
   const helper = usePetStore((state) => state.helper);
   const pullPhase = usePetStore((state) => state.pullPhase);
   const blinking = usePetStore((state) => state.blinking);
 
-  const main = castById(MAIN_CAST_ID);
+  const main = castById(castId ?? MAIN_CAST_ID);
   const helperCast = helper ? castById(helper.castId) : null;
   const pulling = pullPhase === "pulling";
   const working = pullPhase === "working";
@@ -149,6 +149,7 @@ export function PetStage() {
     <section
       className="pet-stage"
       data-mood={mood}
+      data-motion={motionId ?? main.motion}
       data-peek={peek ? "1" : "0"}
       data-helper={helper ? "1" : "0"}
       data-pull={pulling ? "1" : "0"}

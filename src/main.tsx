@@ -90,6 +90,11 @@ import "./features/auth/auth.css";
 import { PetStage } from "./features/pet/PetStage";
 import { castForAgent } from "./features/pet/petCast";
 import { pet } from "./features/pet/petStore";
+import {
+  readPetPreference,
+  persistPetPreference,
+  type PetPreference
+} from "./features/pet/petPreferences";
 import { RightDock } from "./features/panel/RightDock";
 import { PaneResizer } from "./features/panel/PaneResizer";
 import {
@@ -6526,7 +6531,6 @@ function ClassroomRecordCard({ message }: { message: ChatMessage }) {
 type ComposerProps = {
   attachments: Attachment[];
   attachmentError?: string;
-  enableThinking: boolean;
   inputValue: string;
   isGenerating: boolean;
   knowledgeBases: KnowledgeBase[];
@@ -6538,6 +6542,18 @@ type ComposerProps = {
   selectedKnowledgeBaseIds: string[];
   /** 输入框下方的模型选择器，由外层注入，Composer 自己不关心模型从哪来。 */
   modelSlot?: React.ReactNode;
+  /** 左下角 + 菜单里的智能体 / 工作流选择，state 全在 App，Composer 只渲染。 */
+  agentOptions: AgentRecord[];
+  activeAgentId: string;
+  workflowOptions: WorkflowChatOption[];
+  selectedWorkflowId: string;
+  workflowChatOn: boolean;
+  agentPickerOn: boolean;
+  chatHint: string;
+  onPickAgent: (id: string) => void;
+  onToggleAgentPicker: () => void;
+  onPickWorkflow: (id: string) => void;
+  onToggleWorkflowChat: () => void;
   onAttachFiles: (files: FileList | null) => void;
   onChangeInput: (value: string) => void;
   onClearKnowledgeBases: () => void;
@@ -6547,14 +6563,12 @@ type ComposerProps = {
   onOpenVoice: () => void;
   onSkipKnowledgeSelection: () => void;
   onToggleKnowledgeBase: (id: string) => void;
-  onToggleThinking: () => void;
   onUploadKnowledgeDocument: (baseId: string, file: File) => void;
 };
 
 function Composer({
   attachments,
   attachmentError,
-  enableThinking,
   inputValue,
   isGenerating,
   knowledgeBases,
@@ -6565,6 +6579,17 @@ function Composer({
   ariaLabel = "教学任务输入",
   selectedKnowledgeBaseIds,
   modelSlot,
+  agentOptions,
+  activeAgentId,
+  workflowOptions,
+  selectedWorkflowId,
+  workflowChatOn,
+  agentPickerOn,
+  chatHint,
+  onPickAgent,
+  onToggleAgentPicker,
+  onPickWorkflow,
+  onToggleWorkflowChat,
   onAttachFiles,
   onChangeInput,
   onClearKnowledgeBases,
@@ -6574,11 +6599,12 @@ function Composer({
   onOpenVoice,
   onSkipKnowledgeSelection,
   onToggleKnowledgeBase,
-  onToggleThinking,
   onUploadKnowledgeDocument
 }: ComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const knowledgeFileInputRef = useRef<HTMLInputElement>(null);
+  const [isToolsOpen, setIsToolsOpen] = useState(false);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const [isKnowledgePanelOpen, setIsKnowledgePanelOpen] = useState(false);
   const [knowledgePanelError, setKnowledgePanelError] = useState<string | undefined>();
   const [uploadTargetBaseId, setUploadTargetBaseId] = useState("");
@@ -6588,6 +6614,26 @@ function Composer({
   );
   const canSend =
     !isGenerating && (inputValue.trim().length > 0 || attachments.length > 0);
+
+  // 点菜单外面或按 Esc 时收起 + 菜单
+  useEffect(() => {
+    if (!isToolsOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(event.target as Node)) {
+        setIsToolsOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsToolsOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [isToolsOpen]);
+
   useEffect(() => {
     if (!uploadTargetBaseId && knowledgeBases[0]) {
       setUploadTargetBaseId(knowledgeBases[0].id);
@@ -6743,32 +6789,123 @@ function Composer({
               accept=".pdf,.txt,.md,.csv,.json,application/pdf,text/plain,text/markdown,text/csv,application/json"
               onChange={handleKnowledgeFileChange}
             />
-            <button
-              className={`soft-button ${attachments.length ? "soft-button-active" : ""}`}
-              type="button"
-              aria-pressed={attachments.length > 0}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip size={22} strokeWidth={2.25} />
-              <span>上传文件</span>
-            </button>
-            <button
-              className={`soft-button ${
-                isKnowledgePanelOpen || selectedKnowledgeBaseIds.length
-                  ? "soft-button-active"
-                  : ""
-              }`}
-              type="button"
-              aria-expanded={isKnowledgePanelOpen}
-              aria-pressed={selectedKnowledgeBaseIds.length > 0}
-              onClick={() => {
-                setKnowledgePanelError(undefined);
-                setIsKnowledgePanelOpen((value) => !value);
-              }}
-            >
-              <AtSign size={22} strokeWidth={2.25} />
-              <span>知识库</span>
-            </button>
+            <div className="composer-tools" ref={toolsMenuRef}>
+              <button
+                className={`composer-tools-trigger${isToolsOpen ? " is-open" : ""}`}
+                type="button"
+                aria-label="更多工具"
+                aria-expanded={isToolsOpen}
+                onClick={() => setIsToolsOpen((value) => !value)}
+              >
+                <Plus size={22} strokeWidth={2.25} />
+              </button>
+              <AnimatePresence>
+                {isToolsOpen ? (
+                  <motion.div
+                    className="composer-tools-menu"
+                    initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                    transition={{ duration: 0.16, ease: "easeOut" }}
+                  >
+                    <div className="composer-tools-grid">
+                      <button
+                        className={`composer-tool-item${attachments.length ? " is-active" : ""}`}
+                        type="button"
+                        onClick={() => {
+                          fileInputRef.current?.click();
+                          setIsToolsOpen(false);
+                        }}
+                      >
+                        <Paperclip size={18} strokeWidth={2.1} />
+                        <span>上传文件</span>
+                      </button>
+                      <button
+                        className={`composer-tool-item${
+                          isKnowledgePanelOpen || selectedKnowledgeBaseIds.length ? " is-active" : ""
+                        }`}
+                        type="button"
+                        onClick={() => {
+                          setKnowledgePanelError(undefined);
+                          setIsKnowledgePanelOpen((value) => !value);
+                          setIsToolsOpen(false);
+                        }}
+                      >
+                        <AtSign size={18} strokeWidth={2.1} />
+                        <span>知识库</span>
+                      </button>
+                    </div>
+
+                    <div className="composer-tools-sep" />
+
+                    <div className="composer-tools-row">
+                      <button
+                        className={`new-chat-toggle${agentPickerOn || activeAgentId ? " is-on" : ""}`}
+                        type="button"
+                        role="switch"
+                        aria-checked={agentPickerOn || Boolean(activeAgentId)}
+                        disabled={isGenerating}
+                        onClick={onToggleAgentPicker}
+                      >
+                        <span className="new-chat-toggle-track">
+                          <span className="new-chat-toggle-knob" />
+                        </span>
+                        <span>使用智能体</span>
+                      </button>
+                      {agentPickerOn || activeAgentId ? (
+                        <select
+                          className="new-chat-select"
+                          aria-label="选择智能体"
+                          value={activeAgentId}
+                          onChange={(event) => onPickAgent(event.target.value)}
+                          disabled={isGenerating}
+                        >
+                          <option value="">默认助手</option>
+                          {agentOptions.map((agent) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+
+                    <div className="composer-tools-row">
+                      <button
+                        className={`new-chat-toggle${workflowChatOn ? " is-on" : ""}`}
+                        type="button"
+                        role="switch"
+                        aria-checked={workflowChatOn}
+                        disabled={isGenerating}
+                        onClick={onToggleWorkflowChat}
+                      >
+                        <span className="new-chat-toggle-track">
+                          <span className="new-chat-toggle-knob" />
+                        </span>
+                        <span>使用工作流</span>
+                      </button>
+                      {workflowChatOn ? (
+                        <select
+                          className="new-chat-select"
+                          aria-label="选择工作流"
+                          value={selectedWorkflowId}
+                          onChange={(event) => onPickWorkflow(event.target.value)}
+                          disabled={isGenerating}
+                        >
+                          {workflowOptions.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+
+                    {chatHint ? <div className="composer-tools-hint">{chatHint}</div> : null}
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
             {createPortal(
               <AnimatePresence>
                 {isKnowledgePanelOpen ? (
@@ -6897,19 +7034,6 @@ function Composer({
               </AnimatePresence>,
               document.body
             )}
-            <button
-              className={`soft-button thinking-mode-button ${
-                enableThinking ? "soft-button-active thinking-mode-button-active" : ""
-              }`}
-              type="button"
-              aria-label="深度思考"
-              aria-pressed={enableThinking}
-              disabled={isGenerating}
-              onClick={onToggleThinking}
-            >
-              <Brain size={22} strokeWidth={2.25} />
-              <span>深度思考</span>
-            </button>
           </div>
           <div className="composer-right-actions">
             {modelSlot}
@@ -8627,6 +8751,7 @@ function persistChatModelId(id: string) {
 function App() {
   const auth = useAuth();
   const [appearance, setAppearance] = useState<Appearance>(readAppearance);
+  const [petPref, setPetPref] = useState<PetPreference>(readPetPreference);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   /** 从模型选择器点「添加或管理模型」时直接落到模型页签。 */
@@ -8638,6 +8763,10 @@ function App() {
     applyAppearance(appearance);
     persistAppearance(appearance);
   }, [appearance]);
+
+  useEffect(() => {
+    persistPetPreference(petPref);
+  }, [petPref]);
 
   const [activeSection, setActiveSection] = useState<
     | "workbench"
@@ -11569,6 +11698,14 @@ function App() {
   }, [activeSection]);
 
   const hasMessages = messages.length > 0;
+  // 右侧面板只在对话页可用；离开对话页时自动收起，免得在别的页面露出呼出条。
+  const isChatView = activeSection === "chat";
+  useEffect(() => {
+    if (!isChatView && dockOpen) {
+      setDockOpen(false);
+      setActiveInsightMessageId(undefined);
+    }
+  }, [isChatView, dockOpen]);
   const activeInsightMessage = messages.find(
     (message) => message.id === activeInsightMessageId
   );
@@ -11587,7 +11724,7 @@ function App() {
       <div className="app-photo" aria-hidden="true" />
       <main
         className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          dockOpen ? "insight-open" : ""
+          isChatView && dockOpen ? "insight-open" : ""
         } ${resizing ? "pane-resizing" : ""}`}
         style={shellStyle}
       >
@@ -11897,11 +12034,13 @@ function App() {
           </div>
         ) : (
           <div
-            className={`workspace-inner chat-workspace has-pet ${
-              hasMessages ? "has-messages" : ""
-            }`}
+            className={`workspace-inner chat-workspace ${
+              petPref.enabled ? "has-pet" : ""
+            } ${hasMessages ? "has-messages" : ""}`}
           >
-          <PetStage />
+          {petPref.enabled ? (
+            <PetStage castId={petPref.castId} motionId={petPref.motionId} />
+          ) : null}
           {hasMessages && chatMode === "workflow" ? (
             <div className="workflow-chat-bar">
               <span className="workflow-chat-bar-label">当前工作流</span>
@@ -11984,80 +12123,9 @@ function App() {
                   ))}
                 </div>
               ) : null}
-              <div className="new-chat-setup">
-                <button
-                  className={`new-chat-toggle ${agentPickerOn || Boolean(activeAgentId) ? "is-on" : ""}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={agentPickerOn || Boolean(activeAgentId)}
-                  onClick={handleToggleAgentPicker}
-                  disabled={isGenerating}
-                >
-                  <span className="new-chat-toggle-track" aria-hidden="true">
-                    <span className="new-chat-toggle-knob" />
-                  </span>
-                  <span>使用智能体</span>
-                </button>
-                {agentPickerOn || Boolean(activeAgentId) ? (
-                  <select
-                    className="new-chat-select"
-                    aria-label="选择智能体"
-                    value={activeAgentId}
-                    disabled={isGenerating}
-                    onChange={(event) => handlePickAgent(event.target.value)}
-                  >
-                    <option value="">默认助手</option>
-                    {chatAgents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <span className="new-chat-setup-divider" aria-hidden="true" />
-                <button
-                  className={`new-chat-toggle ${chatMode === "workflow" ? "is-on" : ""}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={chatMode === "workflow"}
-                  onClick={handleToggleWorkflowChat}
-                  disabled={isGenerating}
-                >
-                  <span className="new-chat-toggle-track" aria-hidden="true">
-                    <span className="new-chat-toggle-knob" />
-                  </span>
-                  <span>使用工作流</span>
-                </button>
-                {chatMode === "workflow" ? (
-                  <select
-                    className="new-chat-select"
-                    aria-label="选择工作流"
-                    value={selectedWorkflowId}
-                    disabled={isGenerating || workflowOptions.length === 0}
-                    onChange={(event) => handleWorkflowChange(event.target.value)}
-                  >
-                    {workflowOptions.length === 0 ? (
-                      <option value="">加载中…</option>
-                    ) : (
-                      workflowOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.name || option.id}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                ) : null}
-                <span className="new-chat-setup-hint">
-                  {activeAgent
-                    ? `正在和「${activeAgent.name}」对话`
-                    : chatMode === "workflow"
-                      ? "问问题直接聊，给具体任务才跑一遍流程"
-                      : "打开开关选择智能体或工作流，不选就用默认助手"}
-                </span>
-                {workflowLoadError ? (
-                  <span className="workflow-chat-bar-error">{workflowLoadError}</span>
-                ) : null}
-              </div>
+              {workflowLoadError ? (
+                <p className="workflow-chat-bar-error">{workflowLoadError}</p>
+              ) : null}
               {chatMode === "workflow" ? null : activeAgent &&
                 (activeAgent.chatConfig?.quickPrompts?.length ?? 0) > 0 ? (
                 <div className="quick-row" aria-label="智能体快捷指令">
@@ -12147,7 +12215,6 @@ function App() {
             }
             attachments={attachments}
             attachmentError={attachmentError}
-            enableThinking={enableThinking}
             inputValue={inputValue}
             isGenerating={isGenerating}
             knowledgeBases={knowledgeBases}
@@ -12159,6 +12226,23 @@ function App() {
             }
             knowledgeUploadStatus={knowledgeStatus}
             selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+            agentOptions={chatAgents}
+            activeAgentId={activeAgentId}
+            workflowOptions={workflowOptions}
+            selectedWorkflowId={selectedWorkflowId}
+            workflowChatOn={chatMode === "workflow"}
+            agentPickerOn={agentPickerOn}
+            chatHint={
+              activeAgent
+                ? `正在和「${activeAgent.name}」对话`
+                : chatMode === "workflow"
+                  ? "问问题直接聊，给具体任务才跑一遍流程"
+                  : "不选就用默认助手"
+            }
+            onPickAgent={handlePickAgent}
+            onToggleAgentPicker={handleToggleAgentPicker}
+            onPickWorkflow={handleWorkflowChange}
+            onToggleWorkflowChat={handleToggleWorkflowChat}
             onAttachFiles={handleAttachFiles}
             onChangeInput={setInputValue}
             onClearKnowledgeBases={() => setSelectedKnowledgeBaseIds([])}
@@ -12185,7 +12269,6 @@ function App() {
               void completePendingLessonKnowledgeSelection(false)
             }
             onToggleKnowledgeBase={toggleSelectedKnowledgeBase}
-            onToggleThinking={() => setEnableThinking((value) => !value)}
             onUploadKnowledgeDocument={(baseId, file) => {
               void uploadKnowledgeDocument(baseId, file, {
                 resourceType: "其他",
@@ -12198,18 +12281,20 @@ function App() {
           </div>
         )}
       </section>
-      {!compact && dockOpen ? (
+      {!compact && isChatView ? (
         <PaneResizer
           side="right"
           value={dockWidth}
           min={DOCK_MIN}
           max={DOCK_MAX}
           direction={-1}
+          disabled={!dockOpen}
           onChange={(next) => setDockWidth(clamp(next, DOCK_MIN, DOCK_MAX))}
           onDragStart={() => setResizing(true)}
           onDragEnd={() => setResizing(false)}
         />
       ) : null}
+      {isChatView ? (
       <RightDock
         open={dockOpen}
         tab={dockTab}
@@ -12267,6 +12352,7 @@ function App() {
         hasInsight={Boolean(activeInsightMessage)}
         generating={isGenerating}
       />
+      ) : null}
       {createPortal(
         <AnimatePresence>
           {isVoiceOpen ? (
@@ -12299,6 +12385,8 @@ function App() {
           appearance={appearance}
           initialTab={settingsTab}
           onChange={setAppearance}
+          petPref={petPref}
+          onPetChange={setPetPref}
           onClose={() => {
             setSettingsOpen(false);
             setSettingsTab("appearance");
