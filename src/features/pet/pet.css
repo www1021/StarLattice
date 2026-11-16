@@ -1,4 +1,4 @@
-/* ===== 桌宠舞台 =====
+/* ===== 工作宠舞台 =====
    贴着对话列左侧的边缘站立，本身不接收鼠标事件，纯表现层。
    任何一层动画出错都不影响右侧对话，因为它不参与任何业务状态。 */
 
@@ -17,16 +17,41 @@
   z-index: 1;
 }
 
-/* --- 立绘容器 --- */
-.pet-figure {
+/* --- 舞台上的角色 --- */
+.pet-cast {
   position: relative;
   width: 100%;
   height: var(--pet-h);
+}
+
+.pet-actor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100%;
+  transform-origin: 50% 100%;
+  will-change: transform, opacity;
+}
+
+/* 主角在下，被拽上来的那位压在上面 */
+.pet-actor.is-main {
+  z-index: 1;
+}
+.pet-actor.is-helper {
+  z-index: 2;
+}
+
+.pet-figure {
+  position: relative;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: flex-end;
   justify-content: center;
 }
 
+.pet-l-press,
 .pet-l-float,
 .pet-l-sway,
 .pet-l-breathe {
@@ -39,23 +64,45 @@
   will-change: transform;
 }
 
+.pet-art-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
 .pet-art {
   display: block;
   object-fit: contain;
   object-position: 50% 100%;
-  filter: drop-shadow(0 10px 14px rgba(var(--rgb-shadow), 0.10));
+  filter: drop-shadow(0 10px 14px rgba(var(--rgb-shadow), 0.1));
   -webkit-user-drag: none;
 }
 
-/* 三层各走各的周期，且都是不对称关键帧（快起慢落），
-   合在一起才不会像匀速摆动的图。周期取互质的秒数，错开节拍。 */
-.pet-l-float {
+/* 闭眼帧盖在睁眼帧上，位置完全对齐，只切透明度 */
+.pet-blink {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+.pet-blink.is-on {
+  opacity: 1;
+}
+
+/* ===== 待机：三层各走各的周期，且都是不对称关键帧（快起慢落），
+   合在一起才不像匀速摆动的图。周期取互质秒数，错开节拍。 ===== */
+.pet-actor.is-main .pet-l-float {
   animation: petFloat 4.7s cubic-bezier(0.42, 0, 0.58, 1) infinite;
 }
-.pet-l-sway {
+.pet-actor.is-main .pet-l-sway {
   animation: petSway 7.3s ease-in-out infinite;
 }
-.pet-l-breathe {
+.pet-actor.is-main .pet-l-breathe {
   animation: petBreathe 3.1s ease-in-out infinite;
 }
 
@@ -94,7 +141,7 @@
 }
 
 /* 待机时偶尔踮一下脚、歪一下头，间隔随机（由组件里的定时器触发） */
-.pet-stage[data-peek="1"] .pet-l-breathe {
+.pet-stage[data-peek="1"] .pet-actor.is-main .pet-l-breathe {
   animation: petPeek 1.05s cubic-bezier(0.34, 1.35, 0.5, 1);
 }
 @keyframes petPeek {
@@ -115,14 +162,67 @@
   }
 }
 
-/* --- 运行中：身体前倾，起落不对称的小跑节奏 --- */
-.pet-stage[data-mood="running"] .pet-l-sway {
+/* --- 点击：像被一只手从头顶按下去，压扁再回弹 --- */
+.pet-l-press[data-press="1"] {
+  animation: petPress 0.52s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+@keyframes petPress {
+  0% {
+    transform: none;
+  }
+  10% {
+    transform: translateY(5px) scale(1.16, 0.72);
+  }
+  26% {
+    transform: translateY(-2px) scale(0.94, 1.08);
+  }
+  42% {
+    transform: translateY(1px) scale(1.06, 0.95);
+  }
+  58% {
+    transform: translateY(0) scale(0.98, 1.03);
+  }
+  74% {
+    transform: none;
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* 点击热区：只覆盖人物本身，不挡右侧对话 */
+.pet-hit {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: calc(var(--pet-h) - 6px);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 14px;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 3;
+  -webkit-tap-highlight-color: transparent;
+}
+.pet-hit:focus-visible {
+  outline: 2px solid rgba(47, 124, 246, 0.5);
+  outline-offset: 4px;
+}
+/* 有人接手时主角退到一边，点中间不该还给主角反应 */
+.pet-stage[data-helper="1"] .pet-hit {
+  pointer-events: none;
+}
+
+/* --- 工作中：身体前倾，起落不对称的小跑节奏 --- */
+.pet-stage[data-mood="running"] .pet-actor.is-main .pet-l-sway {
   animation: petRunSway 1.31s ease-in-out infinite;
 }
-.pet-stage[data-mood="running"] .pet-l-float {
+.pet-stage[data-mood="running"] .pet-actor.is-main .pet-l-float {
   animation: petRunBounce 0.58s cubic-bezier(0.3, 0, 0.4, 1) infinite;
 }
-.pet-stage[data-mood="running"] .pet-l-breathe {
+.pet-stage[data-mood="running"] .pet-actor.is-main .pet-l-breathe {
   animation: petRunSquash 0.58s cubic-bezier(0.3, 0, 0.4, 1) infinite;
 }
 @keyframes petRunSway {
@@ -167,13 +267,13 @@
 }
 
 /* --- 成功：蓄力下蹲 → 蹬地跃起 → 空中停顿 → 落地压扁 → 小回弹 --- */
-.pet-stage[data-mood="success"] .pet-l-float {
+.pet-stage[data-mood="success"] .pet-actor.is-main .pet-l-float {
   animation: petJump 1.65s cubic-bezier(0.36, 0.7, 0.3, 1) infinite;
 }
-.pet-stage[data-mood="success"] .pet-l-sway {
+.pet-stage[data-mood="success"] .pet-actor.is-main .pet-l-sway {
   animation: petSwaySmall 1.65s ease-in-out infinite;
 }
-.pet-stage[data-mood="success"] .pet-l-breathe {
+.pet-stage[data-mood="success"] .pet-actor.is-main .pet-l-breathe {
   animation: none;
 }
 @keyframes petJump {
@@ -221,14 +321,14 @@
   }
 }
 
-/* --- 报错：肩膀塌下去，配一记很轻的抽气式抖动（不是机械左右摇） --- */
-.pet-stage[data-mood="error"] .pet-l-sway {
+/* --- 报错：肩膀塌下去，配一记很轻的抽气式抖动 --- */
+.pet-stage[data-mood="error"] .pet-actor.is-main .pet-l-sway {
   animation: petQuiver 1.37s ease-in-out infinite;
 }
-.pet-stage[data-mood="error"] .pet-l-float {
+.pet-stage[data-mood="error"] .pet-actor.is-main .pet-l-float {
   animation: petDroop 3.7s ease-in-out infinite;
 }
-.pet-stage[data-mood="error"] .pet-l-breathe {
+.pet-stage[data-mood="error"] .pet-actor.is-main .pet-l-breathe {
   animation: petSob 2.6s ease-in-out infinite;
 }
 @keyframes petQuiver {
@@ -265,6 +365,89 @@
   }
 }
 
+/* --- 被拽上来的那位：歪着头、慢半拍、时不时叹口气 --- */
+.pet-actor.is-helper .pet-l-sway {
+  animation: petGrudgeSway 2.4s ease-in-out infinite;
+}
+.pet-actor.is-helper .pet-l-float {
+  animation: petGrudgeBob 3.1s ease-in-out infinite;
+}
+.pet-actor.is-helper .pet-l-breathe {
+  animation: petGrudgeSigh 4.3s ease-in-out infinite;
+}
+@keyframes petGrudgeSway {
+  0%,
+  100% {
+    transform: rotate(-2.6deg);
+  }
+  56% {
+    transform: rotate(-0.3deg);
+  }
+}
+@keyframes petGrudgeBob {
+  0%,
+  100% {
+    transform: translateY(1.5px);
+  }
+  52% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes petGrudgeSigh {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  38% {
+    transform: scale(1.012, 0.984);
+  }
+  62% {
+    transform: scale(0.994, 1.008);
+  }
+}
+
+/* 被拽进来时后面拖两道速度线，出完就消失 */
+.pet-pull-marks {
+  position: absolute;
+  left: -14px;
+  top: 38%;
+  width: 62px;
+  height: 58px;
+  pointer-events: none;
+}
+.pet-pull-marks::before,
+.pet-pull-marks::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(var(--rgb-shadow), 0.22);
+  animation: petPullLine 0.85s ease-out forwards;
+}
+.pet-pull-marks::before {
+  top: 10px;
+  width: 46px;
+}
+.pet-pull-marks::after {
+  top: 34px;
+  width: 32px;
+  animation-delay: 0.06s;
+}
+@keyframes petPullLine {
+  0% {
+    opacity: 0;
+    transform: translateX(-16px) scaleX(0.5);
+  }
+  35% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(14px) scaleX(1.1);
+  }
+}
+
 /* --- 地面接触阴影 --- */
 .pet-shadow {
   position: absolute;
@@ -274,14 +457,14 @@
   height: 13px;
   transform: translateX(-50%);
   border-radius: 50%;
-  background: radial-gradient(50% 50% at 50% 50%, rgba(var(--rgb-shadow), 0.20), transparent 72%);
+  background: radial-gradient(50% 50% at 50% 50%, rgba(var(--rgb-shadow), 0.2), transparent 72%);
   filter: blur(2px);
   transition: opacity 0.3s, transform 0.3s;
 }
-.pet-stage[data-mood="running"] .pet-shadow {
+.pet-stage[data-mood="running"] .pet-actor.is-main .pet-shadow {
   animation: petShadowRun 0.58s cubic-bezier(0.3, 0, 0.4, 1) infinite;
 }
-.pet-stage[data-mood="success"] .pet-shadow {
+.pet-stage[data-mood="success"] .pet-actor.is-main .pet-shadow {
   animation: petShadowJump 1.65s cubic-bezier(0.36, 0.7, 0.3, 1) infinite;
 }
 @keyframes petShadowRun {
@@ -361,7 +544,7 @@
 .pet-bubble {
   position: relative;
   margin-bottom: 12px;
-  max-width: 176px;
+  max-width: 186px;
   padding: 7px 12px;
   border-radius: 14px;
   background: var(--surf-99);
@@ -388,64 +571,6 @@
   border-bottom: 1px solid var(--line-90);
 }
 
-/* --- 底部状态条 --- */
-.pet-plate {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: rgba(var(--rgb-surface), 0.55);
-  border: 1px solid var(--line-96);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  color: var(--n-51);
-  transition: color 0.3s, border-color 0.3s;
-}
-.pet-plate-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  transition: background 0.3s;
-}
-.pet-stage[data-mood="idle"] .pet-plate {
-  color: var(--n-51);
-}
-.pet-stage[data-mood="running"] .pet-plate {
-  color: var(--n-30);
-  border-color: var(--line-84);
-}
-.pet-stage[data-mood="running"] .pet-plate-dot {
-  background: #2f7cf6;
-  box-shadow: 0 0 0 3px rgba(47, 124, 246, 0.16);
-  animation: petDotPulse 1.1s ease-in-out infinite;
-}
-.pet-stage[data-mood="success"] .pet-plate {
-  color: #1c9b5e;
-  border-color: rgba(28, 155, 94, 0.34);
-}
-.pet-stage[data-mood="success"] .pet-plate-dot {
-  background: #1c9b5e;
-}
-.pet-stage[data-mood="error"] .pet-plate {
-  color: #d1483a;
-  border-color: rgba(209, 72, 58, 0.34);
-}
-.pet-stage[data-mood="error"] .pet-plate-dot {
-  background: #d1483a;
-}
-@keyframes petDotPulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
-
 /* --- 自适应：空间不够就缩小，再不够就整只收起来，不挤对话列 --- */
 @media (max-width: 1460px) {
   .pet-stage {
@@ -467,12 +592,17 @@
 
 /* --- 尊重系统减弱动效 --- */
 @media (prefers-reduced-motion: reduce) {
+  .pet-l-press,
   .pet-l-float,
   .pet-l-sway,
   .pet-l-breathe,
   .pet-shadow,
   .pet-sparks span,
-  .pet-plate-dot {
+  .pet-pull-marks::before,
+  .pet-pull-marks::after {
     animation: none !important;
+  }
+  .pet-blink {
+    transition: none;
   }
 }

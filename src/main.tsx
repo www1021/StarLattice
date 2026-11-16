@@ -88,6 +88,7 @@ import "./styles/theme-tokens.css";
 import "./styles/theme.css";
 import "./features/auth/auth.css";
 import { PetStage } from "./features/pet/PetStage";
+import { castForAgent } from "./features/pet/petCast";
 import { pet } from "./features/pet/petStore";
 
 /** 写请求同源标记。服务端 CSRF 屏障要求 JSON 内容类型或这个头二选一，
@@ -167,6 +168,15 @@ type ToolNote = {
 function toolLabelOf(note: ToolNote): string {
   const tool = note.toolName || note.name;
   return note.serverName ? `${note.serverName}/${tool}` : tool;
+}
+
+/** 桌宠气泡里用的短名字：优先显示名，函数名那种 snake_case 转成空格分隔。 */
+function toolCaptionName(note: ToolNote): string {
+  const raw = note.name || note.toolName || "工具";
+  if (/^[a-z0-9_.\-]+$/i.test(raw)) {
+    return raw.replace(/[_-]+/g, " ");
+  }
+  return raw;
 }
 
 type GenerationThinkingStep = {
@@ -11011,6 +11021,8 @@ function App() {
       );
     });
     let completedConversationId: string | undefined;
+    // 这一轮被转交出去的专项 Agent 名字：它自己调工具时，气泡要写清楚是谁在干
+    let delegatedAgentName: string | undefined;
 
     activeRequestRef.current?.abort();
     activeRequestRef.current = abortController;
@@ -11021,7 +11033,8 @@ function App() {
     setSelectedKnowledgeBaseIds([]);
     setIsGenerating(true);
     // 桌宠进入工作状态：纯表现层，画布出问题也不影响这条请求。
-    pet.running();
+    // 这时候还没有工具事件，只能说清楚"谁在想"，别编造步骤。
+    pet.running(activeAgent?.name ? `${activeAgent.name} 在想` : "正在理解问题");
 
     try {
       let response: Response;
@@ -11102,15 +11115,36 @@ function App() {
           visibleTextStreamer.enqueue(content);
         },
         onTool(note) {
-          // 桌宠跟着工具进度走：开始跑就工作，跑挂了立刻换委屈脸。
-          if (note.stage === "running") {
-            pet.running();
-          } else if (note.stage === "done") {
-            if (note.ok === false) {
-              pet.error();
-            } else {
-              pet.running();
+          // 气泡里讲的是这一步真实在干什么，不是固定话术：
+          // 调工具就报工具名，转交就报是哪个智能体接手。
+          if (note.kind === "delegation") {
+            const target = note.targetAgent;
+            if (note.stage === "running" && target) {
+              // 顺手把这位专项 Agent 从幕后拽到台上来
+              delegatedAgentName = target.name;
+              pet.helperIn({ castId: castForAgent(target.name).id, name: target.name });
+              pet.running(`叫 ${target.name} 来`);
+            } else if (note.stage === "done") {
+              if (note.ok === false) {
+                delegatedAgentName = undefined;
+                pet.helperOut();
+                pet.error(`${target?.name ?? "专项智能体"} 没接住`);
+              } else if (target) {
+                pet.running(`${target.name} 接手了`);
+              }
             }
+          } else if (note.stage === "running") {
+            const label = toolCaptionName(note);
+            pet.running(delegatedAgentName ? `${delegatedAgentName}·${label}` : `调用 ${label}`);
+          } else if (note.stage === "done") {
+            const label = toolCaptionName(note);
+            if (note.ok === false) {
+              pet.error(`${label} 出错`);
+            } else {
+              pet.running(`${label} 完成`);
+            }
+          } else if (note.stage === "skipped") {
+            pet.running(`${toolCaptionName(note)} 跳过`);
           }
           // 转交不单独占一行：直接把这条回复的署名换成目标 Agent，
           // 学生看到的始终是「谁在答」，而不是「导师说要转给谁」。
@@ -11293,7 +11327,7 @@ function App() {
             : item
         )
       );
-      pet.error();
+      pet.error("这轮没跑通");
     } finally {
       if (activeRequestRef.current === abortController) {
         activeRequestRef.current = null;
