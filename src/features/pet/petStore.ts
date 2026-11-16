@@ -7,12 +7,17 @@ type Helper = {
   name: string;
 };
 
+/** 转交动画的阶段：先把人拽上来，再让对方不情愿地干活 */
+type PullPhase = "none" | "pulling" | "working";
+
 type PetState = {
   mood: PetMood;
   /** 头顶气泡文案。空字符串就不显示气泡——没有真实步骤可讲时宁可不说。 */
   caption: string;
   /** 转交给专项 Agent 时出场的那位；null 表示只有主角 */
   helper: Helper | null;
+  /** 拉取动画进行到哪一步 */
+  pullPhase: PullPhase;
   /** 点击压缩动画的令牌，每点一次加一 */
   pressToken: number;
   /** 闭眼帧是否正在显示 */
@@ -31,6 +36,7 @@ const PRESS_LINES = ["别按我…", "压扁啦", "咯咯", "轻点…", "哎呀
 let settleTimer: ReturnType<typeof setTimeout> | undefined;
 let blinkTimer: ReturnType<typeof setTimeout> | undefined;
 let captionTimer: ReturnType<typeof setTimeout> | undefined;
+let pullTimer: ReturnType<typeof setTimeout> | undefined;
 
 function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
   if (timer) clearTimeout(timer);
@@ -44,6 +50,7 @@ export const usePetStore = create<PetState>()((set, get) => ({
   mood: "idle",
   caption: "",
   helper: null,
+  pullPhase: "none",
   pressToken: 0,
   blinking: false,
 
@@ -56,9 +63,12 @@ export const usePetStore = create<PetState>()((set, get) => ({
 
   success() {
     clearTimer(settleTimer);
+    clearTimer(pullTimer);
+    settleTimer = undefined;
+    pullTimer = undefined;
     // 完成时不硬编一句话，直接蹦起来，两秒多后回待机。
     // 借来的人当场就让她溜回去，主角弹回中间欢呼。
-    set({ mood: "success", caption: "", helper: null });
+    set({ mood: "success", caption: "", helper: null, pullPhase: "none" });
     settleTimer = setTimeout(() => {
       set({ mood: "idle" });
       settleTimer = undefined;
@@ -67,13 +77,19 @@ export const usePetStore = create<PetState>()((set, get) => ({
 
   error(caption) {
     clearTimer(settleTimer);
-    set({ mood: "error", caption: caption ?? "", helper: null });
+    clearTimer(pullTimer);
+    settleTimer = undefined;
+    pullTimer = undefined;
+    set({ mood: "error", caption: caption ?? "", helper: null, pullPhase: "none" });
   },
 
   rest() {
     clearTimer(settleTimer);
     clearTimer(captionTimer);
-    set({ mood: "idle", caption: "", helper: null });
+    clearTimer(pullTimer);
+    settleTimer = undefined;
+    pullTimer = undefined;
+    set({ mood: "idle", caption: "", helper: null, pullPhase: "none" });
   },
 
   helperIn(target) {
@@ -81,11 +97,19 @@ export const usePetStore = create<PetState>()((set, get) => ({
     if (current && current.castId === target.castId && current.name === target.name) {
       return;
     }
-    set({ helper: target, mood: "running" });
+    clearTimer(pullTimer);
+    // 先播"伸手拽人"的动作，拽够了再切到对方干活
+    set({ helper: target, mood: "running", pullPhase: "pulling" });
+    pullTimer = setTimeout(() => {
+      if (get().pullPhase === "pulling") set({ pullPhase: "working" });
+      pullTimer = undefined;
+    }, 1500);
   },
 
   helperOut() {
-    set({ helper: null });
+    clearTimer(pullTimer);
+    pullTimer = undefined;
+    set({ helper: null, pullPhase: "none" });
   },
 
   press(caption) {

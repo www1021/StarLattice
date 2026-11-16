@@ -365,14 +365,157 @@
   }
 }
 
-/* --- 被拽上来的那位：歪着头、慢半拍、时不时叹口气 --- */
-.pet-actor.is-helper .pet-l-sway {
+/* --- 主角使劲拉人：整个身子往后坐、一下一下地拽 --- */
+.pet-stage[data-pull="1"] .pet-actor.is-main .pet-l-sway {
+  animation: petHeave 0.75s cubic-bezier(0.36, 0, 0.3, 1) infinite;
+}
+.pet-stage[data-pull="1"] .pet-actor.is-main .pet-l-float {
+  animation: petHeaveBob 0.75s cubic-bezier(0.36, 0, 0.3, 1) infinite;
+}
+.pet-stage[data-pull="1"] .pet-actor.is-main .pet-l-breathe {
+  animation: petHeaveSquash 0.75s cubic-bezier(0.36, 0, 0.3, 1) infinite;
+}
+/* 每次发力，额角蹦出一颗青筋 */
+.pet-effort {
+  position: absolute;
+  top: 16%;
+  right: 6%;
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 50% 50%, transparent 30%, #e2483f 32% 42%, transparent 44%),
+    conic-gradient(from 0deg, #e2483f 0 12%, transparent 12% 25%, #e2483f 25% 37%, transparent 37% 50%, #e2483f 50% 62%, transparent 62% 75%, #e2483f 75% 87%, transparent 87%);
+  border-radius: 50%;
+  animation: petEffortPop 0.75s ease-out infinite;
+}
+@keyframes petHeave {
+  0%,
+  100% {
+    transform: rotate(2deg);
+  }
+  30% {
+    transform: rotate(-7deg);
+  }
+  58% {
+    transform: rotate(4deg);
+  }
+}
+@keyframes petHeaveBob {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  30% {
+    transform: translate(-5px, 3px);
+  }
+  58% {
+    transform: translate(6px, -3px);
+  }
+}
+@keyframes petHeaveSquash {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  30% {
+    transform: scale(0.965, 1.035);
+  }
+  58% {
+    transform: scale(1.045, 0.955);
+  }
+}
+@keyframes petEffortPop {
+  0%,
+  22% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  34%,
+  52% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  66%,
+  100% {
+    opacity: 0;
+    transform: scale(1.1);
+  }
+}
+
+/* 绳索：横在两人之间，随发力一顿一顿地绷紧 */
+.pet-rope {
+  position: absolute;
+  left: 16%;
+  right: 46%;
+  top: 54%;
+  height: 3px;
+  transform-origin: 100% 50%;
+  border-radius: 3px;
+  background: repeating-linear-gradient(115deg, #c98f4e 0 6px, #e8c98d 6px 11px);
+  box-shadow: 0 1px 2px rgba(var(--rgb-shadow), 0.25);
+  z-index: 2;
+  animation: petRopeTug 0.75s cubic-bezier(0.36, 0, 0.3, 1) infinite;
+}
+@keyframes petRopeTug {
+  0%,
+  100% {
+    transform: scaleX(1) rotate(-1deg);
+  }
+  30% {
+    transform: scaleX(0.82) rotate(2deg);
+  }
+  58% {
+    transform: scaleX(1.06) rotate(-2deg);
+  }
+}
+
+/* --- 被拖拽中的小新：挣扎着往后蹬，身体一抽一抽 --- */
+.pet-figure[data-variant="drag"] .pet-l-sway {
+  animation: petDragStruggle 0.5s ease-in-out infinite;
+}
+.pet-figure[data-variant="drag"] .pet-l-float {
+  animation: petDragStamp 0.34s ease-in-out infinite;
+}
+.pet-figure[data-variant="drag"] .pet-l-breathe {
+  animation: petDragBrace 0.62s ease-in-out infinite;
+}
+@keyframes petDragStruggle {
+  0%,
+  100% {
+    transform: rotate(4deg);
+  }
+  50% {
+    transform: rotate(-3deg);
+  }
+}
+@keyframes petDragStamp {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+}
+@keyframes petDragBrace {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(1.02, 0.98);
+  }
+}
+
+/* --- 被拽来干活后：垮着肩、慢半拍、时不时叹口气 --- */
+.pet-figure[data-variant="work"] .pet-l-sway {
   animation: petGrudgeSway 2.4s ease-in-out infinite;
 }
-.pet-actor.is-helper .pet-l-float {
+.pet-figure[data-variant="work"] .pet-l-float {
   animation: petGrudgeBob 3.1s ease-in-out infinite;
 }
-.pet-actor.is-helper .pet-l-breathe {
+.pet-figure[data-variant="work"] .pet-l-breathe {
   animation: petGrudgeSigh 4.3s ease-in-out infinite;
 }
 @keyframes petGrudgeSway {
@@ -403,48 +546,6 @@
   }
   62% {
     transform: scale(0.994, 1.008);
-  }
-}
-
-/* 被拽进来时后面拖两道速度线，出完就消失 */
-.pet-pull-marks {
-  position: absolute;
-  left: -14px;
-  top: 38%;
-  width: 62px;
-  height: 58px;
-  pointer-events: none;
-}
-.pet-pull-marks::before,
-.pet-pull-marks::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  height: 2px;
-  border-radius: 2px;
-  background: rgba(var(--rgb-shadow), 0.22);
-  animation: petPullLine 0.85s ease-out forwards;
-}
-.pet-pull-marks::before {
-  top: 10px;
-  width: 46px;
-}
-.pet-pull-marks::after {
-  top: 34px;
-  width: 32px;
-  animation-delay: 0.06s;
-}
-@keyframes petPullLine {
-  0% {
-    opacity: 0;
-    transform: translateX(-16px) scaleX(0.5);
-  }
-  35% {
-    opacity: 0.85;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(14px) scaleX(1.1);
   }
 }
 
@@ -540,35 +641,47 @@
   }
 }
 
-/* --- 对话框 --- */
+/* --- 对话框：漫画气泡，粗黑描边 + 白底 + 粗体字，配小新的画风 --- */
 .pet-bubble {
   position: relative;
-  margin-bottom: 12px;
-  max-width: 186px;
-  padding: 7px 12px;
-  border-radius: 14px;
-  background: var(--surf-99);
-  border: 1px solid var(--line-90);
-  box-shadow: 0 8px 22px rgba(var(--rgb-shadow), 0.12);
-  font-size: 12.5px;
+  margin-bottom: 13px;
+  max-width: 190px;
+  padding: 7px 13px;
+  border-radius: 15px;
+  background: #fffdf8;
+  border: 2.5px solid #2b2118;
+  box-shadow: 3px 4px 0 rgba(43, 33, 24, 0.16);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
   line-height: 1.35;
-  color: var(--n-30);
+  color: #2b2118;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pet-bubble::after {
+.pet-bubble::before {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: -5px;
-  width: 8px;
-  height: 8px;
+  bottom: -9px;
+  width: 13px;
+  height: 13px;
   transform: translateX(-50%) rotate(45deg);
-  background: var(--surf-99);
-  border-right: 1px solid var(--line-90);
-  border-bottom: 1px solid var(--line-90);
+  background: #fffdf8;
+  border-right: 2.5px solid #2b2118;
+  border-bottom: 2.5px solid #2b2118;
+}
+/* 尖角盖住气泡下沿的描边，避免出现一条黑线穿过尾巴 */
+.pet-bubble::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - 7px);
+  bottom: 0;
+  width: 14px;
+  height: 3px;
+  background: #fffdf8;
 }
 
 /* --- 自适应：空间不够就缩小，再不够就整只收起来，不挤对话列 --- */
@@ -598,8 +711,8 @@
   .pet-l-breathe,
   .pet-shadow,
   .pet-sparks span,
-  .pet-pull-marks::before,
-  .pet-pull-marks::after {
+  .pet-effort,
+  .pet-rope {
     animation: none !important;
   }
   .pet-blink {

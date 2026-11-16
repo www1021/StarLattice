@@ -14,7 +14,7 @@ function Figure({
   pressed,
   onPressEnd,
   showSparks,
-  pulling
+  variant
 }: {
   pose: PetPose;
   blinkPose?: PetPose;
@@ -22,11 +22,13 @@ function Figure({
   pressed?: boolean;
   onPressEnd?: () => void;
   showSparks?: boolean;
-  pulling?: boolean;
+  /** main=主角；drag=正被拽；work=被拽来干活 */
+  variant?: "main" | "drag" | "work";
 }) {
   const scale = pose.scale ?? 1;
+  const v = variant ?? "main";
   return (
-    <div className="pet-figure">
+    <div className="pet-figure" data-variant={v}>
       <div
         className="pet-l-press"
         data-press={pressed ? "1" : "0"}
@@ -56,6 +58,8 @@ function Figure({
                     style={{ height: `${scale * 100}%`, width: `${blinkPose.ratio * scale * 100}%` }}
                   />
                 ) : null}
+                {/* 使劲时蹦出的青筋，只主角拉人那一下显示 */}
+                {v === "main" && <span className="pet-effort" aria-hidden="true" />}
               </div>
             </div>
           </div>
@@ -81,8 +85,6 @@ function Figure({
           })}
         </div>
       ) : null}
-
-      {pulling ? <div className="pet-pull-marks" aria-hidden="true" /> : null}
     </div>
   );
 }
@@ -91,11 +93,13 @@ export function PetStage() {
   const mood = usePetStore((state) => state.mood);
   const caption = usePetStore((state) => state.caption);
   const helper = usePetStore((state) => state.helper);
+  const pullPhase = usePetStore((state) => state.pullPhase);
   const blinking = usePetStore((state) => state.blinking);
-  const press = usePetStore((state) => state.press);
 
   const main = castById(MAIN_CAST_ID);
   const helperCast = helper ? castById(helper.castId) : null;
+  const pulling = pullPhase === "pulling";
+  const working = pullPhase === "working";
 
   // 点击：压一下 + 眨个眼。间隔要大于压缩动画本身（0.52s），
   // 否则上一段还没播完就再点，动画不会重新开始。
@@ -106,8 +110,8 @@ export function PetStage() {
     if (now - lastPressRef.current < 560) return;
     lastPressRef.current = now;
     setPressed(true);
-    press();
-  }, [press]);
+    usePetStore.getState().press();
+  }, []);
 
   // 待机时偶尔自己踮一下脚，间隔随机，避免一直一个节奏
   const [peek, setPeek] = useState(false);
@@ -136,7 +140,10 @@ export function PetStage() {
     };
   }, [mood, helper]);
 
-  const mainPose = poseOf(main, mood);
+  // 主角拉人那一下切到"使劲伸手"的立绘，其余时间按当前状态走
+  const mainPose = pulling && main.pullPose ? main.pullPose : poseOf(main, mood);
+  // 配角：被拽时和干活时用同一张不情愿的脸
+  const matePose = (working && helperCast?.dragPose) || poseOf(helperCast ?? main, "running");
 
   return (
     <section
@@ -144,6 +151,8 @@ export function PetStage() {
       data-mood={mood}
       data-peek={peek ? "1" : "0"}
       data-helper={helper ? "1" : "0"}
+      data-pull={pulling ? "1" : "0"}
+      data-work={working ? "1" : "0"}
       aria-label="工作宠"
     >
       <AnimatePresence>
@@ -151,9 +160,9 @@ export function PetStage() {
           <motion.div
             key={caption}
             className="pet-bubble"
-            initial={{ opacity: 0, y: 8, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.94 }}
+            initial={{ opacity: 0, y: 8, scale: 0.9, rotate: -3 }}
+            animate={{ opacity: 1, y: 0, scale: 1, rotate: -2 }}
+            exit={{ opacity: 0, y: -6, scale: 0.94, rotate: -2 }}
             transition={{ type: "spring", stiffness: 420, damping: 28 }}
           >
             {caption}
@@ -162,16 +171,16 @@ export function PetStage() {
       </AnimatePresence>
 
       <div className="pet-cast">
-        {/* 主角：有人接手时退到左边只露半个身子，像在旁边看着人家干活 */}
+        {/* 主角：拉人时站在右边使劲，拉完退到左边看着；平时居中 */}
         <motion.div
           className="pet-actor is-main"
           animate={{
-            x: helper ? -62 : 0,
-            scale: helper ? 0.5 : 1,
-            opacity: helper ? 0.5 : 1,
-            rotate: helper ? -6 : 0
+            x: pulling ? 46 : helper ? -70 : 0,
+            scale: pulling ? 0.82 : helper ? 0.46 : 1,
+            opacity: helper && !pulling ? 0.5 : 1,
+            rotate: 0
           }}
-          transition={{ type: "spring", stiffness: 200, damping: 22 }}
+          transition={{ type: "spring", stiffness: 210, damping: 22 }}
         >
           <Figure
             pose={mainPose}
@@ -183,23 +192,43 @@ export function PetStage() {
           />
         </motion.div>
 
-        {/* 被拽上来的专项 Agent：从左边被拉进来，带一点被拽歪的过冲 */}
+        {/* 绳索：主角使劲拉的那一下，两人之间绷一根绳 */}
+        <AnimatePresence>
+          {pulling ? (
+            <motion.div
+              key="rope"
+              className="pet-rope"
+              initial={{ opacity: 0, scaleX: 0.4 }}
+              animate={{ opacity: 1, scaleX: 1 }}
+              exit={{ opacity: 0, scaleX: 0.5 }}
+              transition={{ duration: 0.18 }}
+              aria-hidden="true"
+            />
+          ) : null}
+        </AnimatePresence>
+
+        {/* 被拽上来的小新：先 resist 抵抗着被拖近，再落到岗位上不情愿地干活 */}
         <AnimatePresence>
           {helper && helperCast ? (
             <motion.div
               key={helper.castId + helper.name}
               className="pet-actor is-helper"
-              initial={{ x: -74, rotate: -16, scale: 0.68, opacity: 0 }}
-              animate={{ x: 30, rotate: 0, scale: 0.82, opacity: 1 }}
-              exit={{ x: -88, rotate: -12, scale: 0.74, opacity: 0 }}
-              transition={{
-                type: "spring",
-                stiffness: 240,
-                damping: 15,
-                opacity: { duration: 0.18 }
+              initial={{ x: -150, rotate: -14, scale: 0.72, opacity: 0 }}
+              animate={{
+                // 被拽的过程：猛地拖近 → 抵抗弹回 → 再拖 → 到位
+                x: pulling ? [-150, -92, -118, -58, -82, -30] : 26,
+                rotate: pulling ? [-14, -6, -11, -2, -7, 0] : 0,
+                scale: pulling ? [0.6, 0.68, 0.64, 0.74, 0.7, 0.78] : 0.9,
+                opacity: 1
               }}
+              exit={{ x: -130, rotate: -12, scale: 0.74, opacity: 0 }}
+              transition={
+                pulling
+                  ? { duration: 1.5, ease: "easeInOut", times: [0, 0.2, 0.4, 0.62, 0.8, 1] }
+                  : { type: "spring", stiffness: 190, damping: 20 }
+              }
             >
-              <Figure pose={poseOf(helperCast, "idle")} pulling />
+              <Figure pose={matePose} variant={pulling ? "drag" : "work"} />
             </motion.div>
           ) : null}
         </AnimatePresence>
