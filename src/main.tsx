@@ -90,6 +90,21 @@ import "./features/auth/auth.css";
 import { PetStage } from "./features/pet/PetStage";
 import { castForAgent } from "./features/pet/petCast";
 import { pet } from "./features/pet/petStore";
+import { RightDock } from "./features/panel/RightDock";
+import { PaneResizer } from "./features/panel/PaneResizer";
+import {
+  clamp,
+  isCompactViewport,
+  readLayout,
+  writeLayout,
+  SIDEBAR_COLLAPSED,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  DOCK_MAX,
+  DOCK_MIN,
+  type DockTab
+} from "./features/panel/panelLayout";
+import "./features/panel/panel.css";
 
 /** 写请求同源标记。服务端 CSRF 屏障要求 JSON 内容类型或这个头二选一，
  *  没有请求体的 POST / DELETE 必须显式带上，否则会被判成跨站表单提交。 */
@@ -3098,15 +3113,11 @@ function InternshipReflectionMessageCard({
   );
 }
 
-function InsightPanel({
-  isOpen,
+function InsightContent({
   message,
-  onClose,
   onOpenMaterials
 }: {
-  isOpen: boolean;
   message?: ChatMessage;
-  onClose: () => void;
   onOpenMaterials: () => void;
 }) {
   const [activeMode, setActiveMode] = useState<InsightMode>("thinking");
@@ -3141,40 +3152,8 @@ function InsightPanel({
   }, [hasLessonPreview, hasReflectionPreview, message]);
 
   return (
-    <AnimatePresence>
-      {isOpen ? (
-        <motion.div
-          className="insight-layer"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.18, ease: "easeOut" }}
-        >
-          <motion.aside
-            className="insight-panel"
-            aria-label="思考过程和生成文件侧边栏"
-            initial={{ x: 36, opacity: 0, scale: 0.985 }}
-            animate={{ x: 0, opacity: 1, scale: 1 }}
-            exit={{ x: 36, opacity: 0, scale: 0.985 }}
-            transition={{ type: "spring", stiffness: 360, damping: 34 }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="insight-header">
-              <div>
-                <span className="insight-kicker">AI Workspace</span>
-                <h2>思考、预览与文件</h2>
-              </div>
-              <button
-                className="insight-close"
-                type="button"
-                aria-label="关闭侧边面板"
-                onClick={onClose}
-              >
-                <X size={18} strokeWidth={2.4} />
-              </button>
-            </div>
-
-            <div className="insight-tabs" role="tablist" aria-label="侧栏内容">
+    <>
+      <div className="insight-tabs" role="tablist" aria-label="侧栏内容">
               <button
                 className={activeMode === "thinking" ? "insight-tab-active" : ""}
                 type="button"
@@ -3292,11 +3271,8 @@ function InsightPanel({
                   />
                 </section>
               ) : null}
-            </div>
-          </motion.aside>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+      </div>
+    </>
   );
 }
 
@@ -8683,6 +8659,30 @@ function App() {
     | "evolution"
   >("workbench");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 三栏布局：宽度和右侧面板状态从 localStorage 恢复，拖动后写回。
+  const [initialLayout] = useState(readLayout);
+  const [sidebarWidth, setSidebarWidth] = useState(initialLayout.sidebarWidth);
+  const [dockWidth, setDockWidth] = useState(initialLayout.dockWidth);
+  const [dockOpen, setDockOpen] = useState(initialLayout.dockOpen);
+  const [dockTab, setDockTab] = useState<DockTab>(initialLayout.dockTab);
+  const [compact, setCompact] = useState(() =>
+    typeof window === "undefined" ? false : isCompactViewport(window.innerWidth)
+  );
+  const [resizing, setResizing] = useState(false);
+
+  // 窄屏交给 CSS 媒体查询接管，避免把对话区挤没；宽屏才启用拖拽分界。
+  useEffect(() => {
+    function onResize() {
+      setCompact(isCompactViewport(window.innerWidth));
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    writeLayout({ sidebarWidth, dockWidth, dockOpen, dockTab });
+  }, [sidebarWidth, dockWidth, dockOpen, dockTab]);
+
   const [newTaskToken, setNewTaskToken] = useState(0);
   const [workflowOpenRequest, setWorkflowOpenRequest] = useState<
     { id: string; token: number; nodeId?: string } | undefined
@@ -9895,6 +9895,8 @@ function App() {
       insightMode: "lessonPreview"
     }));
     setActiveInsightMessageId(messageId);
+    setDockOpen(true);
+    setDockTab("insight");
   }
 
   function downloadLessonPlanMessage(messageId: string) {
@@ -10483,6 +10485,8 @@ function App() {
       insightMode: "reflectionPreview"
     }));
     setActiveInsightMessageId(messageId);
+    setDockOpen(true);
+    setDockTab("insight");
   }
 
   function downloadReflectionMessage(messageId: string) {
@@ -11568,16 +11572,38 @@ function App() {
   const activeInsightMessage = messages.find(
     (message) => message.id === activeInsightMessageId
   );
-  const isInsightPanelOpen = Boolean(activeInsightMessage);
+
+  // 宽屏用内联 CSS 变量驱动三栏宽度；窄屏不注入，交给 CSS 媒体查询。
+  const shellStyle = compact
+    ? undefined
+    : ({
+        "--sidebar-width": `${sidebarCollapsed ? SIDEBAR_COLLAPSED : sidebarWidth}px`,
+        "--sidebar-offset": `${sidebarCollapsed ? SIDEBAR_COLLAPSED : sidebarWidth}px`,
+        "--insight-panel-width": `${dockWidth}px`
+      } as React.CSSProperties);
 
   return (
     <>
       <div className="app-photo" aria-hidden="true" />
       <main
         className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          isInsightPanelOpen ? "insight-open" : ""
-        }`}
+          dockOpen ? "insight-open" : ""
+        } ${resizing ? "pane-resizing" : ""}`}
+        style={shellStyle}
       >
+      {!compact ? (
+        <PaneResizer
+          side="left"
+          value={sidebarWidth}
+          min={SIDEBAR_MIN}
+          max={SIDEBAR_MAX}
+          direction={1}
+          disabled={sidebarCollapsed}
+          onChange={(next) => setSidebarWidth(clamp(next, SIDEBAR_MIN, SIDEBAR_MAX))}
+          onDragStart={() => setResizing(true)}
+          onDragEnd={() => setResizing(false)}
+        />
+      ) : null}
       <Sidebar
         activeSection={activeSection}
         chatMode={chatMode}
@@ -12090,11 +12116,17 @@ function App() {
             onRemoveReflectionEvidence={removeReflectionEvidence}
             onToggleLessonPlanKnowledgeBase={toggleLessonPlanMessageKnowledgeBase}
             onToggleReflectionKnowledgeBase={toggleReflectionKnowledgeBase}
-            onToggleThinking={(messageId) =>
-              setActiveInsightMessageId((current) =>
-                current === messageId ? undefined : messageId
-              )
-            }
+            onToggleThinking={(messageId) => {
+              const sameOne = activeInsightMessageId === messageId;
+              if (sameOne && dockOpen && dockTab === "insight") {
+                setDockOpen(false);
+                setActiveInsightMessageId(undefined);
+                return;
+              }
+              setActiveInsightMessageId(messageId);
+              setDockOpen(true);
+              setDockTab("insight");
+            }}
             onUpdateLessonPlanInput={updateLessonPlanMessageInput}
             onUpdateReflectionInput={updateReflectionMessageInput}
           />
@@ -12166,14 +12198,74 @@ function App() {
           </div>
         )}
       </section>
-      <InsightPanel
-        isOpen={isInsightPanelOpen}
-        message={activeInsightMessage}
-        onClose={() => setActiveInsightMessageId(undefined)}
-        onOpenMaterials={() => {
-          setActiveInsightMessageId(undefined);
-          setActiveSection("knowledge");
+      {!compact && dockOpen ? (
+        <PaneResizer
+          side="right"
+          value={dockWidth}
+          min={DOCK_MIN}
+          max={DOCK_MAX}
+          direction={-1}
+          onChange={(next) => setDockWidth(clamp(next, DOCK_MIN, DOCK_MAX))}
+          onDragStart={() => setResizing(true)}
+          onDragEnd={() => setResizing(false)}
+        />
+      ) : null}
+      <RightDock
+        open={dockOpen}
+        tab={dockTab}
+        onTabChange={setDockTab}
+        onToggle={() => {
+          setDockOpen((value) => {
+            if (value) {
+              setActiveInsightMessageId(undefined);
+            }
+            return !value;
+          });
         }}
+        agents={chatAgents}
+        activeAgentId={activeAgentId}
+        onPickAgent={(id) => {
+          handlePickAgent(id);
+          setActiveSection("chat");
+        }}
+        workflows={workflowOptions}
+        activeWorkflowId={selectedWorkflowId}
+        workflowChatOn={chatMode === "workflow"}
+        onPickWorkflow={(id) => {
+          if (!id || isGenerating) {
+            return;
+          }
+          if (messages.length > 0) {
+            handleNewConversation("workflow", id);
+          } else {
+            chatModeBeforeWorkflowRef.current =
+              chatMode === "office" ? "office" : "education";
+            setSelectedWorkflowId(id);
+            setChatMode("workflow");
+            setActiveAgentId("");
+          }
+          setActiveSection("chat");
+          setDockTab("workflows");
+        }}
+        onOpenRegistry={() => {
+          setActiveSection("registry");
+          setActiveInsightMessageId(undefined);
+        }}
+        onOpenPlatform={() => {
+          setActiveSection("platform");
+          setActiveInsightMessageId(undefined);
+        }}
+        insightContent={
+          <InsightContent
+            message={activeInsightMessage}
+            onOpenMaterials={() => {
+              setActiveInsightMessageId(undefined);
+              setActiveSection("knowledge");
+            }}
+          />
+        }
+        hasInsight={Boolean(activeInsightMessage)}
+        generating={isGenerating}
       />
       {createPortal(
         <AnimatePresence>

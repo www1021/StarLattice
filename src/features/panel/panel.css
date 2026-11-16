@@ -1,0 +1,314 @@
+/* ---- 三栏分界手柄 <||> ---- */
+.pane-resizer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.pane-resizer-left {
+  left: calc(var(--sidebar-offset, 260px) - 6px);
+}
+
+.pane-resizer-right {
+  right: calc(var(--insight-panel-width, 408px) - 6px);
+}
+
+.pane-resizer-grip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 8px;
+  height: 46px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(var(--rgb-surface), 0.34);
+  opacity: 0;
+  transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.pane-resizer-grip i {
+  width: 2px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--n-66);
+}
+
+.pane-resizer:hover .pane-resizer-grip,
+.pane-resizer:focus-visible .pane-resizer-grip,
+.pane-resizing .pane-resizer-grip {
+  opacity: 1;
+  border-color: var(--liquid-line);
+  background: rgba(var(--rgb-surface), 0.86);
+  box-shadow: 0 8px 22px rgba(var(--rgb-shadow), 0.14);
+}
+
+.pane-resizer:hover .pane-resizer-grip i,
+.pane-resizing .pane-resizer-grip i {
+  background: var(--a-8c431f, var(--n-42));
+}
+
+/* 拖动时禁用整页过渡与选中，跟手不拖影 */
+body.pane-resizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+body.pane-resizing * {
+  cursor: col-resize !important;
+}
+
+.app-shell.pane-resizing .sidebar,
+.app-shell.pane-resizing .workspace,
+.app-shell.pane-resizing .insight-panel {
+  transition: none !important;
+}
+
+/* ---- 收起状态下的呼出条 ---- */
+.dock-rail {
+  position: fixed;
+  z-index: 21;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 8px;
+  border: 1px solid var(--liquid-line);
+  border-right: 0;
+  border-radius: 14px 0 0 14px;
+  color: var(--n-42);
+  background:
+    var(--liquid-edge),
+    rgba(var(--rgb-surface), calc(0.82 * var(--panel-alpha, 1)));
+  box-shadow: -12px 0 30px rgba(var(--rgb-shadow), 0.12);
+  backdrop-filter: blur(20px);
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.dock-rail:hover {
+  color: var(--a-8c431f, var(--n-12));
+  background: rgba(var(--rgb-surface), 0.96);
+}
+
+.dock-rail span {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.12em;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+/* ---- 右侧面板：标签与列表 ---- */
+.right-dock .insight-header {
+  flex: 0 0 auto;
+}
+
+.dock-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 5px;
+  border: 1px solid rgba(180, 185, 187, 0.24);
+  border-radius: 14px;
+  background: rgba(var(--rgb-surface), calc(0.42 * var(--panel-alpha, 1)));
+}
+
+.dock-tab {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--n-42);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 740;
+  white-space: nowrap;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.dock-tab:hover {
+  color: var(--n-21);
+}
+
+.dock-tab-active {
+  color: var(--n-12);
+  background: rgba(var(--rgb-surface), calc(0.9 * var(--panel-alpha, 1)));
+  box-shadow:
+    0 8px 18px rgba(var(--rgb-shadow), 0.08),
+    inset 0 1px 0 rgba(var(--rgb-surface), 0.92);
+}
+
+.dock-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 20px;
+  overflow-y: auto;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.dock-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dock-hint {
+  margin: 0 0 2px;
+  color: var(--n-48);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.dock-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 13px;
+  text-align: left;
+  color: var(--n-21);
+  background: rgba(var(--rgb-surface), calc(0.5 * var(--panel-alpha, 1)));
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.dock-card:hover:not(:disabled) {
+  border-color: rgba(var(--rgb-surface), 0.9);
+  background: rgba(var(--rgb-surface), 0.86);
+  transform: translateY(-1px);
+}
+
+.dock-card:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dock-card-active {
+  border-color: var(--a-b4633a, var(--n-66));
+  background: rgba(var(--rgb-surface), calc(0.94 * var(--panel-alpha, 1)));
+  box-shadow: inset 3px 0 0 var(--a-8c431f, var(--n-42));
+}
+
+.dock-card-avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  overflow: hidden;
+  color: var(--a-8c431f, var(--n-42));
+  background: rgba(var(--rgb-surface), 0.7);
+}
+
+.dock-card-avatar-default {
+  border: 1px solid var(--liquid-line);
+}
+
+.dock-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dock-card-main strong {
+  font-size: 13.5px;
+  font-weight: 780;
+  color: var(--n-18);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-card-main small {
+  font-size: 11.5px;
+  font-weight: 540;
+  color: var(--n-48);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-card-check {
+  flex: 0 0 auto;
+  color: var(--a-8c431f, var(--n-42));
+}
+
+.dock-empty {
+  margin: 10px 2px;
+  color: var(--n-48);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.dock-manage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px dashed var(--liquid-line);
+  border-radius: 11px;
+  color: var(--n-42);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.dock-manage:hover {
+  color: var(--a-8c431f, var(--n-12));
+  background: rgba(var(--rgb-surface), 0.6);
+}
+
+.dock-insight-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 46px 18px;
+  text-align: center;
+  color: var(--n-48);
+}
+
+.dock-insight-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* insight 标签内容复用原有 tabs + body，顶部间距对齐 dock */
+.right-dock .insight-tabs {
+  margin-top: 0;
+}
