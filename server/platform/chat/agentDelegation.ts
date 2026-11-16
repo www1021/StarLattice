@@ -13,6 +13,7 @@
 
 import {
   completeQwenToolChat,
+  streamQwenChat,
   type ModelProviderConfig,
   type QwenToolCall
 } from "../../qwenOpenAiClient.js";
@@ -260,9 +261,18 @@ export async function runAgentDelegation(input: {
   callTool: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
   resolveModel: (id: string) => { model?: string; provider?: ModelProviderConfig };
   complete?: typeof completeQwenToolChat;
+  /** 无工具子智能体的流式生成函数，可注入以便测试；缺省走真实的 Qwen 流式。 */
+  stream?: typeof streamQwenChat;
+  /** 子智能体自己的 maxTokens，流式直出时沿用；不传则走模型默认。 */
+  maxTokens?: number;
   signal?: AbortSignal;
   /** 把子智能体的工具进度也发到前端，否则文献检索这条链路全程看不到工具调用。 */
   onProgress?: (progress: ChatToolProgress) => void;
+  /**
+   * 子智能体的正文边生成边推给前端。只有「无工具、一次成文」的子智能体走这条，
+   * 让首字在模型开始吐第一个字时就出现，而不是等整段写完再一次性发。
+   */
+  onAnswerDelta?: (delta: string) => void;
 }): Promise<McpCallResult> {
   const startedAt = Date.now();
   const question = input.question.trim().slice(0, MAX_QUESTION_CHARS);
@@ -316,22 +326,44 @@ export async function runAgentDelegation(input: {
       : null;
 
   try {
-    const result = await runChatToolLoop({
-      system,
-      messages: [{ role: "user", content: question }],
-      catalog: childCatalog,
-      callTool: input.callTool,
-      complete: input.complete,
-      model: picked.model,
-      provider: picked.provider,
-      maxRounds: CHILD_MAX_ROUNDS,
-      signal: input.signal,
-      presetToolCall: presetSearch ?? undefined,
-      onProgress: input.onProgress
-    });
-    const text = truncate(result.content.trim(), MAX_RESULT_CHARS);
-    const toolNote = result.calls.length
-      ? `（${target.name}另调用了 ${result.calls.map((call) => call.name).join("、")}）`
+    let text: string;
+    let calls: { name: string }[] = [];
+
+    if (childCatalog.length === 0 && input.onAnswerDelta) {
+      // 纯生成型子智能体（科研规划/实验设计/开题答辩等没有工具）：
+      // 直接流式跑一次，首字立刻推给前端，正文不再等整段写完。
+      // 这也是「转交后要等很久才出字」的主要来源——之前这里用的是非流式整段生成。
+      const streamResult = await (input.stream ?? streamQwenChat)({
+        system,
+        messages: [{ role: "user", content: question }],
+        model: picked.model,
+        provider: picked.provider,
+        maxTokens: input.maxTokens,
+        signal: input.signal,
+        onDelta: input.onAnswerDelta,
+        onThinkingDelta: () => {}
+      });
+      text = streamResult.visibleAssistantContent;
+    } else {
+      const result = await runChatToolLoop({
+        system,
+        messages: [{ role: "user", content: question }],
+        catalog: childCatalog,
+        callTool: input.callTool,
+        complete: input.complete,
+        model: picked.model,
+        provider: picked.provider,
+        maxRounds: CHILD_MAX_ROUNDS,
+        signal: input.signal,
+        presetToolCall: presetSearch ?? undefined,
+        onProgress: input.onProgress
+      });
+      text = result.content;
+      calls = result.calls.map((call) => ({ name: call.name }));
+    }
+    text = truncate(text.trim(), MAX_RESULT_CHARS);
+    const toolNote = calls.length
+      ? `（${target.name}另调用了 ${calls.map((call) => call.name).join("、")}）`
       : "";
     return {
       serverId: "agent-delegation",

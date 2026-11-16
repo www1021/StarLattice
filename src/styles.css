@@ -13584,25 +13584,33 @@ img.user-avatar {
   max-width: 860px;
 }
 
-/* ---- 桌宠：左侧让出一列给宠物站立，对话正文整体右移，内容宽度仍是 860 ---- */
+/* ---- 桌宠：整块内容靠左，别在侧栏和对话之间空出一大截 ---- */
+/* workspace 默认居中，对话页改成靠左并留一点呼吸边距，桌宠和正文一起左移 */
+.app-shell:has(.chat-workspace) .workspace {
+  justify-content: flex-start;
+}
 .workspace-inner.chat-workspace.has-pet {
   position: relative;
   max-width: 1112px;
-  padding-left: 252px;
+  padding-left: 236px;
+  margin-left: clamp(0px, 5vw, 108px);
+  margin-right: 0;
   transition: padding-left 0.24s var(--sidebar-ease);
 }
 
 @media (max-width: 1460px) {
   .workspace-inner.chat-workspace.has-pet {
     max-width: 1084px;
-    padding-left: 224px;
+    padding-left: 216px;
+    margin-left: clamp(0px, 3vw, 48px);
   }
 }
 
 @media (max-width: 1340px) {
   .workspace-inner.chat-workspace.has-pet {
     max-width: 1060px;
-    padding-left: 200px;
+    padding-left: 196px;
+    margin-left: 0;
   }
 }
 

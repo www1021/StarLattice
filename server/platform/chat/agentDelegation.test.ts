@@ -393,3 +393,47 @@ test("归属不明、只有背景词或者两边打平时不硬猜，交回模�
   assert.equal(pickDelegationRoute("开题要查文献", team), undefined);
   assert.equal(pickDelegationRoute("查询机械设计相关文献", []), undefined);
 });
+
+test("无工具的专项智能体流式吐正文：逐段回调，首字不必等整段写完", async () => {
+  const planning = agentRecord({
+    id: "ytz-planning",
+    name: "科研规划Agent",
+    role: "科研规划",
+    tools: [],
+    description: "规划、计划、时间线"
+  });
+  const deltas: string[] = [];
+  const pieces = ["【当前阶段】", "你处于探索期。", "【目标】先定一个可验证的问题。"];
+  let streamOptions: { system?: string } | undefined;
+
+  const result = await runAgentDelegation({
+    host: agentRecord(),
+    targetId: "ytz-planning",
+    question: "帮我做个这学期的科研规划",
+    getAgent: (id) => (id === planning.id ? planning : undefined),
+    getTool: () => undefined,
+    callTool: async () => mcpResult(""),
+    resolveModel: () => ({}),
+    // 注入流式 mock：每个字块立刻回调，模拟边生成边推。
+    stream: async (options) => {
+      streamOptions = options;
+      for (const piece of pieces) {
+        options.onDelta(piece);
+      }
+      return {
+        rawAssistantContent: pieces.join(""),
+        visibleAssistantContent: pieces.join(""),
+        artifactRequests: []
+      };
+    },
+    onAnswerDelta: (delta) => deltas.push(delta)
+  });
+
+  assert.equal(result.isError, false);
+  assert.equal(result.tool, "科研规划Agent");
+  // 每个字块都实时回调了，且顺序一致——首字能立刻推给前端。
+  assert.deepEqual(deltas, pieces);
+  // 存档用的完整原文仍然是拼起来的整段。
+  assert.equal(result.delegatedAnswer?.answer, pieces.join(""));
+  assert.match(String(streamOptions?.system ?? ""), /科研规划/);
+});

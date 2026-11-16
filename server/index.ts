@@ -1957,6 +1957,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   let chatToolCalls: ChatToolTrace[] = [];
   let evaluation: TrainingEvaluation | undefined;
   let metricsSent = false;
+  /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
+  let answerStreamed = false;
   const requestStartedAt = Date.now();
 
   response.on("close", () => {
@@ -2027,16 +2029,39 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
           callTool: async (tool, args) => {
             if (isDelegationToolId(tool.id) && chatAgent) {
               const question = typeof args.question === "string" ? args.question : "";
+              const targetId = delegationTargetId(tool.id);
+              const target = platformStore.getAgent(targetId);
+              let delegatedBadgeSent = false;
               return runAgentDelegation({
                 host: chatAgent,
-                targetId: delegationTargetId(tool.id),
+                targetId,
                 question,
                 getAgent: (id) => platformStore.getAgent(id),
                 getTool: (id) => platformStore.getTool(id),
                 callTool: (childTool, childArgs) => platformMcp.callToolRecord(childTool, childArgs),
                 // 子智能体用自己的模型；它没配就用主持有者的模型，免得直接掉回默认。
                 resolveModel: (id) => resolveChatModel(id || picked.model || ""),
+                maxTokens: target?.chatConfig?.maxTokens ?? undefined,
                 signal: abortController.signal,
+                // 正文边生成边吐：首个子字到达时先把徽标切成子智能体，再逐段推 delta。
+                // 这样正文第一个字出现时就带着正确的署名，且不再等整段写完。
+                onAnswerDelta(delta) {
+                  if (!delegatedBadgeSent && target) {
+                    delegatedBadgeSent = true;
+                    writeSse(response, "delegated", {
+                      agentId: target.id,
+                      agentName: target.name,
+                      agentAvatar: target.avatar
+                    });
+                  }
+                  answerStreamed = true;
+                  assistantContent += delta;
+                  if (typewriter) {
+                    writeSse(response, "delta", { content: delta });
+                  } else {
+                    bufferedContent += delta;
+                  }
+                },
                 // 子智能体调用检索工具的进度也要发到前端，否则整条链路看不到工具条。
                 onProgress(progress) {
                   writeSse(response, "tool", {
@@ -2079,16 +2104,25 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         chatToolCalls = toolRun.calls;
         if (toolRun.delegatedAnswer) {
           // 正文用专项智能体的原话，徽标也换成它：学生问文献，看到的就是文献阅读Agent的答复。
-          assistantContent = toolRun.delegatedAnswer.answer;
-          writeSse(response, "delegated", {
-            agentId: toolRun.delegatedAnswer.agentId,
-            agentName: toolRun.delegatedAnswer.agentName,
-            agentAvatar: toolRun.delegatedAnswer.avatar
-          });
+          if (answerStreamed) {
+            // 子智能体已经逐段流式吐过正文、徽标也在首字时切好了，这里只补全存档用的完整文本。
+            // 注意别覆盖：回调里累加的 assistantContent 就是原文，delegatedAnswer.answer 是截断后的同一份。
+            assistantContent = assistantContent || toolRun.delegatedAnswer.answer;
+          } else {
+            assistantContent = toolRun.delegatedAnswer.answer;
+            writeSse(response, "delegated", {
+              agentId: toolRun.delegatedAnswer.agentId,
+              agentName: toolRun.delegatedAnswer.agentName,
+              agentAvatar: toolRun.delegatedAnswer.avatar
+            });
+          }
         } else {
           assistantContent = toolRun.content;
         }
-        writeSse(response, "delta", { content: assistantContent });
+        // 流式已经逐段发过就不再整段重发，否则正文会显示两遍。
+        if (!answerStreamed) {
+          writeSse(response, "delta", { content: assistantContent });
+        }
       } else {
         // 智能体真的一个工具都没配、用户却在要文献/数据时，先说清楚「本轮不会调用插件」，
         // 否则模型会顺着提示词演一句「我为你启动 XX Agent」，再凭记忆编一串带 DOI 的文献。
