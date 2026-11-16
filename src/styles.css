@@ -13584,6 +13584,28 @@ img.user-avatar {
   max-width: 860px;
 }
 
+/* ---- 桌宠：左侧让出一列给宠物站立，对话正文整体右移，内容宽度仍是 860 ---- */
+.workspace-inner.chat-workspace.has-pet {
+  position: relative;
+  max-width: 1112px;
+  padding-left: 252px;
+  transition: padding-left 0.24s var(--sidebar-ease);
+}
+
+@media (max-width: 1460px) {
+  .workspace-inner.chat-workspace.has-pet {
+    max-width: 1084px;
+    padding-left: 224px;
+  }
+}
+
+@media (max-width: 1340px) {
+  .workspace-inner.chat-workspace.has-pet {
+    max-width: 1060px;
+    padding-left: 200px;
+  }
+}
+
 .workspace-inner.chat-workspace .hero {
   text-align: left;
 }
@@ -13617,6 +13639,10 @@ img.user-avatar {
 @media (max-width: 1180px) {
   .workspace-inner.chat-workspace {
     max-width: 100%;
+  }
+  /* 空间不够就彻底收起桌宠，正文回到满宽 */
+  .workspace-inner.chat-workspace.has-pet {
+    padding-left: 0;
   }
 }
 

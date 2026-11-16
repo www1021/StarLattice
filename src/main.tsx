@@ -87,6 +87,8 @@ import "./styles.css";
 import "./styles/theme-tokens.css";
 import "./styles/theme.css";
 import "./features/auth/auth.css";
+import { PetStage } from "./features/pet/PetStage";
+import { pet } from "./features/pet/petStore";
 
 /** 写请求同源标记。服务端 CSRF 屏障要求 JSON 内容类型或这个头二选一，
  *  没有请求体的 POST / DELETE 必须显式带上，否则会被判成跨站表单提交。 */
@@ -11018,6 +11020,8 @@ function App() {
     setAttachmentError(undefined);
     setSelectedKnowledgeBaseIds([]);
     setIsGenerating(true);
+    // 桌宠进入工作状态：纯表现层，画布出问题也不影响这条请求。
+    pet.running();
 
     try {
       let response: Response;
@@ -11098,6 +11102,16 @@ function App() {
           visibleTextStreamer.enqueue(content);
         },
         onTool(note) {
+          // 桌宠跟着工具进度走：开始跑就工作，跑挂了立刻换委屈脸。
+          if (note.stage === "running") {
+            pet.running();
+          } else if (note.stage === "done") {
+            if (note.ok === false) {
+              pet.error();
+            } else {
+              pet.running();
+            }
+          }
           // 转交不单独占一行：直接把这条回复的署名换成目标 Agent，
           // 学生看到的始终是「谁在答」，而不是「导师说要转给谁」。
           if (note.kind === "delegation") {
@@ -11253,6 +11267,8 @@ function App() {
             : message
         )
       );
+      // 这一轮顺利答完，桌宠蹦一下；两秒多后自己回待机。
+      pet.success();
       void loadConversationHistory();
       if (chatMode === "education") {
         void loadGrowthSummary();
@@ -11261,6 +11277,8 @@ function App() {
       visibleTextStreamer.stop();
 
       if (abortController.signal.aborted) {
+        // 用户自己按了停止，不算失败，别让桌宠委屈
+        pet.rest();
         return;
       }
 
@@ -11275,6 +11293,7 @@ function App() {
             : item
         )
       );
+      pet.error();
     } finally {
       if (activeRequestRef.current === abortController) {
         activeRequestRef.current = null;
@@ -11817,7 +11836,12 @@ function App() {
             <EvolutionPage />
           </div>
         ) : (
-          <div className={`workspace-inner chat-workspace ${hasMessages ? "has-messages" : ""}`}>
+          <div
+            className={`workspace-inner chat-workspace has-pet ${
+              hasMessages ? "has-messages" : ""
+            }`}
+          >
+          <PetStage />
           {hasMessages && chatMode === "workflow" ? (
             <div className="workflow-chat-bar">
               <span className="workflow-chat-bar-label">当前工作流</span>
