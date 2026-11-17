@@ -1,0 +1,611 @@
+{
+  "id": "cd-observe-v1",
+  "name": "课堂多维观察诊断",
+  "version": 1,
+  "description": "观课磨课工坊的观察子流：先把课堂实录转成结构化发言，用工具统计话语证据，五路观察员并行按同一 JSON 契约打分，核验证据后做量表一致性检验，分歧大则仲裁重评，红线命中一票否决。",
+  "inputs": [
+    {
+      "name": "stage",
+      "type": "string",
+      "required": true,
+      "description": "学段"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "required": true,
+      "description": "课题"
+    },
+    {
+      "name": "objectives",
+      "type": "string",
+      "required": false,
+      "description": "教学目标，多个用分号分隔"
+    },
+    {
+      "name": "plan",
+      "type": "string",
+      "required": false,
+      "description": "教学设计文本，含环节与时长"
+    },
+    {
+      "name": "transcript",
+      "type": "string",
+      "required": true,
+      "description": "课堂实录文本，每行一句，形如 教师：… / 学生A：…"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
+    {
+      "id": "structure",
+      "kind": "llm",
+      "title": "实录结构化",
+      "temperature": 0.1,
+      "inputs": {
+        "transcript": "${input.transcript}"
+      },
+      "system": "你是课堂实录整理员。只做格式转换，不评价、不增删发言内容。",
+      "prompt": "把下面的课堂实录逐句转成结构化发言数组。每行一句，说话人在冒号前，发言内容在冒号后。时间标记形如 [00:12] 的换算成秒数写进 startSec。没有时间标记就不写 startSec 与 endSec。只输出 JSON：{\"utterances\":[{\"speaker\":\"教师或学生标识\",\"text\":\"发言原文\",\"startSec\":0,\"endSec\":0}]}。实录：\n${input.transcript}",
+      "stubOutput": {
+        "utterances": [
+          {
+            "speaker": "教师",
+            "text": "今天我们学习摩擦力，先想一个问题：什么是摩擦力？",
+            "startSec": 0,
+            "endSec": 8
+          },
+          {
+            "speaker": "学生A",
+            "text": "阻碍物体运动的力。",
+            "startSec": 11,
+            "endSec": 16
+          },
+          {
+            "speaker": "教师",
+            "text": "说得接近了，注意是阻碍相对运动，那方向呢？",
+            "startSec": 18,
+            "endSec": 26
+          },
+          {
+            "speaker": "学生B",
+            "text": "和相对运动方向相反。",
+            "startSec": 29,
+            "endSec": 35
+          }
+        ]
+      }
+    },
+    {
+      "id": "evidence",
+      "kind": "tool",
+      "title": "证据统计",
+      "tool": "classroom.evidence",
+      "args": {
+        "utterances": "${structure.utterances}"
+      },
+      "stubOutput": {
+        "turnCount": 4,
+        "teacherTurns": 2,
+        "studentTurns": 2,
+        "teacherTokenRatio": 0.62,
+        "questionCount": 2,
+        "studentQuestionCount": 0,
+        "avgTeacherTurnChars": 24,
+        "avgStudentTurnChars": 10,
+        "longestTeacherTurnSec": 8,
+        "silenceGapsSec": [],
+        "durationSec": 35,
+        "excerpts": [
+          "1. 教师：今天我们学习摩擦力，先想一个问题：什么是摩擦力？",
+          "2. 学生A：阻碍物体运动的力。",
+          "3. 教师：说得接近了，注意是阻碍相对运动，那方向呢？",
+          "4. 学生B：和相对运动方向相反。"
+        ]
+      }
+    },
+    {
+      "id": "observe",
+      "kind": "parallel",
+      "title": "五路观察员并行",
+      "branches": [
+        {
+          "id": "obs-goal",
+          "kind": "agent",
+          "title": "目标达成观察",
+          "agent": "cd-observer-goal",
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "dimension",
+              "score",
+              "evidence",
+              "issues",
+              "redline"
+            ]
+          },
+          "inputs": {
+            "stage": "${input.stage}",
+            "subject": "${input.subject}",
+            "topic": "${input.topic}",
+            "objectives": "${input.objectives}",
+            "plan": "${input.plan}",
+            "excerpts": "${evidence.excerpts}"
+          },
+          "stubOutput": {
+            "dimension": "目标达成",
+            "score": 82,
+            "evidence": [
+              {
+                "excerpt": "1. 教师：今天我们学习摩擦力",
+                "reason": "开头点明课题与目标"
+              }
+            ],
+            "issues": [
+              {
+                "detail": "目标未在结尾回扣",
+                "severity": "major"
+              }
+            ],
+            "redline": {
+              "code": "",
+              "hit": false
+            }
+          }
+        },
+        {
+          "id": "obs-interaction",
+          "kind": "agent",
+          "title": "师生互动观察",
+          "agent": "cd-observer-interaction",
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "dimension",
+              "score",
+              "evidence",
+              "issues",
+              "redline"
+            ]
+          },
+          "inputs": {
+            "excerpts": "${evidence.excerpts}",
+            "stats": "${evidence}"
+          },
+          "stubOutput": {
+            "dimension": "师生互动",
+            "score": 58,
+            "evidence": [
+              {
+                "excerpt": "2. 学生A：阻碍物体运动的力。",
+                "reason": "教师未追问该生，直接叫了另一人"
+              }
+            ],
+            "issues": [
+              {
+                "detail": "参与集中在两人，教师话语占比 0.62",
+                "severity": "major"
+              }
+            ],
+            "redline": {
+              "code": "",
+              "hit": false
+            }
+          }
+        },
+        {
+          "id": "obs-content",
+          "kind": "agent",
+          "title": "内容讲解观察",
+          "agent": "cd-observer-content",
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "dimension",
+              "score",
+              "evidence",
+              "issues",
+              "redline"
+            ]
+          },
+          "inputs": {
+            "stage": "${input.stage}",
+            "subject": "${input.subject}",
+            "topic": "${input.topic}",
+            "excerpts": "${evidence.excerpts}"
+          },
+          "stubOutput": {
+            "dimension": "内容讲解",
+            "score": 88,
+            "evidence": [
+              {
+                "excerpt": "3. 教师：注意是阻碍相对运动",
+                "reason": "及时纠正了学生的模糊表述"
+              }
+            ],
+            "issues": [],
+            "redline": {
+              "code": "",
+              "hit": false
+            }
+          }
+        },
+        {
+          "id": "obs-management",
+          "kind": "agent",
+          "title": "课堂管理观察",
+          "agent": "cd-observer-management",
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "dimension",
+              "score",
+              "evidence",
+              "issues",
+              "redline"
+            ]
+          },
+          "inputs": {
+            "plan": "${input.plan}",
+            "excerpts": "${evidence.excerpts}",
+            "stats": "${evidence}"
+          },
+          "stubOutput": {
+            "dimension": "课堂管理",
+            "score": 80,
+            "evidence": [
+              {
+                "excerpt": "1. 教师：今天我们学习摩擦力",
+                "reason": "开场指令清楚"
+              }
+            ],
+            "issues": [],
+            "redline": {
+              "code": "",
+              "hit": false
+            }
+          }
+        },
+        {
+          "id": "obs-learning",
+          "kind": "agent",
+          "title": "学习成效观察",
+          "agent": "cd-observer-learning",
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "dimension",
+              "score",
+              "evidence",
+              "issues",
+              "redline"
+            ]
+          },
+          "inputs": {
+            "objectives": "${input.objectives}",
+            "excerpts": "${evidence.excerpts}"
+          },
+          "stubOutput": {
+            "dimension": "学习成效",
+            "score": 86,
+            "evidence": [
+              {
+                "excerpt": "4. 学生B：和相对运动方向相反",
+                "reason": "学生答出关键点"
+              }
+            ],
+            "issues": [
+              {
+                "detail": "只有一人答对，未确认全班掌握",
+                "severity": "minor"
+              }
+            ],
+            "redline": {
+              "code": "",
+              "hit": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "verify-evidence",
+      "kind": "verify",
+      "title": "证据核验",
+      "verifier": "observer-verifier",
+      "verifiers": [
+        "observer-verifier",
+        "cd-arbitrator"
+      ],
+      "rubric": [
+        "每条结论都引用了实录摘录",
+        "引用的摘录确实存在",
+        "分数只反映本维度"
+      ],
+      "threshold": 0.8,
+      "expectedKeywords": [
+        "证据",
+        "摘录"
+      ],
+      "minChars": 100,
+      "inputs": {
+        "artifact": "${obs-goal.output}\n${obs-interaction.output}\n${obs-content.output}\n${obs-management.output}\n${obs-learning.output}",
+        "evidence": "${evidence.excerpts}"
+      }
+    },
+    {
+      "id": "evidence-redo-loop",
+      "kind": "loop",
+      "title": "观察重做循环",
+      "maxIterations": 2,
+      "while": "${verify-evidence.score} < 0.85",
+      "patience": 2,
+      "budget": {
+        "maxDurationMs": 180000,
+        "maxTokens": 0
+      },
+      "body": [
+        {
+          "id": "reobserve",
+          "kind": "agent",
+          "title": "按问题重做观察",
+          "agent": "cd-arbitrator",
+          "outputFormat": "json",
+          "inputs": {
+            "draft": "${loop.artifact}",
+            "issues": "${loop.issues}",
+            "excerpts": "${evidence.excerpts}"
+          },
+          "stubOutput": {
+            "dimension": "证据复核",
+            "score": 86,
+            "reason": "补引了实录中存在的发言编号",
+            "acceptedEvidence": [
+              "3. 教师：注意是阻碍相对运动"
+            ],
+            "rejectedEvidence": []
+          }
+        },
+        {
+          "id": "reverify",
+          "kind": "verify",
+          "title": "重做后再验",
+          "verifier": "observer-verifier",
+          "rubric": [
+            "结论有实录支撑",
+            "分数只反映本维度"
+          ],
+          "threshold": 0.85,
+          "inputs": {
+            "artifact": "${reobserve.output}",
+            "evidence": "${evidence.excerpts}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "score-check",
+      "kind": "agent",
+      "title": "量表汇总与红线判定",
+      "agent": "cd-scorer",
+      "outputFormat": "json",
+      "outputContract": {
+        "required": [
+          "verdict",
+          "consensusScore",
+          "divergentDimensions",
+          "redlineHit"
+        ]
+      },
+      "inputs": {
+        "maxSpread": 25,
+        "passScore": 70,
+        "goal": "${obs-goal.output}",
+        "interaction": "${obs-interaction.output}",
+        "content": "${obs-content.output}",
+        "management": "${obs-management.output}",
+        "learning": "${obs-learning.output}"
+      },
+      "stubOutput": {
+        "verdict": "divergent",
+        "consensusScore": 78.8,
+        "maxSpread": 25,
+        "passScore": 70,
+        "redlineHit": false,
+        "divergentDimensions": [
+          "师生互动"
+        ],
+        "dimensions": [
+          {
+            "dimension": "目标达成",
+            "mean": 82,
+            "spread": 0,
+            "divergent": false
+          },
+          {
+            "dimension": "师生互动",
+            "mean": 58,
+            "spread": 32,
+            "divergent": true
+          },
+          {
+            "dimension": "内容讲解",
+            "mean": 88,
+            "spread": 0,
+            "divergent": false
+          },
+          {
+            "dimension": "课堂管理",
+            "mean": 80,
+            "spread": 0,
+            "divergent": false
+          },
+          {
+            "dimension": "学习成效",
+            "mean": 86,
+            "spread": 0,
+            "divergent": false
+          }
+        ],
+        "note": "维度 师生互动 的观察员分差超过 25 分，需仲裁重评。"
+      }
+    },
+    {
+      "id": "score-arbitrate-loop",
+      "kind": "loop",
+      "title": "仲裁重评循环",
+      "maxIterations": 2,
+      "while": "${score-check.verdict} == divergent",
+      "patience": 2,
+      "budget": {
+        "maxDurationMs": 180000,
+        "maxTokens": 0
+      },
+      "body": [
+        {
+          "id": "arbitrate",
+          "kind": "agent",
+          "title": "分歧仲裁",
+          "agent": "cd-arbitrator",
+          "outputFormat": "json",
+          "inputs": {
+            "dimension": "${score-check.divergentDimensions}",
+            "goal": "${obs-goal.output}",
+            "interaction": "${obs-interaction.output}",
+            "content": "${obs-content.output}",
+            "management": "${obs-management.output}",
+            "learning": "${obs-learning.output}",
+            "excerpts": "${evidence.excerpts}"
+          },
+          "stubOutput": {
+            "dimension": "师生互动",
+            "score": 72,
+            "reason": "教师虽叫了两人，但都有实质回应，采信互动有效的证据；参与广度不足成立，扣分。",
+            "acceptedEvidence": [
+              "3. 教师：说得接近了，注意是阻碍相对运动"
+            ],
+            "rejectedEvidence": [
+              "观察员声称未见追问，但实录第 3 句即为追问"
+            ]
+          }
+        },
+        {
+          "id": "rescore",
+          "kind": "agent",
+          "title": "重算量表",
+          "agent": "cd-scorer",
+          "outputFormat": "json",
+          "inputs": {
+            "goal": "${obs-goal.output}",
+            "interaction": "${obs-interaction.output}",
+            "content": "${obs-content.output}",
+            "management": "${obs-management.output}",
+            "learning": "${obs-learning.output}",
+            "arbitration": "${arbitrate.output}"
+          },
+          "stubOutput": {
+            "verdict": "pass",
+            "consensusScore": 81.6,
+            "redlineHit": false,
+            "divergentDimensions": [],
+            "note": "各维共识分 81.6，观察员分歧在允许范围内。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "redline-check",
+      "kind": "condition",
+      "title": "红线闸门",
+      "when": "${score-check.redlineHit} == true",
+      "then": [
+        {
+          "id": "major-rectify",
+          "kind": "template",
+          "title": "重大整改结论",
+          "template": "# 重大整改：一票否决\n\n本次观察命中红线，按平台规则不再给综合分数，直接进入重大整改。\n\n红线判定：${score-check.note}\n\n请先看红线证据，再决定是否重上这节课。",
+          "inputs": {}
+        }
+      ]
+    },
+    {
+      "id": "diagnosis",
+      "kind": "agent",
+      "title": "诊断报告",
+      "agent": "cd-reporter",
+      "outputFormat": "text",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "assessment": "${score-check}",
+        "evidence": "${evidence}",
+        "goal": "${obs-goal.output}",
+        "interaction": "${obs-interaction.output}",
+        "content": "${obs-content.output}",
+        "management": "${obs-management.output}",
+        "learning": "${obs-learning.output}"
+      },
+      "stubOutput": {
+        "output": "【总体判定】各维共识分 81.6，师生互动维度经仲裁后分歧已收敛。\n【目标达成】82 分，目标清晰但结尾未回扣。\n【师生互动】72 分，学生参与集中在两人，需扩大提问覆盖面。\n【内容讲解】88 分，对相对运动的纠偏到位。\n【下一步】一节课内把提问对象从两人扩到至少六人，追问链再补一层。"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "structure"
+    },
+    {
+      "from": "structure",
+      "to": "evidence"
+    },
+    {
+      "from": "evidence",
+      "to": "observe"
+    },
+    {
+      "from": "observe",
+      "to": "verify-evidence"
+    },
+    {
+      "from": "verify-evidence",
+      "to": "evidence-redo-loop"
+    },
+    {
+      "from": "evidence-redo-loop",
+      "to": "score-check"
+    },
+    {
+      "from": "score-check",
+      "to": "score-arbitrate-loop"
+    },
+    {
+      "from": "score-arbitrate-loop",
+      "to": "redline-check"
+    },
+    {
+      "from": "redline-check",
+      "to": "diagnosis"
+    },
+    {
+      "from": "diagnosis",
+      "to": "end"
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "id": "cd-improve-v1",
+  "name": "课堂磨课改进闭环",
+  "version": 1,
+  "description": "观课磨课工坊的改进子流：先内嵌观察子流重新诊断拿到带证据的问题清单，改进 Agent 逐条给可执行修订动作，复核 Agent 逐条核验问题是否真被关闭，未关干净则循环再改，最多三轮。",
+  "inputs": [
+    { "name": "stage", "type": "string", "required": true, "description": "学段" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "topic", "type": "string", "required": true, "description": "课题" },
+    { "name": "objectives", "type": "string", "required": false, "description": "教学目标" },
+    { "name": "plan", "type": "string", "required": false, "description": "当前教学设计" },
+    { "name": "transcript", "type": "string", "required": true, "description": "课堂实录文本" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "rediagnose",
+      "kind": "subworkflow",
+      "title": "内嵌观察重新诊断",
+      "workflowId": "cd-observe-v1",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "objectives": "${input.objectives}",
+        "plan": "${input.plan}",
+        "transcript": "${input.transcript}"
+      },
+      "outputs": {
+        "diagnosis": "${diagnosis}",
+        "assessment": "${score-check}"
+      },
+      "stubOutput": {
+        "diagnosis": "【总体判定】各维共识分 78.8，师生互动维度存在分歧。\n【师生互动】58 分，参与集中在两人。\n【下一步】扩大提问覆盖面。",
+        "assessment": {
+          "verdict": "divergent",
+          "consensusScore": 78.8,
+          "redlineHit": false,
+          "divergentDimensions": ["师生互动"]
+        }
+      }
+    },
+    {
+      "id": "improve",
+      "kind": "agent",
+      "title": "教学改进方案",
+      "agent": "cd-improver",
+      "outputFormat": "json",
+      "outputContract": { "required": ["patches", "unresolved", "revisedPlan"] },
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "plan": "${input.plan}",
+        "diagnosis": "${rediagnose.diagnosis}",
+        "issues": "${rediagnose.assessment}"
+      },
+      "stubOutput": {
+        "patches": [
+          {
+            "issueId": "师生互动-参与集中",
+            "phase": "新授环节",
+            "before": "只叫两名学生回答",
+            "after": "每个知识点随机点三组学生，每组回答后教师追问一句为什么",
+            "reason": "把参与面从两人扩到六人以上，追问链制造思维含量"
+          }
+        ],
+        "unresolved": [],
+        "revisedPlan": "导入 5 分钟 → 新授 15 分钟（三轮提问，每轮换学生）→ 当堂检测 10 分钟 → 小结 5 分钟。"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "title": "改进复核",
+      "agent": "cd-reviewer",
+      "outputFormat": "json",
+      "outputContract": { "required": ["checks", "closedCount", "openCount", "score"] },
+      "inputs": {
+        "plan": "${input.plan}",
+        "patches": "${improve.patches}",
+        "revisedPlan": "${improve.revisedPlan}"
+      },
+      "stubOutput": {
+        "checks": [{ "issueId": "师生互动-参与集中", "closed": false, "reason": "只写了随机点三组，未写明如何保证覆盖到沉默学生" }],
+        "closedCount": 0,
+        "openCount": 1,
+        "openIssues": ["师生互动-参与集中"],
+        "newIssues": [],
+        "score": 40
+      }
+    },
+    {
+      "id": "close-gate",
+      "kind": "condition",
+      "title": "问题关闭闸门",
+      "when": "${review.openCount} > 0",
+      "then": [
+        {
+          "id": "revise-loop",
+          "kind": "loop",
+          "title": "改稿复核循环",
+          "maxIterations": 3,
+          "while": "${rereview.openCount} > 0",
+          "patience": 2,
+          "budget": { "maxDurationMs": 240000, "maxTokens": 0 },
+          "body": [
+            {
+              "id": "reimprove",
+              "kind": "agent",
+              "title": "按未关闭项再改",
+              "agent": "cd-improver",
+              "outputFormat": "json",
+              "inputs": {
+                "plan": "${improve.revisedPlan}",
+                "openIssues": "${review.openIssues}",
+                "newIssues": "${review.newIssues}",
+                "diagnosis": "${rediagnose.diagnosis}"
+              },
+              "stubOutput": {
+                "patches": [
+                  {
+                    "issueId": "师生互动-参与集中",
+                    "phase": "新授环节",
+                    "before": "随机点三组学生",
+                    "after": "按座位号分三组，每组指定一名平时不发言的学生先行回答，再请同组补充，教师对每人追问一句理由",
+                    "reason": "点名到沉默学生，覆盖面和追问都落到可执行的动作"
+                  }
+                ],
+                "unresolved": [],
+                "revisedPlan": "导入 5 分钟 → 新授 15 分钟（三组轮答，含沉默学生优先）→ 当堂检测 10 分钟 → 小结 5 分钟。"
+              }
+            },
+            {
+              "id": "rereview",
+              "kind": "agent",
+              "title": "再复核",
+              "agent": "cd-reviewer",
+              "outputFormat": "json",
+              "inputs": {
+                "plan": "${improve.revisedPlan}",
+                "patches": "${reimprove.patches}",
+                "revisedPlan": "${reimprove.revisedPlan}"
+              },
+              "stubOutput": {
+                "checks": [{ "issueId": "师生互动-参与集中", "closed": true, "reason": "改动落到具体学生与追问动作，原问题关闭" }],
+                "closedCount": 1,
+                "openCount": 0,
+                "openIssues": [],
+                "newIssues": [],
+                "score": 100
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finalize",
+      "kind": "agent",
+      "title": "终稿与前后对比",
+      "agent": "cd-reporter",
+      "outputFormat": "text",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "diagnosis": "${rediagnose.diagnosis}",
+        "planBefore": "${input.plan}",
+        "planAfter": "${improve.revisedPlan}",
+        "firstReview": "${review}",
+        "finalReview": "${rereview}"
+      },
+      "stubOutput": {
+        "output": "【改前诊断】师生互动 58 分，参与集中在两人。\n【第一轮改进】随机点三组学生，复核未通过：未保证沉默学生参与。\n【第二轮改进】按座位分三组，沉默学生优先作答，教师逐人追问。\n【复核结果】1 项问题全部关闭，关闭率 100%。\n【下一节课建议】把三组轮答固化成常规，每节课记录参与学生名单。"
+      },
+      "errorPolicy": { "timeoutMs": 240000 },
+      "maxTokens": 4096
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
+  ],
+  "edges": [
+    { "from": "start", "to": "rediagnose" },
+    { "from": "rediagnose", "to": "improve" },
+    { "from": "improve", "to": "review" },
+    { "from": "review", "to": "close-gate" },
+    { "from": "close-gate", "to": "finalize" },
+    { "from": "finalize", "to": "end" }
+  ]
+}

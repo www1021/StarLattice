@@ -1,0 +1,138 @@
+{
+  "id": "cd-master-v1",
+  "name": "课堂诊断与磨课工坊总调度流",
+  "version": 1,
+  "description": "观课磨课工坊的顶层调度流：识别意图后分四路——完整诊断调观察子流、磨课迭代调改进子流（内嵌观察）、单维观察直连单个观察 Agent、通用问题走通用模型，最后汇总回复。",
+  "inputs": [
+    { "name": "question", "type": "string", "required": true, "description": "用户本轮问题" },
+    { "name": "stage", "type": "string", "required": false, "description": "学段，缺省由专项追问" },
+    { "name": "subject", "type": "string", "required": false, "description": "学科" },
+    { "name": "topic", "type": "string", "required": false, "description": "课题" },
+    { "name": "objectives", "type": "string", "required": false, "description": "教学目标" },
+    { "name": "plan", "type": "string", "required": false, "description": "教学设计" },
+    { "name": "transcript", "type": "string", "required": false, "description": "课堂实录" },
+    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "知识库 id 列表" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "classify",
+      "kind": "llm",
+      "title": "观课意图识别",
+      "temperature": 0.2,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "system": "你是观课磨课工坊的任务路由助手。唯一职责：把用户问题归到四类之一，只输出分类词，不回答内容。",
+      "prompt": "【用户问题】\n${input.question}\n\n判断用户要哪一类，只能输出以下四个词之一：完整诊断、磨课迭代、单维观察、通用。\n\n完整诊断：要一份完整评课、看看这节课上得怎么样、按维度诊断、出观课报告。\n磨课迭代：帮我改这节课、怎么磨课、这堂怎么优化、改进教案、再上一轮。\n单维观察：只看师生互动/只看目标达成/只看内容讲解这类指定单一维度的问法。\n通用：以上都不是，比如问概念、问工具怎么用、闲聊。\n\n只输出四个词之一，不要解释。",
+      "stubOutput": { "output": "完整诊断" }
+    },
+    {
+      "id": "observe-flow",
+      "kind": "subworkflow",
+      "title": "完整诊断 · 观察子流",
+      "workflowId": "cd-observe-v1",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "objectives": "${input.objectives}",
+        "plan": "${input.plan}",
+        "transcript": "${input.transcript}"
+      },
+      "outputs": {
+        "diagnosis": "${diagnosis}",
+        "assessment": "${score-check}"
+      },
+      "stubOutput": {
+        "diagnosis": "【总体判定】各维共识分 81.6。\n【师生互动】参与集中在两人。\n【下一步】扩大提问面。",
+        "assessment": { "verdict": "pass", "consensusScore": 81.6, "redlineHit": false }
+      }
+    },
+    {
+      "id": "report-flow",
+      "kind": "subworkflow",
+      "title": "报告合成子流",
+      "workflowId": "cd-report-v1",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "diagnosis": "${observe-flow.diagnosis}"
+      },
+      "stubOutput": {
+        "output": "# 观课诊断报告\n\n【总体判定】各维共识分 81.6。\n【待改进】参与面集中在两人。"
+      }
+    },
+    {
+      "id": "improve-flow",
+      "kind": "subworkflow",
+      "title": "磨课迭代 · 改进子流",
+      "workflowId": "cd-improve-v1",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "objectives": "${input.objectives}",
+        "plan": "${input.plan}",
+        "transcript": "${input.transcript}"
+      },
+      "stubOutput": {
+        "output": "【第二轮改进】按座位分三组，沉默学生优先作答。\n【复核】1 项问题全部关闭，关闭率 100%。"
+      }
+    },
+    {
+      "id": "single-dim",
+      "kind": "agent",
+      "title": "单维观察",
+      "agent": "cd-observer-interaction",
+      "outputFormat": "json",
+      "outputContract": { "required": ["dimension", "score", "evidence", "issues", "redline"] },
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "objectives": "${input.objectives}",
+        "question": "${input.question}"
+      },
+      "stubOutput": {
+        "dimension": "师生互动",
+        "score": 62,
+        "evidence": [{ "excerpt": "学生A 发言后教师未追问", "reason": "追问缺失" }],
+        "issues": [{ "detail": "候答时间不足", "severity": "major" }],
+        "redline": { "code": "", "hit": false }
+      }
+    },
+    {
+      "id": "general-llm",
+      "kind": "llm",
+      "title": "通用问答",
+      "temperature": 0.5,
+      "inputs": { "question": "${input.question}" },
+      "system": "你是观课磨课工坊的通用助手。回答观课、磨课、量表相关的通用问题；需要真正跑诊断或磨课的，说明可以走完整诊断或磨课迭代。",
+      "prompt": "${input.question}",
+      "stubOutput": { "output": "我可以帮你做完整观课诊断，也可以针对一节课做磨课迭代。把实录和教学目标给我就能开始。" }
+    },
+    {
+      "id": "synthesize",
+      "kind": "template",
+      "title": "汇总回复",
+      "template": "${observe-flow.diagnosis}\n${improve-flow.output}\n${single-dim.output}\n${general-llm.output}\n${report-flow.output}",
+      "inputs": {}
+    },
+    { "id": "end", "kind": "end", "title": "结束" }
+  ],
+  "edges": [
+    { "from": "start", "to": "classify" },
+    { "from": "classify", "to": "observe-flow", "when": "${classify.output} == 完整诊断" },
+    { "from": "observe-flow", "to": "report-flow" },
+    { "from": "classify", "to": "improve-flow", "when": "${classify.output} == 磨课迭代" },
+    { "from": "classify", "to": "single-dim", "when": "${classify.output} == 单维观察" },
+    { "from": "classify", "to": "general-llm" },
+    { "from": "report-flow", "to": "synthesize" },
+    { "from": "improve-flow", "to": "synthesize" },
+    { "from": "single-dim", "to": "synthesize" },
+    { "from": "general-llm", "to": "synthesize" },
+    { "from": "synthesize", "to": "end" }
+  ]
+}

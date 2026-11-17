@@ -1,4 +1,4 @@
-export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase" | "exam";
+export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase" | "exam" | "classroom-diagnosis";
 
 export type ScenePackId = "education" | "business-analysis";
 
@@ -43,7 +43,11 @@ export const SCENARIO_PACK_META: Record<ScenarioPackId, { label: string; descrip
   "business-analysis": { label: "经营分析", description: "指标计算、归因分析与经营报告" },
   research: { label: "科研成长", description: "研途引航多智能体：文献阅读、实验设计与模拟答辩" },
   showcase: { label: "星枢领航", description: "平台能力全景：多智能体联调 + 工作流编排的一键演示样板" },
-  exam: { label: "命题工坊", description: "命题与考试质量工程：细目表、三路并行命题、仿真施测、难度区分度与改题自愈" }
+  exam: { label: "命题工坊", description: "命题与考试质量工程：细目表、三路并行命题、仿真施测、难度区分度与改题自愈" },
+  "classroom-diagnosis": {
+    label: "观课磨课工坊",
+    description: "课堂诊断与磨课闭环：五路并行观察、证据核验、量表仲裁、红线下线、多轮改课复核"
+  }
 };
 
 export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: string }> = [
@@ -53,6 +57,7 @@ export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: strin
   { id: "research", label: SCENARIO_PACK_META.research.label },
   { id: "showcase", label: SCENARIO_PACK_META.showcase.label },
   { id: "exam", label: SCENARIO_PACK_META.exam.label },
+  { id: "classroom-diagnosis", label: SCENARIO_PACK_META["classroom-diagnosis"].label },
   { id: "custom", label: "自定义" }
 ];
 
@@ -186,6 +191,25 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     ],
     tools: ["exam.psychometrics"],
     workflows: ["exam-quality-v1", "exam-blueprint-v1", "exam-audit-v1"],
+    templates: []
+  },
+  "classroom-diagnosis": {
+    // 观课磨课工坊：10 个注册中心 Agent、四条工作流（总调度 + 观察/改进/报告三条子流）。
+    // 两个独有工具在这里登记，不与 core 的 verify.rubric 等共用 id。
+    agents: [
+      "cd-observer-goal",
+      "cd-observer-interaction",
+      "cd-observer-content",
+      "cd-observer-management",
+      "cd-observer-learning",
+      "cd-arbitrator",
+      "cd-scorer",
+      "cd-reviewer",
+      "cd-improver",
+      "cd-reporter"
+    ],
+    tools: ["classroom.evidence", "rubric.check"],
+    workflows: ["cd-master-v1", "cd-observe-v1", "cd-improve-v1", "cd-report-v1"],
     templates: []
   }
 };

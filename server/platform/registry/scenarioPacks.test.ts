@@ -48,20 +48,23 @@ test("education pack covers all built-in education agents and workflows", () => 
   const business = SCENARIO_PACK_ITEMS["business-analysis"];
   const showcase = SCENARIO_PACK_ITEMS.showcase;
   const exam = SCENARIO_PACK_ITEMS.exam;
+  const diagnosis = SCENARIO_PACK_ITEMS["classroom-diagnosis"];
   assert.equal(
     education.agents.length,
     agentIds.size -
       SCENARIO_PACK_ITEMS.core.agents.length -
       business.agents.length -
       showcase.agents.length -
-      exam.agents.length
+      exam.agents.length -
+      diagnosis.agents.length
   );
   const sharedWorkflows = new Set([
     ...SCENARIO_PACK_ITEMS.core.workflows,
     ...business.workflows,
     ...SCENARIO_PACK_ITEMS.research.workflows,
     ...showcase.workflows,
-    ...exam.workflows
+    ...exam.workflows,
+    ...diagnosis.workflows
   ]);
   for (const id of workflowIds) {
     assert.ok(education.workflows.includes(id) || sharedWorkflows.has(id), `${id} 未归入任何场景包`);
