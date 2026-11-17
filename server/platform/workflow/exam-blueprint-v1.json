@@ -1,0 +1,327 @@
+{
+  "id": "exam-blueprint-v1",
+  "name": "命题细目表生成",
+  "version": 1,
+  "description": "把考试范围拆成知识点与认知层级的双向细目表：检索课标 → 范围拆解 → 细目表 Agent 出矩阵 → 校验知识点覆盖、层级分布、分值合计与时长匹配 → 不达标自动重排。可单独运行，也被组卷主流程作为子流程复用。",
+  "inputs": [
+    {
+      "name": "stage",
+      "type": "string",
+      "required": true,
+      "description": "学段：小学 / 初中 / 高中 / 中职 / 高校"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "textbook",
+      "type": "string",
+      "required": false,
+      "description": "教材版本，如人教版、北师大版"
+    },
+    {
+      "name": "scope",
+      "type": "string",
+      "required": true,
+      "description": "考试范围，如一元二次方程"
+    },
+    {
+      "name": "duration",
+      "type": "number",
+      "required": true,
+      "description": "考试时长（分钟）"
+    },
+    {
+      "name": "totalScore",
+      "type": "number",
+      "required": true,
+      "description": "试卷总分"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "参与检索的知识库 id 列表"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "课标与知识点检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.subject} ${input.scope} 课程标准 知识点 认知要求",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 6
+      }
+    },
+    {
+      "id": "brief",
+      "kind": "llm",
+      "title": "考试范围拆解",
+      "thinking": true,
+      "temperature": 0.3,
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "textbook": "${input.textbook}",
+        "scope": "${input.scope}",
+        "citations": "${retrieve.citations}"
+      },
+      "system": "你是资深教研员，熟悉各学段课程标准、教材编排与认知层级要求。",
+      "prompt": "把 ${input.stage}${input.subject}「${input.scope}」拆成可以直接命题的知识点清单。逐条给出：知识点名称、课标要求的认知层级（按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造）、在教材中的位置。只列属于本次范围的内容，不要延伸到后续章节。总时长 ${input.duration} 分钟、总分 ${input.totalScore} 分，据此估算题目数量上限。"
+    },
+    {
+      "id": "blueprint",
+      "kind": "agent",
+      "title": "生成双向细目表",
+      "agent": "exam-blueprint",
+      "outputFormat": "json",
+      "outputContract": {
+        "required": [
+          "blueprint",
+          "totalScore",
+          "duration",
+          "levelRatio",
+          "risks"
+        ]
+      },
+      "inputs": {
+        "brief": "${brief.output}",
+        "citations": "${retrieve.citations}",
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "scope": "${input.scope}",
+        "duration": "${input.duration}",
+        "totalScore": "${input.totalScore}"
+      },
+      "prompt": "依据范围拆解与课标引用生成双向细目表。要求：每个知识点在矩阵里至少出现一次；低阶与高阶分值比接近 6:4；各题分值之和严格等于 ${input.totalScore}；按客观题 1.5 分钟一题、主观题每分 1.2 分钟估算的总时长不超过 ${input.duration} 分钟。",
+      "stubOutput": {
+        "blueprint": [
+          {
+            "knowledgePoint": "一元二次方程的定义与一般形式",
+            "level": "理解",
+            "itemType": "选择",
+            "count": 3,
+            "score": 9
+          },
+          {
+            "knowledgePoint": "直接开平方法与配方法",
+            "level": "应用",
+            "itemType": "选择",
+            "count": 3,
+            "score": 9
+          },
+          {
+            "knowledgePoint": "公式法与根的判别式",
+            "level": "应用",
+            "itemType": "填空",
+            "count": 4,
+            "score": 12
+          },
+          {
+            "knowledgePoint": "根与系数的关系",
+            "level": "综合",
+            "itemType": "解答",
+            "count": 3,
+            "score": 30
+          },
+          {
+            "knowledgePoint": "实际应用建模",
+            "level": "综合",
+            "itemType": "解答",
+            "count": 4,
+            "score": 40
+          }
+        ],
+        "totalScore": 100,
+        "duration": 45,
+        "levelRatio": "低阶 60% / 高阶 40%",
+        "risks": [
+          "配方法只安排 1 题，学生失分后无法区分是方法不熟还是计算失误"
+        ]
+      }
+    },
+    {
+      "id": "verify-blueprint",
+      "kind": "verify",
+      "title": "细目表校验",
+      "verifier": "observer-verifier",
+      "verifiers": [
+        "observer-verifier",
+        "exam-blueprint"
+      ],
+      "rubric": [
+        "知识点覆盖完整",
+        "认知层级分布合理",
+        "分值合计等于总分",
+        "时长与题量匹配"
+      ],
+      "threshold": 0.8,
+      "expectedKeywords": [
+        "知识点",
+        "层级",
+        "分值"
+      ],
+      "minChars": 120,
+      "inputs": {
+        "artifact": "${blueprint.output}",
+        "reference": "${retrieve.citations}"
+      }
+    },
+    {
+      "id": "gate",
+      "kind": "condition",
+      "title": "达标分流",
+      "when": "${verify-blueprint.score} < 0.8",
+      "then": [
+        {
+          "id": "redo-loop",
+          "kind": "loop",
+          "title": "细目表重排循环",
+          "maxIterations": 2,
+          "while": "${verify-loop.score} < 0.85",
+          "patience": 2,
+          "budget": {
+            "maxDurationMs": 90000,
+            "maxTokens": 0
+          },
+          "body": [
+            {
+              "id": "redo",
+              "kind": "agent",
+              "title": "按问题重排细目表",
+              "agent": "exam-blueprint",
+              "outputFormat": "json",
+              "inputs": {
+                "draft": "${loop.artifact}",
+                "issues": "${loop.issues}",
+                "scope": "${input.scope}",
+                "totalScore": "${input.totalScore}",
+                "duration": "${input.duration}"
+              },
+              "prompt": "按校验问题逐条修正细目表：补上遗漏的必考知识点、调整失衡的认知层级比例、把分值配平到 ${input.totalScore} 分以内且时长不超过 ${input.duration} 分钟。只改有问题的部分，其余保持原样。",
+              "stubOutput": {
+                "blueprint": [
+                  {
+                    "knowledgePoint": "一元二次方程的定义与一般形式",
+                    "level": "理解",
+                    "itemType": "选择",
+                    "count": 3,
+                    "score": 9
+                  },
+                  {
+                    "knowledgePoint": "直接开平方法与配方法",
+                    "level": "应用",
+                    "itemType": "选择",
+                    "count": 4,
+                    "score": 12
+                  },
+                  {
+                    "knowledgePoint": "公式法与根的判别式",
+                    "level": "应用",
+                    "itemType": "填空",
+                    "count": 4,
+                    "score": 12
+                  },
+                  {
+                    "knowledgePoint": "根与系数的关系",
+                    "level": "综合",
+                    "itemType": "解答",
+                    "count": 3,
+                    "score": 30
+                  },
+                  {
+                    "knowledgePoint": "实际应用建模",
+                    "level": "综合",
+                    "itemType": "解答",
+                    "count": 3,
+                    "score": 37
+                  }
+                ],
+                "totalScore": 100,
+                "duration": 45,
+                "levelRatio": "低阶 61% / 高阶 39%",
+                "risks": [
+                  "实际应用建模降到 3 题后，情境题型的覆盖略紧，需在课时允许时补一道"
+                ]
+              }
+            },
+            {
+              "id": "verify-loop",
+              "kind": "verify",
+              "title": "重排复核",
+              "verifier": "observer-verifier",
+              "rubric": [
+                "知识点覆盖完整",
+                "认知层级分布合理",
+                "分值合计等于总分"
+              ],
+              "threshold": 0.85,
+              "inputs": {
+                "artifact": "${redo.output}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deliver",
+      "kind": "template",
+      "title": "细目表交付",
+      "template": "# ${input.stage}${input.subject} 细目表\n\n- 考试范围：${input.scope}\n- 总分：${input.totalScore}\n- 时长：${input.duration} 分钟\n- 细目表校验分：${verify-blueprint.score}\n\n## 双向细目表\n${blueprint.output}",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "scope": "${input.scope}",
+        "totalScore": "${input.totalScore}",
+        "duration": "${input.duration}"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "retrieve"
+    },
+    {
+      "from": "retrieve",
+      "to": "brief"
+    },
+    {
+      "from": "brief",
+      "to": "blueprint"
+    },
+    {
+      "from": "blueprint",
+      "to": "verify-blueprint"
+    },
+    {
+      "from": "verify-blueprint",
+      "to": "gate"
+    },
+    {
+      "from": "gate",
+      "to": "deliver"
+    },
+    {
+      "from": "deliver",
+      "to": "end"
+    }
+  ]
+}

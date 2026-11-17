@@ -320,6 +320,42 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     enabled: true
   },
   {
+    id: "exam.psychometrics",
+    name: "试卷质量测量",
+    type: "builtin",
+    endpoint: "builtin://exam/psychometrics",
+    description:
+      "按教育测量学口径计算每题难度 P（全体平均得分/满分）与区分度 D（高分组得分率与低分组得分率之差），汇总整卷难度、平均区分度、难度分布与认知层级覆盖，并按阈值列出必须返工的题号。",
+    schema: jsonSchema(
+      {
+        items: {
+          type: "array",
+          description: "每题测量数据；高分组与低分组通常各取总分前 27% 与后 27%",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "题号" },
+              fullScore: { type: "number", description: "该题满分" },
+              highGroupAvg: { type: "number", description: "高分组平均得分" },
+              lowGroupAvg: { type: "number", description: "低分组平均得分" },
+              overallAvg: { type: "number", description: "全体平均得分，缺省取高低分组均值" },
+              level: { type: "string", description: "认知层级，如识记/理解/应用/迁移" }
+            },
+            required: ["id", "fullScore", "highGroupAvg", "lowGroupAvg"]
+          }
+        },
+        difficultyRange: {
+          type: "array",
+          items: { type: "number" },
+          description: "可接受的整卷难度区间，默认 0.55 到 0.75"
+        },
+        discriminationMin: { type: "number", description: "区分度下限，默认 0.3" }
+      },
+      ["items"]
+    ),
+    enabled: true
+  },
+  {
     id: "lms.publish",
     name: "学习平台发布（HTTP）",
     type: "http",

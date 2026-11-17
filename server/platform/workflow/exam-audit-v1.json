@@ -1,0 +1,163 @@
+{
+  "id": "exam-audit-v1",
+  "name": "试卷审题",
+  "version": 1,
+  "description": "对一份现成试卷做四项审查：科学性、规范性、课标范围、可解性。审题 Agent 逐题定位问题并分级，校验节点检查问题是否落到题号、建议是否可执行，最后输出带结论的审题报告。可单独运行，也被组卷主流程作为并行支线复用。",
+  "inputs": [
+    {
+      "name": "stage",
+      "type": "string",
+      "required": true,
+      "description": "学段"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "scope",
+      "type": "string",
+      "required": false,
+      "description": "考试范围，用于超纲判定"
+    },
+    {
+      "name": "paperText",
+      "type": "string",
+      "required": true,
+      "description": "待审试卷全文，含题干、选项、答案与评分标准"
+    },
+    {
+      "name": "knowledgeBaseIds",
+      "type": "object",
+      "required": false,
+      "description": "参与检索的知识库 id 列表"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
+    {
+      "id": "retrieve",
+      "kind": "tool",
+      "title": "课标范围检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.subject} ${input.scope} 课程标准 内容要求 学段",
+        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+        "topK": 5
+      }
+    },
+    {
+      "id": "audit",
+      "kind": "agent",
+      "title": "逐题审题",
+      "agent": "exam-auditor",
+      "outputFormat": "json",
+      "outputContract": {
+        "required": [
+          "issueList",
+          "blockerCount",
+          "verdict"
+        ],
+        "enums": {
+          "verdict": [
+            "pass",
+            "revise"
+          ]
+        }
+      },
+      "inputs": {
+        "paperText": "${input.paperText}",
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "scope": "${input.scope}",
+        "citations": "${retrieve.citations}"
+      },
+      "prompt": "对这份 ${input.stage}${input.subject} 试卷逐题审查。四项口径分开判断：科学性看概念、符号、单位、数据；规范性看题干歧义与选择题答案唯一性；范围看是否超出 ${input.scope} 所属的课标与教材；可解性看条件是否充分、评分标准能否落地。每个问题必须写清题号、严重程度与可直接执行的改法。",
+      "stubOutput": {
+        "issueList": [
+          {
+            "id": "7",
+            "type": "规范性",
+            "severity": "major",
+            "detail": "题干未限定在实数范围内解方程，学生可能答无实根时被判错。",
+            "suggestion": "题干补上「在实数范围内」，或明确要求说明根的情况。"
+          },
+          {
+            "id": "15",
+            "type": "可解性",
+            "severity": "minor",
+            "detail": "第二问要求判断有无实根，但未说明需要写出判别式过程。",
+            "suggestion": "评分标准中把「写出判别式」列为得分点。"
+          }
+        ],
+        "blockerCount": 0,
+        "verdict": "pass"
+      }
+    },
+    {
+      "id": "verify-audit",
+      "kind": "verify",
+      "title": "审题结论校验",
+      "verifier": "observer-verifier",
+      "verifiers": [
+        "observer-verifier"
+      ],
+      "rubric": [
+        "问题定位到题号",
+        "改动建议可执行",
+        "严重程度分级清楚",
+        "四项口径均有覆盖"
+      ],
+      "threshold": 0.8,
+      "minChars": 200,
+      "inputs": {
+        "artifact": "${audit.output}",
+        "reference": "${retrieve.citations}"
+      }
+    },
+    {
+      "id": "deliver",
+      "kind": "template",
+      "title": "审题报告",
+      "template": "# ${input.stage}${input.subject} 审题报告\n\n- 审查范围：${input.scope}\n- 结论可信度：${verify-audit.score}\n\n## 逐题问题清单\n${audit.output}",
+      "inputs": {
+        "stage": "${input.stage}",
+        "subject": "${input.subject}",
+        "scope": "${input.scope}"
+      }
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "retrieve"
+    },
+    {
+      "from": "retrieve",
+      "to": "audit"
+    },
+    {
+      "from": "audit",
+      "to": "verify-audit"
+    },
+    {
+      "from": "verify-audit",
+      "to": "deliver"
+    },
+    {
+      "from": "deliver",
+      "to": "end"
+    }
+  ]
+}

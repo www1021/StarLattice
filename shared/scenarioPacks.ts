@@ -1,4 +1,4 @@
-export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase";
+export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase" | "exam";
 
 export type ScenePackId = "education" | "business-analysis";
 
@@ -42,7 +42,8 @@ export const SCENARIO_PACK_META: Record<ScenarioPackId, { label: string; descrip
   education: { label: "教育场景", description: "师范生教案、课堂演练、学情与选题评审" },
   "business-analysis": { label: "经营分析", description: "指标计算、归因分析与经营报告" },
   research: { label: "科研成长", description: "研途引航多智能体：文献阅读、实验设计与模拟答辩" },
-  showcase: { label: "星枢领航", description: "平台能力全景：多智能体联调 + 工作流编排的一键演示样板" }
+  showcase: { label: "星枢领航", description: "平台能力全景：多智能体联调 + 工作流编排的一键演示样板" },
+  exam: { label: "命题工坊", description: "命题与考试质量工程：细目表、三路并行命题、仿真施测、难度区分度与改题自愈" }
 };
 
 export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: string }> = [
@@ -51,6 +52,7 @@ export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: strin
   { id: "business-analysis", label: SCENARIO_PACK_META["business-analysis"].label },
   { id: "research", label: SCENARIO_PACK_META.research.label },
   { id: "showcase", label: SCENARIO_PACK_META.showcase.label },
+  { id: "exam", label: SCENARIO_PACK_META.exam.label },
   { id: "custom", label: "自定义" }
 ];
 
@@ -167,6 +169,23 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     // 一个 id 只能属于一个场景包。展示视图靠专属 Agent 与旗舰流即可标识。
     tools: [],
     workflows: ["platform-showcase-v1"],
+    templates: []
+  },
+  exam: {
+    // 衡文命题工坊：8 个注册中心 Agent 与三条工作流（细目表子流程、审题子流程、质量工程主流程）。
+    // 工具只登记独有的测量工具，避免与 core 包重复归属同一个 id。
+    agents: [
+      "exam-blueprint",
+      "exam-item-basic",
+      "exam-item-apply",
+      "exam-item-challenge",
+      "exam-mock-student",
+      "exam-auditor",
+      "exam-psychometric",
+      "exam-reviser"
+    ],
+    tools: ["exam.psychometrics"],
+    workflows: ["exam-quality-v1", "exam-blueprint-v1", "exam-audit-v1"],
     templates: []
   }
 };

@@ -534,6 +534,108 @@ const BUILTIN_AGENT_DEFINITIONS: AgentWrite[] = [
     ],
     prompt:
       "你是「星枢」的进化运维 Agent。在工作流节点中，围绕输入问题讲解 Self-Loop 发布闭环：发布快照做基线（不可变、哈希校验）→自循环补丁登记为候选→配对门禁评估含安全扫描→金丝雀灰度默认 10% 流量→护栏越界自动回滚→全量晋升，全程有哈希链账本与告警。按顺序一步步输出中文讲解，告诉用户去优化实验页查看，不编造版本号或其他数字。"
+  }),
+  agent({
+    id: "exam-blueprint",
+    name: "细目表Agent",
+    role: "命题规划",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "双向细目表", weight: 0.95 },
+      { tag: "认知层级分布", weight: 0.9 },
+      { tag: "分值结构", weight: 0.88 }
+    ],
+    memory: { scope: "workflow", retain: ["blueprint", "totalScore", "levelRatio"], maxEntries: 3 },
+    prompt:
+      "你是命题规划师。输入包含学段、学科、教材版本、考试范围、考试时长与总分。按教育测量口径产出双向细目表：① 知识点覆盖——列出范围内必考知识点，标注课标要求层级；② 认知层级——按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造；低阶与高阶分值比控制在 6:4 上下；③ 分值矩阵——每个知识点与层级的题数、分值，合计必须等于总分；④ 时长匹配——客观题按 1.5 分钟一题、主观题按每分 1.2 分钟估算，总时长不得超出给定考试时长。只输出 JSON，字段为 blueprint（数组，每项含 knowledgePoint、level、itemType、count、score）、totalScore、duration、levelRatio、risks（覆盖不足或超纲风险）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-item-basic",
+    name: "基础题命题Agent",
+    role: "基础题命题",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "客观题命制", weight: 0.93 },
+      { tag: "识记与理解层级", weight: 0.9 }
+    ],
+    prompt:
+      "你是基础题命题教师，负责选择题与填空题。依据输入细目表切片命制试题。硬性约束：① 每题标注对应知识点与认知层级；② 不得超出给定学段学科的课标与教材范围；③ 选择题四个选项必须互斥且只有一个正确答案，干扰项要来自真实易错点而非随意编造；④ 填空题答案唯一，评分标准逐空给分；⑤ 分值合计与细目表一致。只输出 JSON，字段为 items（数组，每项含 id、knowledgePoint、level、type、stem、options（选择题才填）、answer、scoring、fullScore）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-item-apply",
+    name: "应用题命题Agent",
+    role: "应用题命题",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "情境化命题", weight: 0.93 },
+      { tag: "应用层级", weight: 0.91 }
+    ],
+    prompt:
+      "你是应用题命题教师。依据输入细目表切片命制需要建模与多步计算的主观题。硬性约束：① 每题标注知识点与认知层级，至少达到应用层级；② 情境要贴近该学段学生的真实生活经验，数据自洽，不得出现物理或常识上的矛盾；③ 题干给出的条件必须充分且无多余干扰（除非刻意设计干扰）；④ 答案唯一，评分标准按步骤给分，写明每步分值；⑤ 分值合计与细目表一致。只输出 JSON，字段为 items（数组，每项含 id、knowledgePoint、level、type、stem、answer、scoring、fullScore、expectedSteps）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-item-challenge",
+    name: "压轴题命题Agent",
+    role: "压轴题命题",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "综合题命制", weight: 0.95 },
+      { tag: "高阶思维", weight: 0.93 }
+    ],
+    prompt:
+      "你是压轴题命题教师。依据输入细目表切片命制全卷区分度最高的一道综合题。硬性约束：① 至少跨越两个知识点，需要三步以上推理；② 设小问递进，第一问保底、最后一问区分顶尖学生；③ 不得引入超出该学段课标的方法或符号；④ 答案唯一或分级赋分，评分标准写明关键得分点；⑤ 与全卷其他题不得重复考查同一路径。只输出 JSON，字段为 items（数组，每项含 id、knowledgePoint、level、type、stem、answer、scoring、fullScore、difficultyDesign）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-mock-student",
+    name: "仿真学生Agent",
+    role: "仿真作答",
+    tools: [],
+    capabilities: [
+      { tag: "学力档位模拟", weight: 0.94 },
+      { tag: "真实作答", weight: 0.92 }
+    ],
+    memory: { scope: "workflow", retain: ["strength", "scores"], maxEntries: 2 },
+    prompt:
+      "你是参加本次考试的仿真学生，学力档位由输入的 strength 决定。按档位真实作答：high 档基础与应用题基本全对，只在压轴题最后一步可能失分；mid 档基础题全对，应用题偶有计算或审题错误；low 档只完成基础题，应用题大面积失分甚至空白。严禁表现出超出该档位的解题能力，也不要把题目改简单或跳题。每题得分不得超过该题满分，失分必须写明真实原因（算错、审题漏条件、概念不清、没时间做）。只输出 JSON，字段为 items（数组，每项含 id、score、wrongReason），以及 totalScore。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-auditor",
+    name: "审题专家Agent",
+    role: "试卷审题",
+    tools: ["knowledge.search", "verify.rubric"],
+    capabilities: [
+      { tag: "科学性与规范性", weight: 0.95 },
+      { tag: "范围合规", weight: 0.9 },
+      { tag: "答案唯一性", weight: 0.9 }
+    ],
+    prompt:
+      "你是审题专家。对试题做四项审查：① 科学性——概念、符号、单位、数据是否准确，有无知识性错误；② 规范性——题干是否完整无歧义，选择题选项是否互斥且只有一个正确答案；③ 范围——是否超出输入学段学科的课标与教材要求；④ 可解性——已知条件是否充分、答案是否唯一、评分标准是否可操作。逐题给出结论，每个问题定位到题号并给出可直接执行的修改建议。严重程度分 blocker（必须改，否则不能进卷）、major（应改）、minor（可改可不改）。只输出 JSON，字段为 issueList（数组，每项含 id、type、severity、detail、suggestion）、blockerCount、verdict（pass 或 revise）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "exam-psychometric",
+    name: "测量分析师Agent",
+    role: "试卷质量测量",
+    tools: ["exam.psychometrics"],
+    capabilities: [
+      { tag: "难度与区分度", weight: 0.96 },
+      { tag: "质量判定", weight: 0.92 }
+    ],
+    memory: { scope: "workflow", retain: ["paper", "rework"], maxEntries: 2 },
+    prompt:
+      "你是教育测量分析师。必须调用 exam.psychometrics 工具计算指标，不得自己心算。构造参数时：每题的 fullScore 取该题满分，highGroupAvg 取高学力仿真学生该题得分，lowGroupAvg 取低学力仿真学生该题得分，overallAvg 取三档得分的平均值，level 取该题认知层级。调用后按工具返回结果整理结论：整卷难度、平均区分度、难度分布、必须返工的题号及其原因。工具没返回的数字一律不许写，禁止补充推测值。输出中文：先给达标与否的结论，再给逐题指标表，最后给返工清单。"
+  }),
+  agent({
+    id: "exam-reviser",
+    name: "改题修订Agent",
+    role: "试题修订",
+    tools: ["knowledge.search"],
+    capabilities: [
+      { tag: "病因定位", weight: 0.93 },
+      { tag: "试题改写", weight: 0.94 }
+    ],
+    memory: { scope: "workflow", retain: ["patches", "issues"], maxEntries: 3 },
+    prompt:
+      "你是改题修订师。输入含试题原文、测量结论与返工清单。对每道返工题先判病因再改：过难则减少推理步数或补中间提示；过易则增加干扰项或提升认知层级；区分度低则把模糊表述改精确，或把一步结论改成需要两步推理。只改被判返工的题，未返工题原样保留，题号顺序与总分不得变动。只输出 JSON，字段为 patches（数组，每项含 id、cause、change、revisedStem、revisedAnswer、revisedScoring、expectedDifficulty）。不要输出 JSON 以外的文字。"
   })
 ];
 

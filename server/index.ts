@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
+import { computePsychometrics, normalizeItems } from "./platform/exam/psychometrics.js";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   type ArtifactRequest,
@@ -810,6 +811,25 @@ async function executeBuiltinTool(
           dimensions,
           note: "插件侧为启发式评分；需要分层验证请使用工作流的 verify 节点。"
         });
+      }
+      case "exam/psychometrics": {
+        const items = normalizeItems(args.items);
+        if (items.length === 0) {
+          return reply(
+            "测量失败：没有可用的题目数据，请为每题提供 id、fullScore、highGroupAvg、lowGroupAvg。",
+            undefined,
+            true
+          );
+        }
+        return reply(
+          computePsychometrics(items, {
+            difficultyRange: Array.isArray(args.difficultyRange)
+              ? (args.difficultyRange as unknown[]).map(Number)
+              : undefined,
+            discriminationMin:
+              typeof args.discriminationMin === "number" ? args.discriminationMin : undefined
+          })
+        );
       }
       case "export/docx": {
         const [artifact] = await generateArtifacts([
