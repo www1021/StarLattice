@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { castById, MAIN_CAST_ID, poseOf, type PetPose } from "./petCast";
+import { castById, MAIN_CAST_ID, poseOf, type MotionId, type PetPose } from "./petCast";
+import { MOTION_SEQUENCES, poseForFrame } from "./motionFrames";
 import { usePetStore } from "./petStore";
 import "./pet.css";
 
@@ -140,8 +141,37 @@ export function PetStage({ castId, motionId }: { castId?: string; motionId?: str
     };
   }, [mood, helper]);
 
-  // 主角拉人那一下切到"使劲伸手"的立绘，其余时间按当前状态走
-  const mainPose = pulling && main.pullPose ? main.pullPose : poseOf(main, mood);
+  const activeMotion = (motionId ?? main.motion) as MotionId;
+  const sequence = MOTION_SEQUENCES[activeMotion] ?? MOTION_SEQUENCES.default;
+
+  // 待机且没在转交时，按动作编排在角色已有的几张立绘之间切帧：
+  // 出拳用前伸手、踱步站定、舞步/列队/加油都换姿势。工作态仍按状态走，
+  // 否则跑流程时人物会在"出拳帧"和"跑步帧"之间乱跳。
+  const [frameIndex, setFrameIndex] = useState(0);
+  const motionActive = mood === "idle" && !helper && !pulling;
+  const canCycle = motionActive && !!sequence && !sequence.static && sequence.frames.length >= 2;
+
+  // 换动作/换角色/离开待机时回到第 0 帧
+  useEffect(() => {
+    setFrameIndex(0);
+  }, [activeMotion, motionActive, castId]);
+
+  // 每帧停留时长不同，所以用 setTimeout 逐帧排下一次，不用固定周期的 setInterval
+  useEffect(() => {
+    if (!canCycle || !sequence) return;
+    const hold = sequence.frames[frameIndex % sequence.frames.length].hold;
+    const timer = setTimeout(() => {
+      setFrameIndex((i) => (i + 1) % sequence.frames.length);
+    }, hold);
+    return () => clearTimeout(timer);
+  }, [canCycle, sequence, frameIndex]);
+
+  const motionFrame = motionActive && sequence ? sequence.frames[frameIndex % sequence.frames.length] : undefined;
+  // 主角拉人那一下切到"使劲伸手"的立绘；待机时按动作帧切姿势；其余按状态走
+  const motionPose = motionFrame ? poseForFrame(main, motionFrame.key) : null;
+  const mainPose = pulling && main.pullPose
+    ? main.pullPose
+    : motionPose ?? poseOf(main, mood);
   // 配角：被拽时和干活时用同一张不情愿的脸
   const matePose = (working && helperCast?.dragPose) || poseOf(helperCast ?? main, "running");
 
@@ -149,7 +179,8 @@ export function PetStage({ castId, motionId }: { castId?: string; motionId?: str
     <section
       className="pet-stage"
       data-mood={mood}
-      data-motion={motionId ?? main.motion}
+      data-motion={activeMotion}
+      data-frame={motionFrame?.key ?? ""}
       data-peek={peek ? "1" : "0"}
       data-helper={helper ? "1" : "0"}
       data-pull={pulling ? "1" : "0"}
