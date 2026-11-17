@@ -287,7 +287,14 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         loopRole: parseLoopRole(record.loopRole, `${location}.loopRole`),
         promoteToAgent: optionalString(record.promoteToAgent, `${location}.promoteToAgent`),
         toolCalling: parseOptionalBoolean(record.toolCalling, `${location}.toolCalling`),
-        model: optionalString(record.model, `${location}.model`)
+        model: optionalString(record.model, `${location}.model`),
+        // 运行时 runLiveAgent 会读 node.maxTokens（缺省 PLATFORM_LIVE_MAX_TOKENS / 2048），
+        // 但解析这里之前漏了这个字段：DSL 里写了也会被丢掉，出长 JSON 的命题节点
+        // 照样按 2048 截断，表现就是「JSON 无法解析」。
+        maxTokens:
+          record.maxTokens === undefined
+            ? undefined
+            : requireInteger(record.maxTokens, `${location}.maxTokens`)
       };
     case "tool":
       return {

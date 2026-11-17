@@ -133,6 +133,12 @@ export type AgentNode = NodeBase & {
   toolCalling?: boolean;
   /** 节点级模型覆盖，优先级高于 Agent 注册记录里的 model；取模型目录中的逻辑 id。 */
   model?: string;
+  /**
+   * 节点级输出上限，覆盖平台默认（PLATFORM_LIVE_MAX_TOKENS，缺省 2048）。
+   * 出长 JSON 的 Agent（命题、审题、仿真作答）必须调高，否则输出被截断，
+   * json 模式下表现为「返回的 JSON 无法解析」。
+   */
+  maxTokens?: number;
 };
 
 /** 流程入口：把工作流输入原样作为产物，不覆盖最近一次真实产物。 */

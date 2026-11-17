@@ -602,7 +602,12 @@ function buildAgentToolCatalog(agent: AgentRecord, options: LiveHandlerOptions) 
     }
 
     const tool = options.getTool?.(toolId);
-    if (!tool || tool.type !== "mcp" || !tool.enabled || !options.callMcpTool) {
+    // 内置工具（type=builtin，端点 builtin://…）和 MCP 走的是同一条执行通道：
+    // callMcpTool 就是 platformMcp.callToolRecord，它内部按端点分流到内置执行器。
+    // 之前这里只放 mcp，导致「测量分析师」这类只挂内置工具的 Agent 目录为空、
+    // 节点直接报错——注册中心允许声明，运行时却不认，属于两边口径不一致。
+    const executable = tool && (tool.type === "mcp" || tool.type === "builtin");
+    if (!executable || !tool.enabled || !options.callMcpTool) {
       continue;
     }
     const functionName = uniqueFunctionName(lastSegment(toolId), usedNames);
@@ -1001,7 +1006,8 @@ async function runLiveTool(
       return rubricTool(node, input);
     default: {
       const tool = options.getTool?.(node.tool);
-      if (tool?.type === "mcp" && options.callMcpTool) {
+      // 与 Agent 工具目录同一口径：内置工具（builtin://…）和 MCP 都能当工具节点跑。
+      if (tool && (tool.type === "mcp" || tool.type === "builtin") && options.callMcpTool) {
         return executeMcpToolNode(node, input, tool, options.callMcpTool);
       }
       if (tool?.type === "http") {
