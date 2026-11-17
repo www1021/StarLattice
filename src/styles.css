@@ -13680,38 +13680,27 @@ img.user-avatar {
   display: none;
 }
 
-/* ---- 2026-11-11 界面改版：对话页收窄到阅读宽度 ---- */
+/* ---- 对话页：正文永远居中，工作宠只是左侧装饰，不参与排版 ---- */
+/* 左右各留一段宠位（正文仍是 860px 宽），整块在 workspace 里居中。
+   关掉工作宠时这段留白保持不变，正文位置不会因为开关而左右跳动。 */
 .workspace-inner.chat-workspace {
-  max-width: 860px;
-}
-
-/* ---- 桌宠：整块内容靠左，别在侧栏和对话之间空出一大截 ---- */
-/* workspace 默认居中，对话页改成靠左并留一点呼吸边距，桌宠和正文一起左移 */
-.app-shell:has(.chat-workspace) .workspace {
-  justify-content: flex-start;
-}
-.workspace-inner.chat-workspace.has-pet {
   position: relative;
-  max-width: 1112px;
-  padding-left: 236px;
-  margin-left: clamp(0px, 5vw, 108px);
-  margin-right: 0;
-  transition: padding-left 0.24s var(--sidebar-ease);
+  --pet-gutter: 236px;
+  max-width: calc(860px + var(--pet-gutter) * 2);
+  padding-left: var(--pet-gutter);
+  padding-right: var(--pet-gutter);
+  transition: padding-left 0.24s var(--sidebar-ease), padding-right 0.24s var(--sidebar-ease);
 }
 
 @media (max-width: 1460px) {
-  .workspace-inner.chat-workspace.has-pet {
-    max-width: 1084px;
-    padding-left: 216px;
-    margin-left: clamp(0px, 3vw, 48px);
+  .workspace-inner.chat-workspace {
+    --pet-gutter: 216px;
   }
 }
 
 @media (max-width: 1340px) {
-  .workspace-inner.chat-workspace.has-pet {
-    max-width: 1060px;
-    padding-left: 196px;
-    margin-left: 0;
+  .workspace-inner.chat-workspace {
+    --pet-gutter: 196px;
   }
 }
 
@@ -13746,12 +13735,10 @@ img.user-avatar {
 }
 
 @media (max-width: 1180px) {
-  .workspace-inner.chat-workspace {
-    max-width: 100%;
-  }
   /* 空间不够就彻底收起桌宠，正文回到满宽 */
-  .workspace-inner.chat-workspace.has-pet {
-    padding-left: 0;
+  .workspace-inner.chat-workspace {
+    --pet-gutter: 0px;
+    max-width: 100%;
   }
 }
 
