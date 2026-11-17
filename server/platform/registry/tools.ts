@@ -356,6 +356,75 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     enabled: true
   },
   {
+    id: "classroom.evidence",
+    name: "课堂实录证据统计",
+    type: "builtin",
+    endpoint: "builtin://classroom/evidence",
+    description:
+      "从结构化的课堂发言记录计算话语轮次、师生话语占比、提问次数、平均发言长度、最长发言时长与超过 3 秒的冷场段，并给出可引用的发言摘录。数字由代码统计，供观察员引用与证据核验使用。",
+    schema: jsonSchema(
+      {
+        utterances: {
+          type: "array",
+          description: "按时间顺序排列的发言；speaker 为 teacher/教师/老师或学生标识",
+          items: {
+            type: "object",
+            properties: {
+              speaker: { type: "string" },
+              text: { type: "string" },
+              startSec: { type: "number" },
+              endSec: { type: "number" }
+            },
+            required: ["speaker", "text"]
+          }
+        }
+      },
+      ["utterances"]
+    ),
+    enabled: true
+  },
+  {
+    id: "rubric.check",
+    name: "量表一致性与红线判定",
+    type: "builtin",
+    endpoint: "builtin://rubric/check",
+    description:
+      "按各观察员在每维的打分计算共识分、极差与标准差，点名分歧超过阈值的维度；任一红线命中即一票否决。只做确定性判定，不生成改进建议。",
+    schema: jsonSchema(
+      {
+        dimensions: {
+          type: "array",
+          description: "每个维度及其各观察员分数（统一按 0-100 计）",
+          items: {
+            type: "object",
+            properties: {
+              dimension: { type: "string" },
+              scores: { type: "array", items: { type: "number" } }
+            },
+            required: ["dimension", "scores"]
+          }
+        },
+        redlines: {
+          type: "array",
+          description: "一票否决项，如科学性错误、师德问题",
+          items: {
+            type: "object",
+            properties: {
+              code: { type: "string" },
+              hit: { type: "boolean" },
+              evidence: { type: "string" }
+            },
+            required: ["code", "hit"]
+          }
+        },
+        maxSpread: { type: "number", description: "同一维度允许的最大极差，默认 25" },
+        passScore: { type: "number", description: "共识分达标线，默认 70" }
+      },
+      ["dimensions"]
+    ),
+    enabled: true
+  },
+  {
     id: "lms.publish",
     name: "学习平台发布（HTTP）",
     type: "http",

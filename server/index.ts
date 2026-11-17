@@ -6,6 +6,7 @@ import http from "node:http";
 import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import { computePsychometrics, normalizeItems } from "./platform/exam/psychometrics.js";
+import { checkRubric, computeClassroomEvidence } from "./platform/classroom/classroomEvidence.js";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   type ArtifactRequest,
@@ -828,6 +829,47 @@ async function executeBuiltinTool(
               : undefined,
             discriminationMin:
               typeof args.discriminationMin === "number" ? args.discriminationMin : undefined
+          })
+        );
+      }
+      case "classroom/evidence": {
+        const utterances = Array.isArray(args.utterances)
+          ? (args.utterances as Array<{ speaker?: unknown; text?: unknown; startSec?: unknown; endSec?: unknown }>)
+              .map((item) => ({
+                speaker: typeof item.speaker === "string" ? item.speaker : "",
+                text: typeof item.text === "string" ? item.text : "",
+                startSec: typeof item.startSec === "number" ? item.startSec : undefined,
+                endSec: typeof item.endSec === "number" ? item.endSec : undefined
+              }))
+          : [];
+        if (utterances.length === 0) {
+          return reply("证据统计失败：没有可用的发言记录，请提供 utterances 数组。", undefined, true);
+        }
+        return reply(computeClassroomEvidence(utterances));
+      }
+      case "rubric/check": {
+        const dimensions = Array.isArray(args.dimensions)
+          ? (args.dimensions as Array<{ dimension?: unknown; scores?: unknown }>)
+              .map((item) => ({
+                dimension: typeof item.dimension === "string" ? item.dimension : "",
+                scores: Array.isArray(item.scores) ? (item.scores as unknown[]).map(Number) : []
+              }))
+          : [];
+        if (dimensions.length === 0) {
+          return reply("一致性判定失败：没有可用的维度分数，请提供 dimensions 数组。", undefined, true);
+        }
+        return reply(
+          checkRubric({
+            dimensions,
+            redlines: Array.isArray(args.redlines)
+              ? (args.redlines as Array<{ code?: unknown; hit?: unknown; evidence?: unknown }>).map((item) => ({
+                  code: typeof item.code === "string" ? item.code : "",
+                  hit: Boolean(item.hit),
+                  evidence: typeof item.evidence === "string" ? item.evidence : undefined
+                }))
+              : [],
+            maxSpread: typeof args.maxSpread === "number" ? args.maxSpread : undefined,
+            passScore: typeof args.passScore === "number" ? args.passScore : undefined
           })
         );
       }
