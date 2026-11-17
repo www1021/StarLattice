@@ -1,4 +1,4 @@
-export type ScenarioPackId = "core" | "education" | "business-analysis" | "research";
+export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase";
 
 export type ScenePackId = "education" | "business-analysis";
 
@@ -41,7 +41,8 @@ export const SCENARIO_PACK_META: Record<ScenarioPackId, { label: string; descrip
   core: { label: "通用", description: "跨行业复用的规划、检索、执行、复核与报告 Agent" },
   education: { label: "教育场景", description: "师范生教案、课堂演练、学情与选题评审" },
   "business-analysis": { label: "经营分析", description: "指标计算、归因分析与经营报告" },
-  research: { label: "科研成长", description: "研途引航多智能体：文献阅读、实验设计与模拟答辩" }
+  research: { label: "科研成长", description: "研途引航多智能体：文献阅读、实验设计与模拟答辩" },
+  showcase: { label: "星枢领航", description: "平台能力全景：多智能体联调 + 工作流编排的一键演示样板" }
 };
 
 export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: string }> = [
@@ -49,6 +50,7 @@ export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: strin
   { id: "education", label: SCENARIO_PACK_META.education.label },
   { id: "business-analysis", label: SCENARIO_PACK_META["business-analysis"].label },
   { id: "research", label: SCENARIO_PACK_META.research.label },
+  { id: "showcase", label: SCENARIO_PACK_META.showcase.label },
   { id: "custom", label: "自定义" }
 ];
 
@@ -148,6 +150,23 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
       "ytz-defense-title-v1",
       "ytz-defense-material-v1"
     ],
+    templates: []
+  },
+  showcase: {
+    // 星枢系列对话智能体（starhub-*）住在 chat_agents；这里挂注册中心同 id 的专项 Agent、
+    // 旗舰总调度流，以及各专项对外的工具 id，供平台能力演示时统一筛选。
+    agents: [
+      "starhub-tour",
+      "starhub-edu",
+      "starhub-biz",
+      "starhub-research",
+      "starhub-tools",
+      "starhub-evolve"
+    ],
+    // 工具不在这里重复登记：knowledge.search / plugin.* / workflow.* 已归属各自的包，
+    // 一个 id 只能属于一个场景包。展示视图靠专属 Agent 与旗舰流即可标识。
+    tools: [],
+    workflows: ["platform-showcase-v1"],
     templates: []
   }
 };

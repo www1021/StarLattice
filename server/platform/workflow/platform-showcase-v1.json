@@ -1,0 +1,197 @@
+{
+  "id": "platform-showcase-v1",
+  "name": "星枢·平台能力全景调度流",
+  "version": 1,
+  "description": "多 Agent 联调的编排样板：意图识别后把问题分派给六个平台能力专项 Agent（导览/教育/经营/科研/工具/进化），对应总控智能体「星枢」的委派结构。",
+  "inputs": [
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "用户想体验的平台能力或问题"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start"
+    },
+    {
+      "id": "classify",
+      "title": "意图识别",
+      "kind": "llm",
+      "prompt": "【用户本轮输入】\n${input.question}\n\n请判断用户最想体验哪个平台能力。只能输出以下七个词之一：平台导览、教育场景、经营分析、科研成长、工具插件、进化运维、通用。不要输出其他内容。",
+      "system": "你是「星枢」平台领航员的任务路由助手。唯一职责：根据用户输入，严格匹配一个平台能力方向，输出目标名称，不直接回答用户问题。\n\n## 分类规则\n- 平台导览：平台是什么、有哪些功能、架构、怎么演示、有哪些节点和场景包 → 平台导览\n- 教育场景：课堂演练、教案、五类学生、 virtual classroom、学情报告 → 教育场景\n- 经营分析：经营数据、指标、毛利、归因、算错自愈、验证拦截 → 经营分析\n- 科研成长：研途引航、文献、实验设计、开题答辩、某一科研专项 Agent → 科研成长\n- 工具插件：联网检索、插件、MCP、工具调用、抽奖 → 工具插件\n- 进化运维：Self-Loop、金丝雀、灰度、回滚、发布、门禁、自我进化 → 进化运维\n- 通用：泛泛的你好、不知道有什么、没有明确方向 → 通用\n\n## 判定原则\n以用户明确说出的关键词为准，不做过度延伸。跨多个方向时取句子开头最先提到的那个。中文\"科研\"相关一律归科研成长，不要拆到别的类。\n\n## 输出硬性约束\n只输出下面七个文本之一，不加解释、标点、换行：\n平台导览\n教育场景\n经营分析\n科研成长\n工具插件\n进化运维\n通用",
+      "temperature": 0.2
+    },
+    {
+      "id": "tour-agent",
+      "title": "平台导览 Agent",
+      "agent": "starhub-tour",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲清楚 StarLattice 的平台定位、17 类工作流节点、四大场景包与界面上值得展示的功能。"
+    },
+    {
+      "id": "edu-agent",
+      "title": "教育场景 Agent",
+      "agent": "starhub-edu",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲解师范生课堂训练全链路，重点说明五类学生并行演练与验证分流。"
+    },
+    {
+      "id": "biz-agent",
+      "title": "经营分析 Agent",
+      "agent": "starhub-biz",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲解经营数据的验证自愈闭环。"
+    },
+    {
+      "id": "research-agent-node",
+      "title": "科研成长 Agent",
+      "agent": "starhub-research",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲解研途引航多智能体及其与平台的整合关系。"
+    },
+    {
+      "id": "tools-agent",
+      "title": "工具插件 Agent",
+      "agent": "starhub-tools",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲解平台的工具生态与真实调用能力。"
+    },
+    {
+      "id": "evolve-agent",
+      "title": "进化运维 Agent",
+      "agent": "starhub-evolve",
+      "kind": "agent",
+      "emitOutput": true,
+      "streamOutput": true,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "prompt": "围绕「${input.question}」讲解 Self-Loop 发布闭环。"
+    },
+    {
+      "id": "general-llm",
+      "title": "通用回答",
+      "emitOutput": true,
+      "streamOutput": true,
+      "kind": "llm",
+      "prompt": "用户问题：${input.question}\n\n请简要介绍 StarLattice 平台，并在结尾提示用户可以从平台导览、教育场景、经营分析、科研成长、工具插件、进化运维六个方向深入体验。",
+      "system": "你是「星枢」平台领航员，面向没有明确方向的用户做简短引导式介绍，不替用户做决定。",
+      "temperature": 0.6
+    },
+    {
+      "id": "synthesize",
+      "title": "汇总输出",
+      "kind": "template",
+      "template": "${tour-agent.output}${edu-agent.output}${biz-agent.output}${research-agent-node.output}${tools-agent.output}${evolve-agent.output}${general-llm.output}",
+      "emitOutput": false
+    },
+    {
+      "id": "end",
+      "inputs": {
+        "routedTo": "${classify.output}",
+        "answer": "${synthesize.output}"
+      },
+      "kind": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "classify"
+    },
+    {
+      "from": "classify",
+      "to": "tour-agent",
+      "when": "${classify.output} == 平台导览"
+    },
+    {
+      "from": "classify",
+      "to": "edu-agent",
+      "when": "${classify.output} == 教育场景"
+    },
+    {
+      "from": "classify",
+      "to": "biz-agent",
+      "when": "${classify.output} == 经营分析"
+    },
+    {
+      "from": "classify",
+      "to": "research-agent-node",
+      "when": "${classify.output} == 科研成长"
+    },
+    {
+      "from": "classify",
+      "to": "tools-agent",
+      "when": "${classify.output} == 工具插件"
+    },
+    {
+      "from": "classify",
+      "to": "evolve-agent",
+      "when": "${classify.output} == 进化运维"
+    },
+    {
+      "from": "classify",
+      "to": "general-llm"
+    },
+    {
+      "from": "tour-agent",
+      "to": "synthesize"
+    },
+    {
+      "from": "edu-agent",
+      "to": "synthesize"
+    },
+    {
+      "from": "biz-agent",
+      "to": "synthesize"
+    },
+    {
+      "from": "research-agent-node",
+      "to": "synthesize"
+    },
+    {
+      "from": "tools-agent",
+      "to": "synthesize"
+    },
+    {
+      "from": "evolve-agent",
+      "to": "synthesize"
+    },
+    {
+      "from": "general-llm",
+      "to": "synthesize"
+    },
+    {
+      "from": "synthesize",
+      "to": "end"
+    }
+  ]
+}

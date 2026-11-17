@@ -46,14 +46,19 @@ test("every scenario pack item points at a registered seed or template", () => {
 test("education pack covers all built-in education agents and workflows", () => {
   const education = SCENARIO_PACK_ITEMS.education;
   const business = SCENARIO_PACK_ITEMS["business-analysis"];
+  const showcase = SCENARIO_PACK_ITEMS.showcase;
   assert.equal(
     education.agents.length,
-    agentIds.size - SCENARIO_PACK_ITEMS.core.agents.length - business.agents.length
+    agentIds.size -
+      SCENARIO_PACK_ITEMS.core.agents.length -
+      business.agents.length -
+      showcase.agents.length
   );
   const sharedWorkflows = new Set([
     ...SCENARIO_PACK_ITEMS.core.workflows,
     ...business.workflows,
-    ...SCENARIO_PACK_ITEMS.research.workflows
+    ...SCENARIO_PACK_ITEMS.research.workflows,
+    ...showcase.workflows
   ]);
   for (const id of workflowIds) {
     assert.ok(education.workflows.includes(id) || sharedWorkflows.has(id), `${id} 未归入任何场景包`);
