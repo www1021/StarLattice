@@ -98,6 +98,10 @@
         ],
         "blockerCount": 0,
         "verdict": "pass"
+      },
+      "maxTokens": 8000,
+      "errorPolicy": {
+        "timeoutMs": 300000
       }
     },
     {

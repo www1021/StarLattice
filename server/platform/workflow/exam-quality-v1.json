@@ -123,7 +123,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制基础题：选择题与填空题，覆盖细目表里识记与理解层级的知识点，不得越级考查应用与综合。",
+          "prompt": "只命制基础题：选择题与填空题，覆盖细目表里识记与理解层级的知识点，不得越级考查应用与综合。 严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或解答步骤、答案、评分标准、知识点、层级、满分），不写解析。",
           "stubOutput": {
             "items": [
               {
@@ -153,6 +153,10 @@
                 "fullScore": 3
               }
             ]
+          },
+          "maxTokens": 8192,
+          "errorPolicy": {
+            "timeoutMs": 300000
           }
         },
         {
@@ -173,7 +177,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制应用题：需要建模或多步计算的主观题，覆盖细目表里应用层级的知识点，情境要贴近该学段学生的真实经验。",
+          "prompt": "只命制应用题：需要建模或多步计算的主观题，覆盖细目表里应用层级的知识点，情境贴近该学段学生的真实经验。严格按细目表里应用层级的题号逐题命制，题号一一对应、不多不少。解答题只写题干、最终答案和评分点（每点一行，标出分值），不要展开完整解题过程，不要写解析。输出紧凑 JSON（题干、答案、评分标准、知识点、层级、满分）。",
           "stubOutput": {
             "items": [
               {
@@ -188,6 +192,10 @@
                 "expectedSteps": 3
               }
             ]
+          },
+          "maxTokens": 8192,
+          "errorPolicy": {
+            "timeoutMs": 300000
           }
         },
         {
@@ -208,7 +216,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制压轴题：跨两个以上知识点、需三步以上推理，设递进小问，作为全卷最高区分点。",
+          "prompt": "只命制压轴题：跨两个以上知识点、需三步以上推理，设递进小问，作为全卷最高区分点。 严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或解答步骤、答案、评分标准、知识点、层级、满分），不写解析。",
           "stubOutput": {
             "items": [
               {
@@ -223,6 +231,10 @@
                 "difficultyDesign": "第一问保底，第二问区分是否想到回代检验"
               }
             ]
+          },
+          "maxTokens": 8192,
+          "errorPolicy": {
+            "timeoutMs": 300000
           }
         }
       ]
@@ -240,7 +252,11 @@
         "duration": "${input.duration}"
       },
       "system": "你是组卷编辑，负责把分路命制的试题合并成一份规范试卷。",
-      "prompt": "把三路试题合并成一份完整试卷。要求：按基础题、应用题、压轴题顺序统一编号；核对各题分值之和严格等于 ${input.totalScore}，不等就调整分值并说明；每题保留题干、答案与评分标准；标注每题的知识点与认知层级；最后给出全卷题量与总分核对表。不要删改题目内容。"
+      "prompt": "把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号；每题原文照抄，保留题干、答案与评分标准；每题用一行标注知识点与认知层级。三路分值合计必须等于 ${input.totalScore}，不等时只调整最后一题的分值使其吻合，不要解释。",
+      "maxTokens": 8000,
+      "errorPolicy": {
+        "timeoutMs": 300000
+      }
     },
     {
       "id": "audit",
@@ -305,6 +321,10 @@
               }
             ],
             "totalScore": 88
+          },
+          "maxTokens": 6000,
+          "errorPolicy": {
+            "timeoutMs": 240000
           }
         },
         {
@@ -348,6 +368,10 @@
               }
             ],
             "totalScore": 58
+          },
+          "maxTokens": 6000,
+          "errorPolicy": {
+            "timeoutMs": 240000
           }
         },
         {
@@ -391,6 +415,10 @@
               }
             ],
             "totalScore": 32
+          },
+          "maxTokens": 6000,
+          "errorPolicy": {
+            "timeoutMs": 240000
           }
         }
       ]
@@ -485,7 +513,8 @@
           "15"
         ],
         "summary": "整卷难度 0.615、平均区分度 0.38，需返工 2 题（1、15）。"
-      }
+      },
+      "maxTokens": 4000
     },
     {
       "id": "verify-quality",
@@ -571,6 +600,10 @@
                     "expectedDifficulty": 0.58
                   }
                 ]
+              },
+              "maxTokens": 4000,
+              "errorPolicy": {
+                "timeoutMs": 240000
               }
             },
             {
@@ -610,6 +643,10 @@
                       }
                     ],
                     "totalScore": 94
+                  },
+                  "maxTokens": 6000,
+                  "errorPolicy": {
+                    "timeoutMs": 240000
                   }
                 },
                 {
@@ -644,6 +681,10 @@
                       }
                     ],
                     "totalScore": 65
+                  },
+                  "maxTokens": 6000,
+                  "errorPolicy": {
+                    "timeoutMs": 240000
                   }
                 },
                 {
@@ -678,6 +719,10 @@
                       }
                     ],
                     "totalScore": 38
+                  },
+                  "maxTokens": 6000,
+                  "errorPolicy": {
+                    "timeoutMs": 240000
                   }
                 }
               ]
@@ -753,6 +798,10 @@
                 },
                 "rework": [],
                 "summary": "整卷难度 0.664、平均区分度 0.44，17 题全部达标，可直接定稿。"
+              },
+              "maxTokens": 4000,
+              "errorPolicy": {
+                "timeoutMs": 180000
               }
             },
             {
