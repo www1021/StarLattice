@@ -2331,12 +2331,13 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 }
               });
             }
-            // 知识库工具没带范围时用智能体挂的库，模型只写 query 也能查到东西。
-            const toolArgs =
-              tool.id === "knowledge.search" &&
-              !(Array.isArray(args.knowledgeBaseIds) && (args.knowledgeBaseIds as unknown[]).length > 0)
-                ? { ...args, knowledgeBaseIds }
-                : args;
+            // 知识库工具没带范围时用本次会话挂的库，模型只写 query 也能查到东西。
+            // 工作流要一并补：备课线内部的「学情档案」节点靠这个范围捞学生画像，
+            // 不补就等于让工作流在空库上跑，分层和易错点全落空。
+            const needsKnowledgeScope =
+              (tool.id === "knowledge.search" || tool.id.startsWith("workflow.")) &&
+              !(Array.isArray(args.knowledgeBaseIds) && (args.knowledgeBaseIds as unknown[]).length > 0);
+            const toolArgs = needsKnowledgeScope ? { ...args, knowledgeBaseIds } : args;
             const toolResult = await platformMcp.callToolRecord(tool, toolArgs, emitWorkflowStep);
             // 学科小游戏：结构化载荷直接推给前端渲染成可玩卡片。
             // 模型那边只拿到一句说明书（别复述题目），学生看到的是能点的东西。

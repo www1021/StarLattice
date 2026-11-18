@@ -1260,7 +1260,12 @@ export class WorkflowExecutor {
       loopSummaries: resume?.loopSummaries ?? [],
       assignments: resume?.assignments ?? assignments,
       reschedule,
-      workflowKnowledgeBaseIds: plan.workflow.knowledgeBaseIds ?? [],
+      // 检索范围：工作流自己声明的库优先，没声明就认这次调用传进来的库。
+      // 后者是聊天那条链路用的——会话里勾了「班级档案库」，备课线的学情档案才捞得到学生画像。
+      workflowKnowledgeBaseIds:
+        plan.workflow.knowledgeBaseIds && plan.workflow.knowledgeBaseIds.length > 0
+          ? plan.workflow.knowledgeBaseIds
+          : stringList(input.knowledgeBaseIds),
       ...(runRecord?.priorityClass !== undefined ? { priorityClass: runRecord.priorityClass } : {}),
       ...(runRecord?.deadlineAt !== undefined ? { deadlineAt: runRecord.deadlineAt } : {}),
       onNodeProgress: release?.onNodeProgress,
