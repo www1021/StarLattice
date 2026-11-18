@@ -29,6 +29,8 @@ export type StoredToolNote = {
   /** 存档用：界面显示成「服务器/工具」。 */
   serverName?: string;
   toolName?: string;
+  /** 学科小游戏的卡片载荷；历史回放时据此重画一张还能玩/能看的卡片。 */
+  game?: unknown;
 };
 
 export type StoredArtifact = {

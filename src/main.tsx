@@ -730,6 +730,8 @@ type ConversationDetail = ConversationSummary & {
       kind?: "tool" | "delegation";
       serverName?: string;
       toolName?: string;
+      /** 学科小游戏的卡片载荷，历史回放时重画卡片。 */
+      game?: GameCardData;
     }>;
   }>;
   artifacts: ChatArtifact[];
@@ -9915,6 +9917,10 @@ function App() {
               note.kind ??
               (note.toolId.startsWith("agent://") ? ("delegation" as const) : ("tool" as const))
           })),
+          // 存过的游戏卡片原样画回去：题目、盘面都在，学生接着点还能玩。
+          games: (message.toolNotes ?? [])
+            .map((note) => note.game)
+            .filter((game): game is GameCardData => isGameCardData(game)),
           artifacts:
             message.role === "assistant" && index === conversation.messages.length - 1
               ? conversation.artifacts

@@ -127,6 +127,7 @@ import {
   type StoredArtifact,
   type StoredCitation,
   type StoredChatMessage,
+  type StoredToolNote,
   type TrainingEvaluation
 } from "./storage/chatRepository.js";
 import {
@@ -2106,6 +2107,11 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   let assistantContent = "";
   let thinkingContent = "";
   let chatToolCalls: ChatToolTrace[] = [];
+  /**
+   * 本轮发出的游戏卡片载荷。它不进模型上下文，但要跟着工具记录一起落库：
+   * 否则从历史里翻回来只剩一句「开始吧」，题目和盘面全丢了，学生也点不动。
+   */
+  const gamePayloads: unknown[] = [];
   let evaluation: TrainingEvaluation | undefined;
   let metricsSent = false;
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
@@ -2342,6 +2348,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
             // 学科小游戏：结构化载荷直接推给前端渲染成可玩卡片。
             // 模型那边只拿到一句说明书（别复述题目），学生看到的是能点的东西。
             if (!toolResult.isError && isGamePayload(toolResult.structuredContent)) {
+              gamePayloads.push(toolResult.structuredContent);
               writeSse(response, "game_card", { game: toolResult.structuredContent });
             }
             return toolResult;
@@ -2472,16 +2479,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         // 转交记录也在里面（toolId 是 agent://xxx），前端据此把署名还给专项智能体。
         ...(chatToolCalls.length > 0
           ? {
-              toolNotes: chatToolCalls.map((call) => ({
-                toolId: call.toolId,
-                name: call.name,
-                ok: call.ok,
-                latencyMs: call.latencyMs,
-                summary: call.summary,
-                kind: call.kind,
-                serverName: call.serverName,
-                toolName: call.toolName
-              }))
+              toolNotes: toStoredToolNotes(chatToolCalls, gamePayloads)
             }
           : {})
       }
@@ -3829,6 +3827,35 @@ function buildConversationTitle(messages: StoredChatMessage[]) {
   const text = firstUserMessage?.content.replace(/\s+/g, " ").trim() || "教学实训记录";
 
   return text.length > 28 ? `${text.slice(0, 28)}...` : text;
+}
+
+/**
+ * 把本轮工具调用整理成存档记录。
+ * 学科小游戏额外带上卡片载荷，按出现顺序配对：失败的那次不发卡、也不占位，
+ * 免得一局失败之后所有卡片错位成上一局的题目。
+ */
+function toStoredToolNotes(
+  calls: ChatToolTrace[],
+  gamePayloads: unknown[]
+): StoredToolNote[] {
+  let cursor = 0;
+  return calls.map((call) => {
+    const note: StoredToolNote = {
+      toolId: call.toolId,
+      name: call.name,
+      ok: call.ok,
+      latencyMs: call.latencyMs,
+      summary: call.summary,
+      kind: call.kind,
+      serverName: call.serverName,
+      toolName: call.toolName
+    };
+    if (call.toolId === "game.play" && call.ok && cursor < gamePayloads.length) {
+      note.game = gamePayloads[cursor];
+      cursor += 1;
+    }
+    return note;
+  });
 }
 
 async function streamLessonPlanRequest(
