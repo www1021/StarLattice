@@ -93,6 +93,17 @@ export type WorkflowNodeProgress = {
   durationMs?: number;
   /** 节点成功后的产物摘要，供聊天层边跑边说；只是文本片段，不参与执行。 */
   resultExcerpt?: string;
+  /**
+   * 人工节点挂起等待输入时携带的交互描述。聊天层据此渲染发言框，
+   * 用户提交后通过 respond 接口唤醒这里的等待点，工作流继续往下跑。
+   */
+  interaction?: {
+    id: string;
+    title: string;
+    prompt: string;
+    fields: HumanField[];
+    submitLabel?: string;
+  };
 };
 
 /** 把节点产物压成短文本给聊天层播报，避免整段 JSON 灌进正文。 */
@@ -2462,6 +2473,24 @@ export class WorkflowExecutor {
 
     this.store.updateStepStatus(stepId, "waiting");
     this.setStatus(state.runId, "waiting_input");
+    // 聊天层没有监控台那样的轮询通道，交互卡必须靠事件主动推出去，
+    // 否则用户只看到「执行中」却不知道要发言，运行就一直挂到超时。
+    state.onNodeProgress?.({
+      nodeId: step.nodeId,
+      title: node.title || step.nodeId,
+      kind: node.kind,
+      status: "running",
+      sequence: state.sequence,
+      workflowId: state.workflowId,
+      ...(step.path ? { path: step.path } : {}),
+      interaction: {
+        id: interaction.id,
+        title: node.title || step.nodeId,
+        prompt: resolvedPrompt,
+        fields: interaction.fields,
+        ...(node.submitLabel ? { submitLabel: node.submitLabel } : {})
+      }
+    });
 
     let outcome;
     try {

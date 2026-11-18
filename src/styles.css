@@ -5341,6 +5341,99 @@ button {
   opacity: 0.72;
 }
 
+.workflow-interaction-card {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: rgba(var(--rgb-surface), 0.72);
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-accent), 0.28);
+}
+
+.workflow-interaction-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.workflow-interaction-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.workflow-interaction-prompt {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.workflow-interaction-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workflow-interaction-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.workflow-interaction-label {
+  font-weight: 600;
+}
+
+.workflow-interaction-field input[type="text"],
+.workflow-interaction-field textarea,
+.workflow-interaction-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--rgb-shadow), 0.18);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+
+.workflow-interaction-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.workflow-interaction-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workflow-interaction-error {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: #c0503e;
+}
+
+.workflow-interaction-submit {
+  margin-top: 12px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.workflow-interaction-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .message-thought-toggle {
   position: absolute;
   top: 12px;

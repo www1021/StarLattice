@@ -2071,8 +2071,16 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       ...event,
       stepKind: event.kind,
       stepStatus: event.status,
-      stepText
+      stepText,
+      ...(event.interaction ? { interaction: event.interaction } : {})
     });
+
+    // 人工节点挂起：告诉用户去发言框填写，运行会在收到回答后继续。
+    if (event.interaction) {
+      writeSse(response, "delta", {
+        content: `\n轮到你了：${event.interaction.prompt || `请填写「${event.interaction.title}」`}。在下方发言框填写后提交，我会接着往下跑。\n\n`
+      });
+    }
 
     if (event.status === "running" && !narratedWorkflowIntro) {
       narratedWorkflowIntro = true;

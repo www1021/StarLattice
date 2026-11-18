@@ -148,6 +148,8 @@ type ChatMessage = {
   workflowStep?: WorkflowStepEvent;
   /** 边跑边说的步骤流水，累积保留，正文出现后仍可见。 */
   workflowSteps?: WorkflowStepEvent[];
+  /** 工作流跑到人工节点时等待用户发言；提交后清空，工作流继续往下跑。 */
+  pendingInteraction?: WorkflowInteraction;
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
   traceAgents?: TraceAgent[];
   /** 这条回复由哪个智能体给出；默认助手留空。 */
@@ -955,6 +957,25 @@ type ChatStreamEvent = {
   data: string;
 };
 
+type HumanInteractionField = {
+  key: string;
+  label: string;
+  type?: string;
+  required?: boolean;
+  options?: string[];
+  defaultValue?: string | number | boolean;
+  placeholder?: string;
+  description?: string;
+};
+
+type WorkflowInteraction = {
+  id: string;
+  title: string;
+  prompt: string;
+  fields: HumanInteractionField[];
+  submitLabel?: string;
+};
+
 type WorkflowStepEvent = {
   nodeId: string;
   title: string;
@@ -966,6 +987,7 @@ type WorkflowStepEvent = {
   durationMs?: number;
   stepText: string;
   totalSteps?: number;
+  interaction?: WorkflowInteraction;
 };
 
 type StreamDonePayload = {
@@ -2185,7 +2207,8 @@ function Conversation({
   onToggleReflectionKnowledgeBase,
   onToggleThinking,
   onUpdateLessonPlanInput,
-  onUpdateReflectionInput
+  onUpdateReflectionInput,
+  onSubmitInteraction
 }: {
   messages: ChatMessage[];
   activeInsightMessageId?: string;
@@ -2213,6 +2236,7 @@ function Conversation({
     messageId: string,
     patch: Partial<InternshipReflectionInput>
   ) => void;
+  onSubmitInteraction: (messageId: string, interactionId: string, values: Record<string, unknown>) => Promise<void>;
 }) {
   const conversationRef = useRef<HTMLElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -2439,6 +2463,18 @@ function Conversation({
                       </div>
                     ))}
                   </div>
+                ) : null}
+                {message.pendingInteraction ? (
+                  <WorkflowInteractionCard
+                    interaction={message.pendingInteraction}
+                    onSubmit={(values) =>
+                      onSubmitInteraction(
+                        message.id,
+                        message.pendingInteraction!.id,
+                        values
+                      )
+                    }
+                  />
                 ) : null}
                 <MessageMarkdown
                   text={
@@ -6564,6 +6600,122 @@ function EvaluationPanel({ evaluation }: { evaluation?: TrainingEvaluation }) {
   );
 }
 
+function WorkflowInteractionCard({
+  interaction,
+  onSubmit
+}: {
+  interaction: WorkflowInteraction;
+  onSubmit: (values: Record<string, unknown>) => Promise<void> | void;
+}) {
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => {
+    const initial: Record<string, string | boolean> = {};
+    for (const field of interaction.fields) {
+      if (field.defaultValue !== undefined) {
+        initial[field.key] = String(field.defaultValue);
+      } else if (field.type === "checkbox") {
+        initial[field.key] = false;
+      } else {
+        initial[field.key] = "";
+      }
+    }
+    return initial;
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    const payload: Record<string, unknown> = {};
+    for (const field of interaction.fields) {
+      const value = values[field.key];
+      if (field.required && (value === "" || value === undefined)) {
+        setError(`请填写「${field.label}」`);
+        return;
+      }
+      payload[field.key] = value;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSubmit(payload);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提交失败，请重试");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="workflow-interaction-card">
+      <div className="workflow-interaction-head">
+        <span className="workflow-interaction-title">{interaction.title || "需要你的输入"}</span>
+      </div>
+      {interaction.prompt ? <p className="workflow-interaction-prompt">{interaction.prompt}</p> : null}
+      <div className="workflow-interaction-fields">
+        {interaction.fields.map((field) => (
+          <label className="workflow-interaction-field" key={field.key}>
+            <span className="workflow-interaction-label">
+              {field.label}
+              {field.required ? " *" : ""}
+            </span>
+            {field.type === "select" ? (
+              <select
+                value={String(values[field.key] ?? "")}
+                onChange={(event) =>
+                  setValues((current) => ({ ...current, [field.key]: event.target.value }))
+                }
+              >
+                <option value="">请选择</option>
+                {(field.options ?? []).map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : field.type === "checkbox" ? (
+              <input
+                type="checkbox"
+                checked={Boolean(values[field.key])}
+                onChange={(event) =>
+                  setValues((current) => ({ ...current, [field.key]: event.target.checked }))
+                }
+              />
+            ) : field.type === "textarea" ? (
+              <textarea
+                rows={3}
+                value={String(values[field.key] ?? "")}
+                placeholder={field.placeholder || ""}
+                onChange={(event) =>
+                  setValues((current) => ({ ...current, [field.key]: event.target.value }))
+                }
+              />
+            ) : (
+              <input
+                type="text"
+                value={String(values[field.key] ?? "")}
+                placeholder={field.placeholder || ""}
+                onChange={(event) =>
+                  setValues((current) => ({ ...current, [field.key]: event.target.value }))
+                }
+              />
+            )}
+            {field.description ? (
+              <span className="workflow-interaction-hint">{field.description}</span>
+            ) : null}
+          </label>
+        ))}
+      </div>
+      {error ? <p className="workflow-interaction-error">{error}</p> : null}
+      <button
+        type="button"
+        className="workflow-interaction-submit"
+        disabled={busy}
+        onClick={() => void submit()}
+      >
+        {busy ? "已提交，等待继续..." : interaction.submitLabel || "提交并继续"}
+      </button>
+    </div>
+  );
+}
+
 function ClassroomRecordCard({ message }: { message: ChatMessage }) {
   return (
     <div className="classroom-record-card">
@@ -7146,6 +7298,7 @@ async function readChatStream(
     onEvaluation: (evaluation: TrainingEvaluation) => void;
     onTool?: (note: ToolNote) => void;
     onWorkflowStep?: (event: WorkflowStepEvent) => void;
+    onInteraction?: (interaction: WorkflowInteraction) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
@@ -7215,6 +7368,8 @@ function handleChatStreamEvent(
     onTool?: (note: ToolNote) => void;
     /** 工作流每个节点的实时进度，用来把「正在生成」换成具体走到哪一步。 */
     onWorkflowStep?: (event: WorkflowStepEvent) => void;
+    /** 工作流在人工节点挂起，等待用户填写发言。 */
+    onInteraction?: (interaction: WorkflowInteraction) => void;
     /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
@@ -7242,6 +7397,7 @@ function handleChatStreamEvent(
     durationMs?: number;
     stepText?: string;
     totalSteps?: number;
+    interaction?: WorkflowInteraction;
     conversationId?: string;
     message?: string;
     name?: string;
@@ -7467,8 +7623,14 @@ function handleChatStreamEvent(
       ...(typeof payload.path === "string" ? { path: payload.path } : {}),
       ...(typeof payload.durationMs === "number" ? { durationMs: payload.durationMs } : {}),
       stepText: String(payload.stepText ?? ""),
-      ...(typeof payload.totalSteps === "number" ? { totalSteps: payload.totalSteps } : {})
+      ...(typeof payload.totalSteps === "number" ? { totalSteps: payload.totalSteps } : {}),
+      ...(payload.interaction && typeof payload.interaction === "object"
+        ? { interaction: payload.interaction as WorkflowInteraction }
+        : {})
     });
+    if (payload.interaction && typeof payload.interaction === "object") {
+      handlers.onInteraction?.(payload.interaction as WorkflowInteraction);
+    }
   }
 
   if (streamEvent.event === "evaluation" && isTrainingEvaluation(payload)) {
@@ -11151,6 +11313,20 @@ function App() {
     );
   }
 
+  async function submitWorkflowInteraction(
+    messageId: string,
+    interactionId: string,
+    values: Record<string, unknown>
+  ) {
+    await platformApi.respondInteraction(interactionId, values);
+    // 清空当前发言框；工作流收到回答后会继续跑，后续节点通过原 SSE 流继续推送。
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === messageId ? { ...item, pendingInteraction: undefined } : item
+      )
+    );
+  }
+
   async function sendMessage(text = inputValue) {
     const trimmedText = text.trim();
 
@@ -11408,6 +11584,13 @@ function App() {
               else steps.push(event);
               return { ...item, workflowStep: event, workflowSteps: steps };
             })
+          );
+        },
+        onInteraction(interaction) {
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === assistantId ? { ...item, pendingInteraction: interaction } : item
+            )
           );
         },
         onThinkingDelta(content) {
@@ -12287,6 +12470,7 @@ function App() {
             }}
             onUpdateLessonPlanInput={updateLessonPlanMessageInput}
             onUpdateReflectionInput={updateReflectionMessageInput}
+            onSubmitInteraction={submitWorkflowInteraction}
           />
           <Composer
             ariaLabel={

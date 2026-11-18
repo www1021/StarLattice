@@ -19,6 +19,23 @@ export type WorkflowProgressEvent = {
   durationMs?: number;
   /** 节点成功后的产物摘要，聊天层据此边跑边说。 */
   resultExcerpt?: string;
+  /** 人工节点等待输入：聊天层据此渲染发言框并提交回答。 */
+  interaction?: {
+    id: string;
+    title: string;
+    prompt: string;
+    fields: Array<{
+      key: string;
+      label: string;
+      type?: string;
+      required?: boolean;
+      options?: string[];
+      defaultValue?: string | number | boolean;
+      placeholder?: string;
+      description?: string;
+    }>;
+    submitLabel?: string;
+  };
 };
 
 type WorkflowRunner = (
