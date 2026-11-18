@@ -46,6 +46,74 @@
   font-weight: 700;
 }
 
+/* 中文方括号小标题：比正文重一档，靠上间距分节，不用整段加粗撑场面。 */
+.message-markdown .md-kicker {
+  margin: 18px 0 6px;
+  color: var(--n-12);
+  font-size: 16.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+}
+
+.message-markdown > .md-kicker:first-child {
+  margin-top: 0;
+}
+
+/* 箭头步骤：符号占固定一列，文字悬挂对齐，读起来是一条条，不是一坨。 */
+.message-markdown .md-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.message-markdown .md-step {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 7px;
+  align-items: start;
+}
+
+.message-markdown .md-step-mark {
+  color: var(--n-42);
+  line-height: 1.72;
+}
+
+.message-markdown .md-step-text {
+  min-width: 0;
+}
+
+/*
+ * 公式：衬线字体 + 字间收紧，默认不折行。
+ * 中文段落里 `3×4 + 5×4` 被换行从中间劈开，是「看起来乱」的主因；
+ * 超过 22 个字符的算式不锁行，免得撑破一列。
+ */
+.message-markdown .md-math {
+  font-family: "Cambria Math", "Latin Modern Math", "Times New Roman", serif;
+  font-size: 1.04em;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.message-markdown .md-math-wrap {
+  white-space: normal;
+}
+
+.message-markdown .md-math-block {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(var(--rgb-surface), 0.5);
+  box-shadow: inset 0 0 0 1px var(--liquid-line);
+  font-family: "Cambria Math", "Latin Modern Math", "Times New Roman", serif;
+  font-size: 17px;
+  line-height: 1.9;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
 .message-markdown em {
   font-style: italic;
 }

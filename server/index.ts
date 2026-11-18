@@ -2070,8 +2070,6 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
   let answerStreamed = false;
   const requestStartedAt = Date.now();
-  /** 这一轮已经说过「交给谁处理」了，重复说得再补一句同义的没意义。 */
-  let narratedWorkflowIntro = false;
   /** 已经播报过结果的节点，避免 running 之外的重跑把同一句写两遍。 */
   const narratedSteps = new Set<string>();
   /**
@@ -2088,24 +2086,15 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   };
   /**
    * 工具调用的过程小字：只说人话的「现在在做什么」。
-   * 插件名、MCP 服务器名、耗时一律不念——用户要看的是这件事推进到哪了，
-   * 不是调用日志；真正有信息量的是工作流里每个节点在干什么。
+   * 交给谁处理、插件名、MCP 服务器名、耗时一律不念——署名有气泡上的图标，
+   * 用户要看的是这件事推进到哪了，不是调用日志。
    */
   const emitToolNote = (progress: ChatToolProgress) => {
     if (progress.kind === "delegation") return;
-    if (progress.stage === "skipped") return;
+    if (progress.stage !== "done" || progress.ok !== false) return;
     const workflowTitle = /^工作流[:：]\s*(.+)$/u.exec(progress.name.trim())?.[1]?.trim();
-    if (!workflowTitle) {
-      // 普通检索/插件工具：名字对用户没意义，交给节点级播报和「正在处理」兜底。
-      return;
-    }
-    if (progress.stage === "running") {
-      emitProgressNote(`开始走「${workflowTitle}」这个流程，每一步做什么我都会说一声。`);
-      return;
-    }
-    if (progress.ok === false) {
-      emitProgressNote(`「${workflowTitle}」这一趟没跑通，我把已经拿到的部分整理给你。`);
-    }
+    if (!workflowTitle) return;
+    emitProgressNote(`「${workflowTitle}」这一趟没跑通，我把已经拿到的部分整理给你。`);
   };
   const emitWorkflowStep = (event: WorkflowProgressEvent) => {
     // 开始/结束只是流程标记，进折叠区也是噪音。
@@ -2245,13 +2234,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               const targetId = delegationTargetId(tool.id);
               const target = platformStore.getAgent(targetId);
               let delegatedBadgeSent = false;
-              // 转交一命中就先给一句过程反馈，别让用户盯着空白等。
-              if (!narratedWorkflowIntro) {
-                narratedWorkflowIntro = true;
-                emitProgressNote(
-                  `这件事交给「${target?.name ?? "专项助手"}」，它专门管这一类，接下来它做什么我也会说出来。`
-                );
-              }
+              // 不播报「交给谁」：气泡上的头像和署名已经说明了是谁在答，
+              // 过程区只留真正的执行步骤。
               return runAgentDelegation({
                 host: chatAgent,
                 targetId,

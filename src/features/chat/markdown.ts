@@ -18,20 +18,59 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => HTML_ESCAPE[char]);
 }
 
+/**
+ * 数学片段：数字/字母用运算符连起来的组合，比如 `(3 + 5) × 4`、`a × c + b × c`。
+ * 这类内容混在中文里换行会被从中间劈开（`3×4 +` / `5×4`），是「看起来乱」的主要来源，
+ * 所以要单独包一层，给它们不折行的排版。
+ */
+const MATH_TERM = String.raw`[（(]?\s*(?:\d+(?:\.\d+)?|[a-zA-Zα-ωΑ-Ω])[\s)）]*`;
+const MATH_OP = String.raw`\s*[+\-×÷=<>≤≥≠≈±/]\s*`;
+const MATH_CHUNK = new RegExp(`${MATH_TERM}(?:${MATH_OP}${MATH_TERM}){1,5}`, "g");
+
 /** 行内格式。先整体转义，再只加我们自己生成的标签。 */
 function inline(raw: string): string {
+  const slots: string[] = [];
+  const hold = (html: string) => {
+    slots.push(html);
+    return `\u0000${slots.length - 1}\u0000`;
+  };
+
   let text = escapeHtml(raw);
-  // 行内代码先抽出来，避免里面的 * 被当成加粗。
-  const codes: string[] = [];
+
+  // 行内代码先抽出来，避免里面的 * 被当成加粗、公式识别也不该钻进去。
   text = text.replace(/`([^`\n]+)`/g, (_match, code: string) => {
-    codes.push(code);
-    return `\u0000${codes.length - 1}\u0000`;
+    return hold(`<code class="md-inline-code">${code}</code>`);
   });
 
+  // 链接也先抽走：URL 里的 / 和字母会被后面的公式识别误伤。
   text = text.replace(
     /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
+    (_match, label: string, href: string) =>
+      hold(`<a href="${href}" target="_blank" rel="noreferrer">${label}</a>`)
   );
+
+  // 显式公式：$...$、\(...\)、\[...\]。模型标了记号就一定按公式排。
+  text = text.replace(/\$([^$\n]{1,80})\$/g, (_match, body: string) => {
+    return hold(`<span class="md-math">${body.trim()}</span>`);
+  });
+  text = text.replace(/\\\(([^)\n]{1,80})\\\)/g, (_match, body: string) => {
+    return hold(`<span class="md-math">${body.trim()}</span>`);
+  });
+  text = text.replace(/\\\[([^\]\n]{1,120})\\\]/g, (_match, body: string) => {
+    return hold(`<span class="md-math">${body.trim()}</span>`);
+  });
+
+  // 没标记的算式也要稳住：认得出来就包成公式，太长的不锁行，免得撑破一列。
+  text = text.replace(MATH_CHUNK, (match) => {
+    const body = match.trim();
+    if (body.length < 3) return match;
+    // 只靠一个等号连着的字母串（`src=x`、`c=x`）多半是代码或英文，不当公式；
+    // 要有数字，或者 × ÷ ≤ ≥ 这种真·数学符号才算。
+    if (!/\d/.test(body) && !/[×÷≤≥≈±√]/.test(body)) return match;
+    const wrap = body.length > 22 ? " md-math-wrap" : "";
+    return hold(`<span class="md-math${wrap}">${body}</span>`);
+  });
+
   text = text.replace(/\*\*\*([^*\n]+)\*\*\*/g, "<strong><em>$1</em></strong>");
   text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
@@ -40,7 +79,7 @@ function inline(raw: string): string {
   text = text.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
 
   return text.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => {
-    return `<code class="md-inline-code">${codes[Number(index)] ?? ""}</code>`;
+    return slots[Number(index)] ?? "";
   });
 }
 
@@ -51,11 +90,20 @@ const QUOTE = /^\s{0,3}>\s?/;
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 const TABLE_ROW = /^\s*\|/;
 const TABLE_SPLIT = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$/;
+/** 模型很爱用中文方括号当小标题：【题意与缺的条件】【错因定位】。 */
+const KICKER = /^\s*【([^】\n]{1,30})】\s*(.*)$/;
+/** 箭头开头的行是分步说明，按步骤排，别混在段落里。 */
+const ARROW = /^\s*(→|⇒|➜|➔)\s*(.*)$/;
+/** 块级公式：$$ ... $$，单行或跨行都可能。 */
+const MATH_BLOCK = /^\s*\$\$/;
 
 function isBlockStart(line: string): boolean {
   return (
     FENCE.test(line) ||
+    MATH_BLOCK.test(line) ||
     HEADING.test(line) ||
+    KICKER.test(line) ||
+    ARROW.test(line) ||
     RULE.test(line) ||
     QUOTE.test(line) ||
     TABLE_ROW.test(line) ||
@@ -161,6 +209,51 @@ export function renderMarkdown(source: string): string {
       continue;
     }
 
+    // 块级公式：整段独立排，居中、不跟正文挤在一行。
+    if (MATH_BLOCK.test(line)) {
+      const single = /^\s*\$\$(.+?)\$\$\s*$/.exec(line);
+      if (single) {
+        html.push(`<div class="md-math-block">${escapeHtml(single[1].trim())}</div>`);
+        index += 1;
+        continue;
+      }
+      const body: string[] = [];
+      index += 1;
+      while (index < lines.length && !MATH_BLOCK.test(lines[index])) {
+        body.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      html.push(`<div class="md-math-block">${escapeHtml(body.join("\n").trim())}</div>`);
+      continue;
+    }
+
+    // 中文方括号小标题：独占一段，带一点层级感。
+    const kicker = KICKER.exec(line);
+    if (kicker) {
+      html.push(`<p class="md-kicker">${inline(kicker[1].trim())}</p>`);
+      const rest = kicker[2].trim();
+      if (rest) html.push(`<p class="md-p">${inline(rest)}</p>`);
+      index += 1;
+      continue;
+    }
+
+    // 箭头步骤：一行一步，符号单独一列，读起来是对齐的。
+    if (ARROW.test(line)) {
+      const rows: string[] = [];
+      while (index < lines.length && ARROW.test(lines[index])) {
+        const match = ARROW.exec(lines[index])!;
+        rows.push(
+          `<div class="md-step"><span class="md-step-mark">${match[1]}</span><span class="md-step-text">${inline(
+            match[2]
+          )}</span></div>`
+        );
+        index += 1;
+      }
+      html.push(`<div class="md-steps">${rows.join("")}</div>`);
+      continue;
+    }
+
     const heading = HEADING.exec(line);
     if (heading) {
       const level = Math.min(6, heading[1].length + 2);
@@ -233,6 +326,11 @@ export function streamSafeMarkdown(source: string): string {
   if ((safe.match(/^\s*```/gm) ?? []).length % 2 === 1) {
     const last = safe.lastIndexOf("```");
     safe = safe.slice(0, last) + safe.slice(last + 3);
+  }
+  // 块级公式只写了一半时，先摘掉开头的 $$，否则整段会被当公式块吞进灰底里。
+  if ((safe.match(/\$\$/g) ?? []).length % 2 === 1) {
+    const last = safe.lastIndexOf("$$");
+    safe = safe.slice(0, last) + safe.slice(last + 2);
   }
   if ((safe.match(/\*\*/g) ?? []).length % 2 === 1) {
     const last = safe.lastIndexOf("**");

@@ -63,3 +63,55 @@ test("流式预览：未闭合的 ** / ` / ``` 先擦掉，配对后原样交回
   );
   assert.match(renderMarkdown("这是 **加粗** 完成"), /<strong>加粗<\/strong>/);
 });
+
+test("中文方括号当小标题：独占一段，不再混在正文里", () => {
+  const html = renderMarkdown("【题意与缺的条件】\n先说结论。\n\n【错因定位】符号脱节。");
+  assert.equal((html.match(/class="md-kicker"/g) ?? []).length, 2);
+  assert.match(html, /<p class="md-kicker">题意与缺的条件<\/p>/);
+  assert.match(html, /<p class="md-p">先说结论。<\/p>/);
+  // 同一行「标题 + 正文」也要拆开
+  const inlineKicker = renderMarkdown("【答】可以这样切。");
+  assert.match(inlineKicker, /<p class="md-kicker">答<\/p>/);
+  assert.match(inlineKicker, /<p class="md-p">可以这样切。<\/p>/);
+});
+
+test("箭头步骤：一行一步，符号单独一列", () => {
+  const html = renderMarkdown("→ 点方向：先别写算式\n→ 给方法：把动作写成一句话\n\n收尾。");
+  assert.equal((html.match(/class="md-step"/g) ?? []).length, 2);
+  assert.match(html, /<span class="md-step-mark">→<\/span>/);
+  assert.match(html, /<p class="md-p">收尾。<\/p>/);
+});
+
+test("算式不被换行劈开：认得出来的算式包成公式", () => {
+  const html = renderMarkdown("比如 (3 + 5) × 4 和 3×4 + 5×4 结果一样。");
+  assert.match(html, /<span class="md-math">\(3 \+ 5\) × 4<\/span>/);
+  assert.match(html, /<span class="md-math">3×4 \+ 5×4<\/span>/);
+  // 中文不该被吞进去
+  assert.equal((html.match(/[\u4e00-\u9fff]{1,}<\/span>/g) ?? []).length, 0);
+});
+
+test("显式公式标记优先，长的算式不锁行", () => {
+  assert.match(renderMarkdown("当 $a × c + b × c$ 成立时"), /<span class="md-math">a × c \+ b × c<\/span>/);
+  assert.match(renderMarkdown("$$(a + b) × c = a × c + b × c$$"), /<div class="md-math-block">/);
+  assert.match(
+    renderMarkdown("$$\\frac{a}{b} + \\frac{c}{d}$$"),
+    /<div class="md-math-block">\\frac\{a\}\{b\} \+ \\frac\{c\}\{d\}<\/div>/
+  );
+  // 超过 22 字符：允许折行，避免撑破正文一列
+  const long = renderMarkdown("(12 + 34) × (56 + 78) = 90 × 134 = 12060 的结果");
+  assert.match(long, /md-math md-math-wrap/);
+});
+
+test("公式与代码互不干扰", () => {
+  const html = renderMarkdown("行内 `a × b` 是代码，不当公式");
+  assert.match(html, /<code class="md-inline-code">a × b<\/code>/);
+  assert.equal((html.match(/class="md-math"/g) ?? []).length, 0);
+});
+
+test("流式时半截的 $$ 先摘掉，别把整段吞成公式块", () => {
+  assert.equal(streamSafeMarkdown("结论是\n\n$$(a + b) × c"), "结论是\n\n(a + b) × c");
+  assert.equal(
+    streamSafeMarkdown("$$a × c + b × c$$"),
+    "$$a × c + b × c$$"
+  );
+});

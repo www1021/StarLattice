@@ -2581,6 +2581,7 @@ function Conversation({
                   />
                 ) : null}
                 <MessageMarkdown
+                  streaming={message.status === "generating"}
                   text={
                     message.content ||
                     (message.status === "generating"
