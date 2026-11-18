@@ -6,7 +6,7 @@ import { createSudoku } from "./sudoku.js";
 import { FALLBACK, FLYING_CHARS, normalizeLine, toClauses } from "./poetry.js";
 import { createPoetryOrder, poolSize as poetryPool } from "./poetryOrder.js";
 import { createWordSpell, poolSize as wordPool } from "./words.js";
-import { resolveType } from "./index.js";
+import { resolveGrade, resolveType } from "./index.js";
 import { ensureMathDelimiters } from "../../src/features/games/mathSource.js";
 import { renderInlineMarkdown, setMathRenderer } from "../../src/features/chat/markdown.js";
 import { isGamePayload } from "./types.js";
@@ -159,6 +159,17 @@ test("游戏的类型参数写得再随意也要落到对的那一种", () => {
   assert.equal(resolveType("接诗"), "flying_flower");
   assert.equal(resolveType("拼单词"), "word_spell");
   assert.equal(resolveType("英语背单词"), "word_spell");
+});
+
+test("年级认中文写法，散落数字不当年级", () => {
+  assert.equal(resolveGrade({ grade: "五年级" }), 5);
+  assert.equal(resolveGrade({ topic: "三年级分数" }), 3);
+  assert.equal(resolveGrade({ grade: "6年级" }), 6);
+  assert.equal(resolveGrade({ grade: 7 }), 7);
+  // 「24 点」里那个 24 不是年级，不能被切成 2 或 4。
+  assert.equal(resolveGrade({ topic: "24 点" }), undefined);
+  assert.equal(resolveGrade({ grade: "初一" }), 7);
+  assert.equal(resolveGrade({}), undefined);
 });
 
 test("游戏载荷有统一标记，别的工具结果不会被误当成游戏", () => {

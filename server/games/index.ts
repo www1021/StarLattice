@@ -15,7 +15,8 @@ import type { GamePayload, GameType } from "./types.js";
 
 export type PlayGameArgs = {
   game?: string;
-  grade?: number;
+  /** schema 里是 number，但模型也会把「五年级」原样塞进来，这里两种都收。 */
+  grade?: number | string;
   topic?: string;
   difficulty?: string;
   count?: number;
@@ -65,9 +66,13 @@ export function resolveGrade(input: PlayGameArgs): number | undefined {
   }
   const text = `${input.grade ?? ""} ${input.topic ?? ""}`;
   // 只认「X年级」这种明确写法；散落的单个数字（比如「24 点」里的 24）不是年级。
-  const digit = /([1-9])\s*年级/.exec(text);
+  // 学生多半说「五年级」而不是「5年级」，中文数字也得认，否则会静默退回六年级。
+  const digit = /([1-9一二三四五六七八九])\s*年级/.exec(text);
   if (digit) {
-    return Number(digit[1]);
+    const value = CHINESE_NUMBERS[digit[1]] ?? Number(digit[1]);
+    if (Number.isFinite(value) && value >= 1 && value <= 9) {
+      return value;
+    }
   }
   const junior = /初([一二三])/.exec(text);
   if (junior) {

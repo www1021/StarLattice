@@ -235,6 +235,15 @@ type Draft = {
  */
 const SAVED_KEY_MASK = "••••••••••••••••";
 
+/**
+ * 掩码只是占位符，不是密钥。
+ * 用户点进框里删掉半个掩码、又没补上真密钥时，剩下的「•」不能当成密钥发出去，
+ * 否则服务端会把一串圆点存成新的 API Key，把他的真密钥覆盖掉。
+ */
+function stripMask(value: string): string {
+  return value.replace(/\u2022/g, "").trim();
+}
+
 function draftFromModel(model: ModelProfileView | undefined): Draft {
   if (!model) {
     const first = MODEL_PROVIDERS[0];
@@ -372,8 +381,12 @@ export function ModelDialog({
   const displayName =
     draft.label.trim() || modelName || provider.label;
 
-  /** 只有用户真的动过密钥框才把密钥发给服务端；否则留空，由服务端沿用已存的那把。 */
-  const apiKeyForRequest = draft.keyDirty ? draft.apiKey.trim() || undefined : undefined;
+  /**
+   * 只有用户真的动过密钥框、且框里留下了非掩码的内容才把密钥发给服务端；
+   * 其余情况一律留空，由服务端沿用已存的那把。
+   */
+  const pendingKey = stripMask(draft.apiKey);
+  const apiKeyForRequest = draft.keyDirty && pendingKey ? pendingKey : undefined;
 
   const fetchRemote = async () => {
     if (!baseUrl) {
@@ -449,7 +462,7 @@ export function ModelDialog({
       setError("接口地址不能为空。");
       return;
     }
-    if (!editing && !draft.apiKey.trim() && !provider.keyless) {
+    if (!editing && !pendingKey && !provider.keyless) {
       setError("API Key 不能为空；本地模型可以留空。");
       return;
     }
@@ -572,6 +585,12 @@ export function ModelDialog({
                   onChange={(event) =>
                     setDraft({ ...draft, apiKey: event.target.value, keyDirty: true })
                   }
+                  // 把掩码删残了又离开：还原成完整掩码，别让人以为密钥被清空了。
+                  onBlur={() => {
+                    if (editing && draft.keyDirty && !stripMask(draft.apiKey)) {
+                      setDraft({ ...draft, apiKey: SAVED_KEY_MASK, keyDirty: false });
+                    }
+                  }}
                 />
                 <button
                   type="button"
