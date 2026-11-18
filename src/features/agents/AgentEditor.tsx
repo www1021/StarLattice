@@ -472,6 +472,11 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
             </span>
             <select value={model} onChange={(event) => setModel(event.target.value)}>
               <option value="">跟随设置里的默认模型</option>
+              {/* 配置里可能直接写上游模型名（比如 qwen-flash），它不在模型档案里。
+                  补一条，否则下拉框会显示成「跟随默认」，把真实配置藏起来。 */}
+              {model && !models.some((item) => item.id === model) ? (
+                <option value={model}>直连 {model}</option>
+              ) : null}
               {models.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.label}（{item.model}）
