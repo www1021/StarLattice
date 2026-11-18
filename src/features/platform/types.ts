@@ -548,6 +548,8 @@ export type AgentChatConfig = {
   /** false 表示攒完整段再一次性出现。 */
   typewriter?: boolean;
   variables?: AgentVariable[];
+  /** 这个智能体默认带的知识库：调到它就自动检索，不用每次手选。 */
+  knowledgeBaseIds?: string[];
 };
 
 export type AgentRecord = {

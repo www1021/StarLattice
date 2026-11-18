@@ -5202,7 +5202,7 @@ button {
 
 .conversation-shell {
   position: relative;
-  width: min(100%, 840px);
+  width: min(100%, 1000px);
   margin: 34px auto 0;
 }
 
@@ -5297,6 +5297,62 @@ button {
   margin: 0 0 8px;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* 回答开始前的过程小字：一行行往下推，像在自言自语，正文到了就折叠。 */
+.process-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 10px;
+  padding: 2px 0 2px 2px;
+}
+
+.process-note-line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--muted);
+  animation: process-note-in 0.22s ease;
+}
+
+.process-note-line.is-live {
+  color: var(--n-46);
+}
+
+.process-note-dot {
+  flex: 0 0 auto;
+  width: 4px;
+  height: 4px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+.process-note-line.is-live .process-note-dot {
+  animation: workflow-trace-pulse 1.2s ease-in-out infinite;
+}
+
+/* 深度思考的原文：小字、淡一点，最多占一块小区域，不抢正文。 */
+.process-thinking {
+  max-height: 108px;
+  margin: 0 0 4px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--n-46);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(180deg, transparent 0, #000 18px);
+}
+
+@keyframes process-note-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .workflow-trace-summary {
@@ -6765,7 +6821,7 @@ button {
 }
 
 .composer-stack {
-  width: min(100%, 920px);
+  width: min(100%, 1000px);
   margin: 38px auto 0;
   overflow-x: clip;
 }
@@ -13879,22 +13935,38 @@ img.user-avatar {
    关掉工作宠时这段留白保持不变，正文位置不会因为开关而左右跳动。 */
 .workspace-inner.chat-workspace {
   position: relative;
-  --pet-gutter: 236px;
-  max-width: calc(860px + var(--pet-gutter) * 2);
+  --pet-gutter: 180px;
+  max-width: calc(1000px + var(--pet-gutter) * 2);
   padding-left: var(--pet-gutter);
   padding-right: var(--pet-gutter);
   transition: padding-left 0.24s var(--sidebar-ease), padding-right 0.24s var(--sidebar-ease);
 }
 
+/* 正文列加宽后，工作宠按新的留白整体缩小（宽高同比例，避免画变形）。 */
+.workspace-inner.chat-workspace .pet-stage {
+  --pet-stage-w: 196px;
+  --pet-h: 184px;
+}
+
 @media (max-width: 1460px) {
   .workspace-inner.chat-workspace {
-    --pet-gutter: 216px;
+    --pet-gutter: 168px;
+  }
+
+  .workspace-inner.chat-workspace .pet-stage {
+    --pet-stage-w: 184px;
+    --pet-h: 172px;
   }
 }
 
 @media (max-width: 1340px) {
   .workspace-inner.chat-workspace {
-    --pet-gutter: 196px;
+    --pet-gutter: 150px;
+  }
+
+  .workspace-inner.chat-workspace .pet-stage {
+    --pet-stage-w: 168px;
+    --pet-h: 158px;
   }
 }
 
@@ -14159,7 +14231,7 @@ select,
 .croom {
   display: flex;
   flex-direction: column;
-  width: min(620px, 100%);
+  width: min(780px, 100%);
   height: min(790px, 100%);
   overflow: hidden;
   border-radius: 20px;

@@ -149,6 +149,8 @@ type ChatMessage = {
   workflowStep?: WorkflowStepEvent;
   /** 边跑边说的步骤流水，累积保留，正文出现后仍可见。 */
   workflowSteps?: WorkflowStepEvent[];
+  /** 回答还没开始时的过程小字：正文一开始就折叠，不抢正文的位置。 */
+  processNotes?: string[];
   /** 工作流跑到人工节点时等待用户发言；提交后清空，工作流继续往下跑。 */
   pendingInteraction?: WorkflowInteraction;
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
@@ -2051,6 +2053,10 @@ function getInsightLabel(message: ChatMessage, currentTime: number) {
     return "查看文件";
   }
 
+  if (message.thinkingText) {
+    return "思考过程";
+  }
+
   return "无思考过程";
 }
 
@@ -2246,6 +2252,7 @@ function Conversation({
 }) {
   const conversationRef = useRef<HTMLElement>(null);
   const shouldAutoScrollRef = useRef(true);
+  const lastUserMessageIdRef = useRef<string | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
 
@@ -2277,6 +2284,17 @@ function Conversation({
     }, 100);
 
     return () => window.clearInterval(intervalId);
+  }, [messages]);
+
+  // 刚发出提问就回到底部：用户翻着上面的历史再发消息时，
+  // 之前「离底部远就不自动滚」的规则会把人留在旧位置，看不到新回复。
+  // 发送时用户消息和助手占位是一起追加的，所以找最近一条用户消息，而不是看末条。
+  useEffect(() => {
+    const lastUser = [...messages].reverse().find((item) => item.role === "user");
+    if (!lastUser || lastUser.id === lastUserMessageIdRef.current) return;
+    lastUserMessageIdRef.current = lastUser.id;
+    shouldAutoScrollRef.current = true;
+    setShowScrollToBottom(false);
   }, [messages]);
 
   useEffect(() => {
@@ -2455,29 +2473,56 @@ function Conversation({
               <ClassroomRecordCard message={message} />
             ) : (
               <>
-                {message.role === "assistant" && message.workflowSteps?.length
+                {message.role === "assistant"
                   ? (() => {
                       const steps = message.workflowSteps ?? [];
+                      const notes = message.processNotes ?? [];
+                      const thinking = (message.thinkingText ?? "").trim();
+                      if (!steps.length && !notes.length && !thinking) return null;
                       const running = steps.some((step) => step.status === "running");
                       const done = steps.filter((step) => step.status === "succeeded").length;
                       const failed = steps.some((step) => step.status === "failed");
+                      const answerStarted = Boolean(message.content.trim());
+                      // 正文还没开始时用一行行小字交代「现在在做什么」，边跑边推；
+                      // 开了深度思考时连同思考内容一起铺；正文一开始就收进折叠区。
+                      if (message.status === "generating" && !answerStarted) {
+                        return (
+                          <div className="process-notes" aria-live="polite">
+                            {thinking ? (
+                              <p className="process-thinking">{thinking.slice(-700)}</p>
+                            ) : null}
+                            {notes.slice(-6).map((note, index) => (
+                              <p className="process-note-line" key={`${index}-${note}`}>
+                                <span className="process-note-dot" />
+                                {note}
+                              </p>
+                            ))}
+                            <p className="process-note-line is-live">
+                              <span className="process-note-dot" />
+                              {running || steps.length === 0
+                                ? "正在处理…"
+                                : `已处理 ${done} 步，正在写答复…`}
+                            </p>
+                          </div>
+                        );
+                      }
+                      if (!steps.length && !notes.length) return null;
                       // 节点流水是给排查用的，默认收起：正文只留用户真正关心的结论。
                       return (
                         <details className="workflow-trace">
                           <summary className="workflow-trace-summary">
-                            {running ? (
-                              <span className="workflow-trace-live">
-                                <span className="workflow-trace-dot" />
-                                正在处理
-                                {steps.length ? ` · 已完成 ${done} 步` : ""}
-                              </span>
-                            ) : (
-                              <span>
-                                {failed ? "执行过程（有失败节点）" : "执行过程"} · {steps.length} 步
-                              </span>
-                            )}
+                            <span>
+                              {failed ? "处理过程（有失败节点）" : "处理过程"} ·{" "}
+                              {steps.length || notes.length} 步
+                            </span>
                           </summary>
                           <div className="workflow-progress-list">
+                            {notes.map((note, index) => (
+                              <div className="workflow-progress-row" key={`note-${index}`}>
+                                <span className="workflow-progress-mark">·</span>
+                                <span className="workflow-progress-title">{note}</span>
+                              </div>
+                            ))}
                             {steps.map((step) => (
                               <div
                                 className={`workflow-progress-row workflow-progress-${step.status}`}
@@ -6892,6 +6937,16 @@ function Composer({
   );
   const canSend =
     !isGenerating && (inputValue.trim().length > 0 || attachments.length > 0);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 输入框跟着内容长高，封顶 188px（超过就内部滚动）。
+  // 之前固定 4 行，写长一点只能在小窗口里滚，看着像坏了。
+  useEffect(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 188)}px`;
+  }, [inputValue]);
 
   // 点菜单外面或按 Esc 时收起 + 菜单
   useEffect(() => {
@@ -7042,12 +7097,13 @@ function Composer({
       <div className="composer">
         <textarea
           className="composer-input"
+          ref={inputRef}
           value={inputValue}
           onChange={(event) => onChangeInput(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={isGenerating}
-          rows={4}
+          rows={2}
         />
 
         <div className="composer-actions">
@@ -7380,6 +7436,8 @@ async function readChatStream(
     onTool?: (note: ToolNote) => void;
     onWorkflowStep?: (event: WorkflowStepEvent) => void;
     onInteraction?: (interaction: WorkflowInteraction) => void;
+    /** 回答前的过程小字：一小段一小段地推，正文开始时折叠。 */
+    onProgressNote?: (text: string) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
@@ -7451,6 +7509,8 @@ function handleChatStreamEvent(
     onWorkflowStep?: (event: WorkflowStepEvent) => void;
     /** 工作流在人工节点挂起，等待用户填写发言。 */
     onInteraction?: (interaction: WorkflowInteraction) => void;
+    /** 回答前的过程小字，正文一开始就折叠。 */
+    onProgressNote?: (text: string) => void;
     /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
@@ -7479,6 +7539,8 @@ function handleChatStreamEvent(
     stepText?: string;
     totalSteps?: number;
     interaction?: WorkflowInteraction;
+    /** progress_note 事件的过程小字。 */
+    text?: string;
     conversationId?: string;
     message?: string;
     name?: string;
@@ -7712,6 +7774,11 @@ function handleChatStreamEvent(
     if (payload.interaction && typeof payload.interaction === "object") {
       handlers.onInteraction?.(payload.interaction as WorkflowInteraction);
     }
+  }
+
+  if (streamEvent.event === "progress_note" && typeof payload.text === "string") {
+    const note = payload.text.trim();
+    if (note) handlers.onProgressNote?.(note);
   }
 
   if (streamEvent.event === "evaluation" && isTrainingEvaluation(payload)) {
@@ -11708,6 +11775,18 @@ function App() {
             current.map((item) =>
               item.id === assistantId ? { ...item, pendingInteraction: interaction } : item
             )
+          );
+        },
+        onProgressNote(note) {
+          // 过程小字：连着重复的只留一条，最多留最近 12 条，免得越攒越长。
+          setMessages((current) =>
+            current.map((item) => {
+              if (item.id !== assistantId) return item;
+              const notes = [...(item.processNotes ?? [])];
+              if (notes[notes.length - 1] === note) return item;
+              notes.push(note);
+              return { ...item, processNotes: notes.slice(-12) };
+            })
           );
         },
         onThinkingDelta(content) {

@@ -31,18 +31,64 @@ const caseKeywords: Array<[string, RegExp]> = [
   ["conflict", /处分|冲突|顶撞|批评|冤枉|不公平/]
 ];
 
+/** 名字后面常粘着这些词：截断时按最早的边界切，避免把「林小满因为成绩」当成姓名。 */
+const NAME_STOPS = [
+  "因为", "由于", "最近", "现在", "平时", "总是", "最近", "这学期", "这段时间",
+  "情绪", "成绩", "考试", "同学", "老师", "宿舍", "家里", "他", "她", "的", "是",
+  "在", "跟", "和", "说", "想", "最", "总", "老", "上", "被", "有", "又"
+];
+
+function cutAtStopWord(raw: string): string | undefined {
+  let name = raw;
+  for (let index = 2; index < name.length; index += 1) {
+    const rest = name.slice(index);
+    const stop = NAME_STOPS.find((word) => rest.startsWith(word));
+    if (stop) {
+      name = name.slice(0, index);
+      break;
+    }
+  }
+  return name.length >= 2 && name.length <= 4 ? name : undefined;
+}
+
+/**
+ * 从用户的话里取学生姓名：「我们班有个学生叫林小满」→ 林小满。
+ * 取不到就返回 undefined，由调用方用个案自带的姓名兜底，不编一个假的。
+ */
+export function extractStudentName(topic?: string): string | undefined {
+  const text = (topic ?? "").replace(/\s+/g, "");
+  if (!text) return undefined;
+  const patterns = [
+    /(?:名字叫|名字是|名叫|叫做|叫)([\u4e00-\u9fa5]{2,6})/,
+    /(?:同学|学生)([\u4e00-\u9fa5]{2,3})(?:最近|因为|说|的|，|。|$)/,
+    /(?:有位|有个|有一个)([\u4e00-\u9fa5]{2,4})(?:同学|学生)/
+  ];
+  for (const pattern of patterns) {
+    const matched = pattern.exec(text);
+    const name = matched?.[1] ? cutAtStopWord(matched[1]) : undefined;
+    if (name) return name;
+  }
+  return undefined;
+}
+
 /** 先按显式 caseId，再按话题里的关键词挑个案；都没有就用成绩压力这个最通用的。 */
 export function resolveRoomCase(topic: string | undefined, caseId?: string): CounselingCase {
   const explicit = counselingCases.find((item) => item.id === caseId);
-  if (explicit) return explicit;
+  if (explicit) return withTopicName(explicit, topic);
   const text = topic ?? "";
   for (const [id, pattern] of caseKeywords) {
     if (pattern.test(text)) {
       const matched = counselingCases.find((item) => item.id === id);
-      if (matched) return matched;
+      if (matched) return withTopicName(matched, topic);
     }
   }
-  return counselingCases[0]!;
+  return withTopicName(counselingCases[0]!, topic);
+}
+
+/** 用户已经点名学生是谁，就按他的说法来，别让 AI 换个名字出戏。 */
+function withTopicName(student: CounselingCase, topic?: string): CounselingCase {
+  const name = extractStudentName(topic);
+  return name ? { ...student, name } : student;
 }
 
 export function openRoomTurn(mode: RoomMode, student: CounselingCase) {

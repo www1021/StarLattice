@@ -335,6 +335,61 @@
   line-height: 1.55;
 }
 
+/* 知识库：一排可点选的库名，选中后挂在这个智能体上。 */
+.agent-section-note {
+  color: var(--n-46);
+  font-size: 11.5px;
+}
+
+.agent-kb-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.agent-kb-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--liquid-line);
+  border-radius: 10px;
+  background: rgba(var(--rgb-surface), 0.62);
+  color: var(--n-18);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.agent-kb-option:hover {
+  border-color: var(--accent-line);
+}
+
+.agent-kb-option.is-picked {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agent-kb-option-name {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-kb-option small {
+  flex: 0 0 auto;
+  color: var(--n-46);
+  font-size: 11px;
+}
+
 .agent-hint code,
 .agent-variables-head code {
   padding: 1px 4px;

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeRoomMessages, openRoomTurn, resolveRoomCase, roomSystemPrompt } from "./room.js";
+import {
+  extractStudentName,
+  normalizeRoomMessages,
+  openRoomTurn,
+  resolveRoomCase,
+  roomSystemPrompt
+} from "./room.js";
 
 test("聊天室按话题关键词匹配虚拟个案，显式 caseId 优先", () => {
   assert.equal(resolveRoomCase("最近考试考差了，心情不好").id, "academic");
@@ -48,4 +54,14 @@ test("聊天室只保留合法角色、压掉超长内容并截断历史", () =>
   const trimmed = normalizeRoomMessages(long);
   assert.equal(trimmed.length, 60);
   assert.equal(trimmed[trimmed.length - 1]?.content, "第 79 句");
+});
+
+test("从话题里取学生姓名，取不到就不编", () => {
+  assert.equal(extractStudentName("我们班有个学生叫林小满，因为成绩问题情绪低落"), "林小满");
+  assert.equal(extractStudentName("叫王浩因为成绩考差了"), "王浩");
+  assert.equal(extractStudentName("学生陈予最近不想回宿舍"), "陈予");
+  assert.equal(extractStudentName("今天天气不错"), undefined);
+  // 点名了谁就演谁，别换成个案里的默认姓名。
+  assert.equal(resolveRoomCase("班上有学生叫林小满，成绩下滑").name, "林小满");
+  assert.equal(resolveRoomCase("班上有学生叫林小满，成绩下滑").id, "academic");
 });

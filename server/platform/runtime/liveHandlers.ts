@@ -521,7 +521,8 @@ async function runLiveAgent(
     options,
     context,
     input,
-    resolution
+    resolution,
+    agent
   });
   const citations = result.trace.flatMap((call) => call.citations ?? []);
 
@@ -638,6 +639,8 @@ async function runAgentWithTools(input: {
   context: ExecutionContext;
   input: Record<string, unknown>;
   resolution: ModelResolution;
+  /** 当前 Agent：知识库检索没给范围时用它自己挂的库。 */
+  agent?: AgentRecord;
 }) {
   const { system, prompt, catalog, options, context, input: agentInput, resolution } = input;
   const model = resolution.model;
@@ -680,7 +683,8 @@ async function runAgentWithTools(input: {
         catalog,
         options,
         context,
-        agentInput
+        agentInput,
+        agent: input.agent
       });
       trace.push(execution.trace);
       messages.push({
@@ -718,8 +722,9 @@ async function executeAgentToolCall(input: {
   options: LiveHandlerOptions;
   context: ExecutionContext;
   agentInput: Record<string, unknown>;
+  agent?: AgentRecord;
 }): Promise<{ content: string; trace: ToolCallTrace }> {
-  const { call, catalog, options, context, agentInput } = input;
+  const { call, catalog, options, context, agentInput, agent } = input;
   const descriptor = catalog.find((item) => item.functionName === call.function.name);
   const startedAt = Date.now();
 
@@ -741,7 +746,9 @@ async function executeAgentToolCall(input: {
     const knowledgeBaseIds =
       context.knowledgeBaseIds && context.knowledgeBaseIds.length > 0
         ? context.knowledgeBaseIds
-        : stringList(agentInput.knowledgeBaseIds);
+        : stringList(agentInput.knowledgeBaseIds).length > 0
+          ? stringList(agentInput.knowledgeBaseIds)
+          : (agent?.chatConfig?.knowledgeBaseIds ?? []);
     if (knowledgeBaseIds.length === 0) {
       return toolError(call, descriptor.toolId, "当前工作流未绑定知识库，无法检索。", startedAt);
     }

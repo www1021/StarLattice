@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
+  Database,
   FileText,
   ImagePlus,
   Loader2,
@@ -18,6 +19,7 @@ import type {
   AgentChatConfig,
   AgentRecord,
   AgentVariable,
+  KnowledgeBaseRef,
   ModelProfileView,
   ToolRecord
 } from "../platform/types";
@@ -122,6 +124,7 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
   const [config, setConfig] = useState<AgentChatConfig>(agent?.chatConfig ?? {});
   const [models, setModels] = useState<ModelProfileView[]>([]);
   const [toolOptions, setToolOptions] = useState<ToolRecord[]>([]);
+  const [knowledgeOptions, setKnowledgeOptions] = useState<KnowledgeBaseRef[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [polishing, setPolishing] = useState(false);
@@ -175,6 +178,23 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    platformApi
+      .knowledgeBases()
+      .then((result) => {
+        if (!cancelled) {
+          setKnowledgeOptions(result.bases ?? []);
+        }
+      })
+      .catch(() => {
+        // 知识库列表拿不到不影响保存，保存时后端只校验 id 列表本身
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const variables = config.variables ?? [];
   // 角色定位从表单里拿掉了：功能描述已经承担「你是谁、什么场景用你」。
   // 老数据里的 role 原样带回，避免编辑一次就把工作流依赖的角色丢空。
@@ -220,6 +240,15 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
     setTools((current) =>
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
     );
+  }
+
+  const knowledgeBaseIds = config.knowledgeBaseIds ?? [];
+
+  function toggleKnowledgeBase(id: string) {
+    const next = knowledgeBaseIds.includes(id)
+      ? knowledgeBaseIds.filter((item) => item !== id)
+      : [...knowledgeBaseIds, id];
+    patchConfig({ knowledgeBaseIds: next });
   }
 
   function applyTemplate(body: string) {
@@ -569,6 +598,62 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
                     })
                   )}
                 </div>
+              </div>
+            )}
+          </section>
+
+          <section className="agent-section">
+            <div className="agent-section-head">
+              <h3>知识库</h3>
+              <span className="agent-section-note">选中后，这个智能体每次回答都会先查这些资料</span>
+            </div>
+            {knowledgeBaseIds.length > 0 ? (
+              <div className="agent-tool-list">
+                {knowledgeBaseIds.map((baseId) => {
+                  const base = knowledgeOptions.find((item) => item.id === baseId);
+                  return (
+                    <span
+                      className={`agent-tool-chip ${base ? "" : "is-missing"}`}
+                      key={baseId}
+                      title={base ? `${base.documentCount} 篇文档` : "这个知识库当前不可用（可能已删除）"}
+                    >
+                      <Database size={12} />
+                      <span>{base?.name ?? baseId}</span>
+                      <button
+                        type="button"
+                        aria-label={`移除知识库 ${base?.name ?? baseId}`}
+                        onClick={() => toggleKnowledgeBase(baseId)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+            {knowledgeOptions.length === 0 ? (
+              <p className="agent-hint">
+                还没有知识库。先去「知识库」页新建一个，或导入示例资料包，再回来挂到这里。
+              </p>
+            ) : (
+              <div className="agent-kb-list">
+                {knowledgeOptions.map((base) => {
+                  const picked = knowledgeBaseIds.includes(base.id);
+                  return (
+                    <button
+                      type="button"
+                      key={base.id}
+                      className={`agent-kb-option ${picked ? "is-picked" : ""}`}
+                      onClick={() => toggleKnowledgeBase(base.id)}
+                    >
+                      <span className="agent-kb-option-name">
+                        {base.name}
+                        {picked ? <Check size={12} /> : null}
+                      </span>
+                      <small>{base.documentCount} 篇</small>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </section>

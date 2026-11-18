@@ -837,6 +837,11 @@ export type AgentChatConfig = {
   }>;
   /** 逐字显示；false 时前端攒完一次性渲染。 */
   typewriter?: boolean;
+  /**
+   * 这个智能体默认带的知识库。用户没在输入框里手动选知识库时，
+   * 用这里的范围做检索增强，也作为 knowledge.search 工具的默认检索范围。
+   */
+  knowledgeBaseIds?: string[];
 };
 
 export type AgentRecord = {

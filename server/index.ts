@@ -66,6 +66,7 @@ import {
   UpstreamModelError
 } from "./qwenOpenAiClient.js";
 import { resolveModel } from "./platform/models/catalog.js";
+import { narrateNodeResult } from "./platform/chat/workflowNarration.js";
 import {
   buildAgentChatSystemPrompt,
   contextTurnsOf,
@@ -75,6 +76,7 @@ import {
   needsExternalEvidence,
   runChatToolLoop,
   toToolChatMessages,
+  type ChatToolProgress,
   type ChatToolTrace
 } from "./platform/chat/agentTools.js";
 import {
@@ -1970,7 +1972,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   const body = request.body as ChatStreamRequest;
   const messages = normalizeMessages(body.messages);
   const enableThinking = parseBoolean(body.enableThinking);
-  const knowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
+  // 输入框里手选的知识库优先；没选时才回落到智能体自己挂的默认知识库。
+  const requestedKnowledgeBaseIds = parseStringArray(body.knowledgeBaseIds);
   const requestedTrainingType = normalizeTrainingType(body.trainingType);
   const assistantMode = body.assistantMode === "office" ? "office" : "education";
   // 输入框下方选的那条模型；没选就跟随设置里的默认，解析失败时退回默认，不打断对话。
@@ -1987,6 +1990,16 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
     return;
   }
   const agentVariables = parseAgentVariables(body.variables);
+  // 智能体挂的知识库等于「这个助手的资料边界」：调到它就自动带上，不必每次手动选。
+  const knowledgeBaseIds =
+    requestedKnowledgeBaseIds.length > 0
+      ? requestedKnowledgeBaseIds
+      : await resolveKnowledgeBaseIds(chatAgent?.chatConfig?.knowledgeBaseIds ?? []);
+  const knowledgeBaseNames = knowledgeBaseIds.length
+    ? (await knowledgeProvider.listBases())
+        .filter((base) => knowledgeBaseIds.includes(base.id))
+        .map((base) => base.name)
+    : [];
   // 上下文轮数由智能体配置决定；没配就是默认 6 轮。裁剪放在后端，
   // 否则客户端改个请求体就能绕过，聊天迟早撞模型上下文上限。
   const modelInputMessages = chatAgent
@@ -2052,8 +2065,33 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
   let answerStreamed = false;
   const requestStartedAt = Date.now();
-  /** 工作流首帧先给一句开场白，进度细节只走 workflow_step 事件，不进正文。 */
+  /** 工作流首帧先给一句过程提示，进度细节只走 workflow_step / progress_note，不进正文。 */
   let narratedWorkflowIntro = false;
+  /** 已经播报过的节点，避免 running→succeeded 两次都写一行。 */
+  const narratedSteps = new Set<string>();
+  /**
+   * 过程小字：只出现在回答还没开始的时候，用来交代「现在在做什么」。
+   * 前端拿它铺成一行行小字，正文一开始就折叠起来，不占正文版面。
+   */
+  const emitProgressNote = (text: string) => {
+    const line = text.trim();
+    if (!line) return;
+    writeSse(response, "progress_note", { text: line });
+  };
+  /** 工具调用的过程小字：只说在查什么、查完没有，不复述内部端点。 */
+  const emitToolNote = (progress: ChatToolProgress) => {
+    if (progress.kind === "delegation") return;
+    if (progress.stage === "running") {
+      emitProgressNote(`在查「${progress.name}」…`);
+      return;
+    }
+    if (progress.stage === "skipped") return;
+    emitProgressNote(
+      progress.ok === false
+        ? `「${progress.name}」没查到，换个说法再试。`
+        : `「${progress.name}」查完了，正在整理。`
+    );
+  };
   const emitWorkflowStep = (event: WorkflowProgressEvent) => {
     const inChild = Boolean(event.path);
     const staged =
@@ -2082,12 +2120,17 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
 
     if (event.status === "running" && !narratedWorkflowIntro) {
       narratedWorkflowIntro = true;
-      // 工具调用期间正文原本是空的；先给一句可见反馈，用户不用干等。
-      // 节点流水只走 workflow_step 事件（前端折叠展示），不再写进正文，
-      // 否则用户看到的是「事实记录完成」「模板渲染完成」这类他并不关心的日志。
-      writeSse(response, "delta", {
-        content: "收到，我先把材料过一遍，整理好了直接给你结论。\n\n"
-      });
+      emitProgressNote("先把材料过一遍，理清这次要处理什么。");
+    }
+
+    // 节点产物转成一句过程小字：等待时用户至少能看到「查到什么了」。
+    if (event.status === "succeeded" && event.resultExcerpt) {
+      const stepKey = `${event.workflowId}:${event.path ?? ""}:${event.nodeId}:${event.sequence}`;
+      if (!narratedSteps.has(stepKey)) {
+        narratedSteps.add(stepKey);
+        const line = narrateNodeResult(event.nodeId, event.title, event.resultExcerpt);
+        if (line) emitProgressNote(line);
+      }
     }
   };
 
@@ -2134,6 +2177,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         ? buildAgentChatSystemPrompt(chatAgent, {
             variables: agentVariables,
             toolNames: chatToolCatalog.map((item) => item.tool.name || item.toolId),
+            knowledgeBaseNames,
             delegationTargets: chatToolCatalog
               .filter((item) => item.kind === "delegation")
               .map((item) => item.tool.name.replace(/^转交给/, ""))
@@ -2162,12 +2206,10 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               const targetId = delegationTargetId(tool.id);
               const target = platformStore.getAgent(targetId);
               let delegatedBadgeSent = false;
-              // 转交一命中就先给一句反馈，别让用户盯着空白等。
+              // 转交一命中就先给一句过程反馈，别让用户盯着空白等。
               if (!narratedWorkflowIntro) {
                 narratedWorkflowIntro = true;
-                writeSse(response, "delta", {
-                  content: `收到，我让「${target?.name ?? "专项助手"}」来答。\n\n`
-                });
+                emitProgressNote(`交给「${target?.name ?? "专项助手"}」处理，正在整理答复。`);
               }
               return runAgentDelegation({
                 host: chatAgent,
@@ -2202,6 +2244,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 },
                 // 子智能体调用检索工具的进度也要发到前端，否则整条链路看不到工具条。
                 onProgress(progress) {
+                  emitToolNote(progress);
                   writeSse(response, "tool", {
                     toolId: progress.toolId,
                     name: progress.name,
@@ -2217,7 +2260,13 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 }
               });
             }
-            return platformMcp.callToolRecord(tool, args, emitWorkflowStep);
+            // 知识库工具没带范围时用智能体挂的库，模型只写 query 也能查到东西。
+            const toolArgs =
+              tool.id === "knowledge.search" &&
+              !(Array.isArray(args.knowledgeBaseIds) && (args.knowledgeBaseIds as unknown[]).length > 0)
+                ? { ...args, knowledgeBaseIds }
+                : args;
+            return platformMcp.callToolRecord(tool, toolArgs, emitWorkflowStep);
           },
           model: picked.model,
           provider: picked.provider,
@@ -2225,6 +2274,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
           temperature: chatAgent?.chatConfig?.temperature ?? undefined,
           signal: abortController.signal,
           onProgress(progress) {
+            emitToolNote(progress);
             writeSse(response, "tool", {
               toolId: progress.toolId,
               name: progress.name,
@@ -4462,6 +4512,7 @@ function writeSse(
     | "evaluation"
     | "tool"
     | "workflow_step"
+    | "progress_note"
     | "delegated"
     | "done"
     | "error",

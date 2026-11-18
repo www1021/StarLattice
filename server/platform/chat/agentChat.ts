@@ -12,6 +12,8 @@ const MAX_PROMPT = 20000;
 const MAX_AVATAR_CHARS = 200_000;
 const MAX_QUICK_PROMPTS = 8;
 const MAX_VARIABLES = 12;
+/** 一个智能体能挂的知识库上限：再多也没法在一次检索里讲清楚。 */
+const MAX_KNOWLEDGE_BASES = 8;
 const DEFAULT_CONTEXT_TURNS = 6;
 const MAX_CONTEXT_TURNS = 30;
 
@@ -165,6 +167,17 @@ export function parseChatConfig(
       .slice(0, MAX_VARIABLES);
   }
 
+  if (Array.isArray(input.knowledgeBaseIds)) {
+    config.knowledgeBaseIds = Array.from(
+      new Set(
+        input.knowledgeBaseIds
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter((item) => item !== "")
+      )
+    ).slice(0, MAX_KNOWLEDGE_BASES);
+  }
+
   return { ...existing, ...config };
 }
 
@@ -193,6 +206,8 @@ export function buildAgentChatSystemPrompt(
     toolNames?: string[];
     /** 本轮能转交的专项智能体名；有值时转交是真实调用，不是台词。 */
     delegationTargets?: string[];
+    /** 本轮挂上的知识库名；有值时说明答案的依据范围。 */
+    knowledgeBaseNames?: string[];
   } = {}
 ): string {
   const parts = [BASELINE];
@@ -236,6 +251,16 @@ export function buildAgentChatSystemPrompt(
         "问题明确属于某个专项时（找文献、选题规划、实验设计、开题答辩、成长困惑），直接把用户原话和已确认的背景一起转过去，不要先编一段自己的答案。",
         "转交成功后，这一轮就由对方来回答，系统会把它的答复直接呈现给用户：你不用复述、不要补一段总结，也不要假装自己又查了一遍。",
         "只有在转交失败或对方查不到时，才由你用自己的话说明情况，并给出下一步建议。"
+      ].join("\n")
+    );
+  }
+  const knowledgeBaseNames = (options.knowledgeBaseNames ?? []).filter((item) => item.trim() !== "");
+  if (knowledgeBaseNames.length > 0) {
+    parts.push(
+      [
+        `本轮已挂知识库：${knowledgeBaseNames.join("、")}。`,
+        "回答里涉及具体规定、名单、进度、既往记录这类只有档案里才有的事实时，以检索到的片段为准，并说明出自哪份材料。",
+        "检索结果里没有的内容不要补，也不要拿常识替代档案。"
       ].join("\n")
     );
   }

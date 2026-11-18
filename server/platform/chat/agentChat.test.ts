@@ -313,3 +313,41 @@ test("头像只收图片 data URL，超长直接拒绝", () => {
   );
   assert.throws(() => parseAvatar(`data:image/png;base64,${"A".repeat(200_001)}`), /太大/);
 });
+
+test("智能体可以挂知识库：去重、去掉空值、最多 8 个", () => {
+  assert.deepEqual(
+    parseChatConfig({ knowledgeBaseIds: ["kb_a", " kb_b ", "kb_a", ""] }).knowledgeBaseIds,
+    ["kb_a", "kb_b"]
+  );
+  const many = Array.from({ length: 12 }, (_, index) => `kb_${index}`);
+  assert.equal(parseChatConfig({ knowledgeBaseIds: many }).knowledgeBaseIds?.length, 8);
+  // 不传就沿用旧值，别在保存其他字段时把知识库悄悄清空。
+  assert.deepEqual(
+    parseChatConfig({ typewriter: false }, { knowledgeBaseIds: ["kb_a"] }).knowledgeBaseIds,
+    ["kb_a"]
+  );
+});
+
+test("挂了知识库会在提示词里说明依据范围，并禁止拿常识补档案", () => {
+  const agent = {
+    id: "a1",
+    name: "班级助手",
+    version: 1,
+    role: "",
+    prompt: "回答班级问题。",
+    tools: [],
+    model: "",
+    capabilities: [],
+    memory: {},
+    enabled: true,
+    createdAt: "",
+    updatedAt: ""
+  };
+  const withKnowledge = buildAgentChatSystemPrompt(agent, {
+    knowledgeBaseNames: ["班级档案库"]
+  });
+  assert.ok(withKnowledge.includes("班级档案库"));
+  assert.ok(withKnowledge.includes("以检索到的片段为准"));
+  const withoutKnowledge = buildAgentChatSystemPrompt(agent);
+  assert.ok(!withoutKnowledge.includes("本轮已挂知识库"));
+});

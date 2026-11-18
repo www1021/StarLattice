@@ -93,6 +93,14 @@ export function CounselingRoom({ mode: initialMode, topic, caseId, onClose }: Co
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length, pending, summary]);
 
+  // 输入框随内容长高，最多 132px，再多就内部滚动。
+  useEffect(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 132)}px`;
+  }, [draft]);
+
   async function openRoom(nextMode: CounselingRoomMode) {
     abortRef.current?.abort();
     setStarting(true);
