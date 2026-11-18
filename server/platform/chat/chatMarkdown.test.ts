@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderMarkdown, streamSafeMarkdown } from "../../../src/features/chat/markdown.js";
+import {
+  renderMarkdown,
+  setMathRenderer,
+  streamSafeMarkdown
+} from "../../../src/features/chat/markdown.js";
 
 test("加粗与分割线：模型爱写的 **…** 和 --- 都能转成标签", () => {
   const html = renderMarkdown("**第一步：先画地图**\n\n---\n\n正文");
@@ -108,10 +112,70 @@ test("公式与代码互不干扰", () => {
   assert.equal((html.match(/class="md-math"/g) ?? []).length, 0);
 });
 
-test("流式时半截的 $$ 先摘掉，别把整段吞成公式块", () => {
-  assert.equal(streamSafeMarkdown("结论是\n\n$$(a + b) × c"), "结论是\n\n(a + b) × c");
-  assert.equal(
-    streamSafeMarkdown("$$a × c + b × c$$"),
-    "$$a × c + b × c$$"
-  );
+test("流式时半截的公式先藏起来，闭合后再交回排版", () => {
+  // 块级公式没写完：连内容一起藏，免得 \frac 的源码在屏幕上闪一下
+  assert.equal(streamSafeMarkdown("结论是\n\n$$\\frac{a}{"), "结论是\n\n");
+  assert.equal(streamSafeMarkdown("$$a × c + b × c$$"), "$$a × c + b × c$$");
+  // 行内公式没写完，同样先不显示
+  assert.equal(streamSafeMarkdown("当 $\\frac{a}{2} 时"), "当 ");
+  // 落单的美元符号（价格）不能连累后文
+  assert.equal(streamSafeMarkdown("价格 $100 到 200"), "价格 $100 到 200");
+});
+
+test("注册公式渲染器后走真排版：行内、块级、排不了就退回纯文本", () => {
+  const calls: Array<[string, boolean]> = [];
+  setMathRenderer((tex, displayMode) => {
+    calls.push([tex, displayMode]);
+    // 真 KaTeX 碰到写错的语法会抛错，这里用 null 模拟同一条退路。
+    if (tex.includes("bad")) return null;
+    return `<span class="katex">${tex}</span>`;
+  });
+  try {
+    const inline = renderMarkdown("勾股定理 $a^2 + b^2 = c^2$ 成立");
+    assert.match(
+      inline,
+      /<span class="md-math-inline"><span class="katex">a\^2 \+ b\^2 = c\^2<\/span><\/span>/
+    );
+    assert.deepEqual(calls[0], ["a^2 + b^2 = c^2", false]);
+
+    const block = renderMarkdown("$$\\frac{1}{2}$$");
+    assert.match(block, /<div class="md-math-block md-math-rendered">/);
+    assert.equal(calls[calls.length - 1][1], true);
+
+    const fallback = renderMarkdown("$\\bad$");
+    assert.match(fallback, /<span class="md-math">\\bad<\/span>/);
+  } finally {
+    setMathRenderer(null);
+  }
+});
+
+test("公式里夹中文不硬排（价格、单位写成中文），\\text{} 里的中文除外", () => {
+  const seen: string[] = [];
+  setMathRenderer((tex) => {
+    seen.push(tex);
+    return '<span class="katex"></span>';
+  });
+  try {
+    assert.match(renderMarkdown("价格是 $100 到 200$ 之间"), /<span class="md-math">100 到 200<\/span>/);
+    assert.deepEqual(seen, []);
+
+    renderMarkdown("长度 $5\\text{米}$ 左右");
+    assert.deepEqual(seen, ["5\\text{米}"]);
+  } finally {
+    setMathRenderer(null);
+  }
+});
+
+test("TeX 里的尖括号与 & 先于转义交给渲染器，否则公式解析不了", () => {
+  const seen: string[] = [];
+  setMathRenderer((tex) => {
+    seen.push(tex);
+    return '<span class="katex"></span>';
+  });
+  try {
+    renderMarkdown("当 $a < b$ 且 $x & y$ 时");
+    assert.deepEqual(seen, ["a < b", "x & y"]);
+  } finally {
+    setMathRenderer(null);
+  }
 });

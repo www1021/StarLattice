@@ -27,7 +27,48 @@ const MATH_TERM = String.raw`[（(]?\s*(?:\d+(?:\.\d+)?|[a-zA-Zα-ωΑ-Ω])[\s)�
 const MATH_OP = String.raw`\s*[+\-×÷=<>≤≥≠≈±/]\s*`;
 const MATH_CHUNK = new RegExp(`${MATH_TERM}(?:${MATH_OP}${MATH_TERM}){1,5}`, "g");
 
-/** 行内格式。先整体转义，再只加我们自己生成的标签。 */
+/**
+ * 真正的公式排版。前端注册 KaTeX 后，`$...$` 这类记号会排成分数、根号、上下标；
+ * 没注册（服务端测试、或脚本里跑渲染）就退回纯文本排版，行为跟以前一致。
+ */
+export type MathRenderer = (tex: string, displayMode: boolean) => string | null;
+
+let mathRenderer: MathRenderer | null = null;
+
+/** 由前端注入公式渲染器。传 null 恢复纯文本排版。 */
+export function setMathRenderer(renderer: MathRenderer | null): void {
+  mathRenderer = renderer;
+}
+
+/**
+ * 数学模式排不了中文。`$100 到 200$` 这种其实是价格，硬排出来是一串怪字形，
+ * 直接说不认识、退回纯文本更稳。`\text{米}` 里的中文是合法的，检查前先摘掉。
+ */
+const CJK_IN_MATH = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
+const TEXT_WRAPPER = /\\text\{[^{}]*\}/g;
+
+/** 渲染一段 TeX；渲染器不在或这段根本不是公式（KaTeX 抛错）时返回 null。 */
+function renderMath(tex: string, displayMode: boolean): string | null {
+  const source = tex.trim();
+  if (!source || !mathRenderer) return null;
+  if (CJK_IN_MATH.test(source.replace(TEXT_WRAPPER, ""))) return null;
+  try {
+    return mathRenderer(source, displayMode);
+  } catch {
+    return null;
+  }
+}
+
+/** 行内公式：能真排就真排，排不了原样显示，别把半截记号吞掉。 */
+function inlineMath(tex: string, displayMode = false): string {
+  const html = renderMath(tex, displayMode);
+  if (html) {
+    return `<span class="md-math-inline">${html}</span>`;
+  }
+  return `<span class="md-math">${escapeHtml(tex.trim())}</span>`;
+}
+
+/** 行内格式。先抽走代码/链接/公式，再整体转义，最后只加我们自己生成的标签。 */
 function inline(raw: string): string {
   const slots: string[] = [];
   const hold = (html: string) => {
@@ -35,30 +76,36 @@ function inline(raw: string): string {
     return `\u0000${slots.length - 1}\u0000`;
   };
 
-  let text = escapeHtml(raw);
+  let text = raw;
 
   // 行内代码先抽出来，避免里面的 * 被当成加粗、公式识别也不该钻进去。
   text = text.replace(/`([^`\n]+)`/g, (_match, code: string) => {
-    return hold(`<code class="md-inline-code">${code}</code>`);
+    return hold(`<code class="md-inline-code">${escapeHtml(code)}</code>`);
   });
 
   // 链接也先抽走：URL 里的 / 和字母会被后面的公式识别误伤。
   text = text.replace(
     /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_match, label: string, href: string) =>
-      hold(`<a href="${href}" target="_blank" rel="noreferrer">${label}</a>`)
+      hold(
+        `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(
+          label
+        )}</a>`
+      )
   );
 
-  // 显式公式：$...$、\(...\)、\[...\]。模型标了记号就一定按公式排。
-  text = text.replace(/\$([^$\n]{1,80})\$/g, (_match, body: string) => {
-    return hold(`<span class="md-math">${body.trim()}</span>`);
-  });
-  text = text.replace(/\\\(([^)\n]{1,80})\\\)/g, (_match, body: string) => {
-    return hold(`<span class="md-math">${body.trim()}</span>`);
-  });
-  text = text.replace(/\\\[([^\]\n]{1,120})\\\]/g, (_match, body: string) => {
-    return hold(`<span class="md-math">${body.trim()}</span>`);
-  });
+  // 显式公式：$...$、\(...\)、\[...\]。必须放在转义之前抽——
+  // TeX 里的 < > & 一转义就解析不了了（`$a < b$`）。
+  text = text.replace(/\$\$([\s\S]{1,400}?)\$\$/g, (_match, body: string) =>
+    hold(inlineMath(body, true))
+  );
+  text = text.replace(/\$([^$\n]{1,200})\$/g, (_match, body: string) => hold(inlineMath(body)));
+  text = text.replace(/\\\(([^)\n]{1,200})\\\)/g, (_match, body: string) => hold(inlineMath(body)));
+  text = text.replace(/\\\[([^\]\n]{1,300})\\\]/g, (_match, body: string) =>
+    hold(inlineMath(body, true))
+  );
+
+  text = escapeHtml(text);
 
   // 没标记的算式也要稳住：认得出来就包成公式，太长的不锁行，免得撑破一列。
   text = text.replace(MATH_CHUNK, (match) => {
@@ -211,20 +258,27 @@ export function renderMarkdown(source: string): string {
 
     // 块级公式：整段独立排，居中、不跟正文挤在一行。
     if (MATH_BLOCK.test(line)) {
+      let tex = "";
       const single = /^\s*\$\$(.+?)\$\$\s*$/.exec(line);
       if (single) {
-        html.push(`<div class="md-math-block">${escapeHtml(single[1].trim())}</div>`);
+        tex = single[1].trim();
         index += 1;
-        continue;
-      }
-      const body: string[] = [];
-      index += 1;
-      while (index < lines.length && !MATH_BLOCK.test(lines[index])) {
-        body.push(lines[index]);
+      } else {
+        const body: string[] = [];
         index += 1;
+        while (index < lines.length && !MATH_BLOCK.test(lines[index])) {
+          body.push(lines[index]);
+          index += 1;
+        }
+        index += 1;
+        tex = body.join("\n").trim();
       }
-      index += 1;
-      html.push(`<div class="md-math-block">${escapeHtml(body.join("\n").trim())}</div>`);
+      const rendered = renderMath(tex, true);
+      html.push(
+        rendered
+          ? `<div class="md-math-block md-math-rendered">${rendered}</div>`
+          : `<div class="md-math-block">${escapeHtml(tex)}</div>`
+      );
       continue;
     }
 
@@ -327,10 +381,10 @@ export function streamSafeMarkdown(source: string): string {
     const last = safe.lastIndexOf("```");
     safe = safe.slice(0, last) + safe.slice(last + 3);
   }
-  // 块级公式只写了一半时，先摘掉开头的 $$，否则整段会被当公式块吞进灰底里。
+  // 块级公式只写了一半：连内容一起先藏起来，等闭合后一次排出来。
+  // 只摘掉 $$ 的话，`\frac{1}{2}` 会以源码形态在屏幕上一闪。
   if ((safe.match(/\$\$/g) ?? []).length % 2 === 1) {
-    const last = safe.lastIndexOf("$$");
-    safe = safe.slice(0, last) + safe.slice(last + 2);
+    safe = safe.slice(0, safe.lastIndexOf("$$"));
   }
   if ((safe.match(/\*\*/g) ?? []).length % 2 === 1) {
     const last = safe.lastIndexOf("**");
@@ -340,5 +394,24 @@ export function streamSafeMarkdown(source: string): string {
     const last = safe.lastIndexOf("`");
     safe = safe.slice(0, last) + safe.slice(last + 1);
   }
-  return safe;
+  return truncateOpenInlineMath(safe);
+}
+
+/**
+ * 行内公式写了一半（`$\frac{a}{`）同样先藏起来。
+ * 但只有一个落单的「$100」时不能藏——那会把后面半段正文一起吞掉，
+ * 所以要求残段里确实有 TeX 痕迹（\ ^ _ { }）才动手。
+ */
+function truncateOpenInlineMath(source: string): string {
+  // 成对的 $$ 已在上一步摘掉；这里把遗留的替换掉，避免把 $$ 当单个 $ 数。
+  const scan = source.replace(/\$\$/g, "\u0001\u0001");
+  if ((scan.match(/\$/g) ?? []).length % 2 === 0) {
+    return source;
+  }
+  const index = scan.lastIndexOf("$");
+  const tail = source.slice(index + 1);
+  if (!/[\\^_{}]/.test(tail) || tail.length > 200) {
+    return source;
+  }
+  return source.slice(0, index);
 }

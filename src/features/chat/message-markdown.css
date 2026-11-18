@@ -114,6 +114,38 @@
   overflow-x: auto;
 }
 
+/*
+ * 交给 KaTeX 排过的公式（分数、根号、上下标）。
+ * 行内公式跟正文同一基线，长公式横向滚动而不是把段落撑破；
+ * 块级公式去掉 KaTeX 自带的外边距，用上面那个灰底块自己的间距。
+ */
+.message-markdown .md-math-inline {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: baseline;
+}
+
+.message-markdown .md-math-inline .katex {
+  font-size: 1.04em;
+}
+
+.message-markdown .md-math-rendered {
+  padding: 14px 16px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.message-markdown .md-math-rendered .katex-display {
+  margin: 0;
+}
+
+.message-markdown .md-math-rendered .katex {
+  font-size: 1.12em;
+}
+
 .message-markdown em {
   font-style: italic;
 }

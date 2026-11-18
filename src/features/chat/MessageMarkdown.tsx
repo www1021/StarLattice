@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { renderMarkdown, streamSafeMarkdown } from "./markdown";
+// 副作用导入：把 KaTeX 注册成公式渲染器（不注册就退回纯文本排版）。
+import "./katexMath";
 import "./message-markdown.css";
 
 export function MessageMarkdown({
