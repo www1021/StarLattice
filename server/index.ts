@@ -2191,8 +2191,19 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
         // 挂了工具就不走流式：工具执行期间没有正文可吐，
         // 「先调完工具、再一次性给结论」比「先吐一半、回头再补」更可信。
         // 归属明确的问题（比如问文献）先做一次路由，直接交给对口专项智能体，
-        // 不给模型「先反问年级专业」的机会。
-        const route = pickDelegationRoute(getLastUserText(modelMessages), chatToolCatalog);
+        // 不给模型「先反问年级专业」的机会。追问式短句（只给题量、时长、难度）自己判不出，
+        // 带上上一轮助手原话补任务词，否则模型会随手挑一个专项。
+        const lastUserText = getLastUserText(modelMessages);
+        // 短句多半是追问（只补题量、时长、难度）。这时既要靠上一轮助手原话判归属，
+        // 也要把上一轮用户原话带上，否则专项只拿到「10 道题」，连年级学科都要猜。
+        const isFollowUp = lastUserText.trim().length <= 40;
+        const previousUserText = isFollowUp ? getPreviousUserText(modelMessages) : "";
+        const route = pickDelegationRoute(lastUserText, chatToolCatalog, {
+          contextText: isFollowUp ? getPreviousAssistantText(modelMessages) : "",
+          questionText: previousUserText
+            ? `${previousUserText}\n\n补充：${lastUserText}`
+            : lastUserText
+        });
         const toolRun = await runChatToolLoop({
           system: systemPrompt,
           messages: toToolChatMessages(modelMessages),
@@ -3610,6 +3621,32 @@ function getLastUserText(messages: ChatMessage[]) {
   }
 
   return contentToStoredString(lastUserMessage.content);
+}
+
+/**
+ * 上一轮助手说了什么。只给「追问」用：用户回一句「10 道题左右，15 分钟，难度中等」，
+ * 单看这句判不出该找哪个专项，得靠上一轮提到的「小测」「教案」补上任务词。
+ */
+function getPreviousAssistantText(messages: ChatMessage[]) {
+  return getNeighbourText(messages, "assistant");
+}
+
+/** 上一轮用户自己说的话：转交时带上它，专项才知道是哪个年级、哪个课题。 */
+function getPreviousUserText(messages: ChatMessage[]) {
+  return getNeighbourText(messages, "user").slice(-600);
+}
+
+function getNeighbourText(messages: ChatMessage[], role: ChatMessage["role"]) {
+  const lastUserIndex = messages.map((message) => message.role).lastIndexOf("user");
+  if (lastUserIndex <= 0) {
+    return "";
+  }
+  for (let index = lastUserIndex - 1; index >= 0; index -= 1) {
+    if (messages[index].role === role) {
+      return contentToStoredString(messages[index].content).slice(-400);
+    }
+  }
+  return "";
 }
 
 function isKnowledgeBaseOverviewRequest(value: string) {

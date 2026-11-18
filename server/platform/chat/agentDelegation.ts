@@ -223,11 +223,31 @@ const DELEGATION_DOMAIN_HINTS: Array<{ scope: string[]; words: string[] }> = [
   // 师者工作台的六个专项。scope 与各专项名字对齐，避免被命题/观课工坊的同名专项抢走。
   {
     scope: ["备课"],
-    words: ["备课", "写教案", "备一节课", "教学设计", "设计活动", "分层评价", "课时安排", "教学目标"]
+    words: ["备课", "备一节", "写教案", "备一节课", "教学设计", "设计活动", "分层评价", "课时安排", "教学目标"]
   },
   {
     scope: ["答疑"],
-    words: ["答疑", "提示他", "不给答案", "怎么提示", "错因", "学生答错", "启发", "这题怎么讲"]
+    // 答疑和命题都会提到「题」：出题是「出几道题」，答疑是「这道题答错了」。
+    // 答疑这边把「答错 / 不会做 / 给提示」这类动作词补全，别被命题的「道题」抢走。
+    words: [
+      "答疑",
+      "提示他",
+      "不给答案",
+      "怎么提示",
+      "给提示",
+      "提示一下",
+      "错因",
+      "答错",
+      "答错了",
+      "答不对",
+      "做错",
+      "不会做",
+      "学生答错",
+      "启发",
+      "这题怎么讲",
+      "怎么讲",
+      "这题怎么做"
+    ]
   },
   {
     scope: ["安全"],
@@ -239,11 +259,30 @@ const DELEGATION_DOMAIN_HINTS: Array<{ scope: string[]; words: string[] }> = [
   },
   {
     scope: ["命题"],
-    words: ["出一份小测", "出份卷", "考试质量", "难度区分度", "单元测试卷"]
+    // 「出题」这件事用户几乎不会说成「出一份小测」：更常见的是「出题」「来份卷子」「10 道题」。
+    // 注意别把「道题」这种名词碎片列进来——「这道题答错了」是答疑，列进来会把答疑抢走。
+    words: [
+      "出题",
+      "出一份小测",
+      "出份卷",
+      "出卷子",
+      "题目",
+      "题量",
+      "分值",
+      "小测",
+      "测验",
+      "卷子",
+      "选择题",
+      "填空题",
+      "简答题",
+      "考试质量",
+      "难度区分度",
+      "单元测试卷"
+    ]
   },
   {
     scope: ["观课"],
-    words: ["完整诊断这节课", "评这节课", "课堂实录在下面", "磨这节课"]
+    words: ["完整诊断这节课", "评这节课", "课堂实录在下面", "磨这节课", "磨一轮", "磨课", "课堂实录"]
   }
 ];
 
@@ -259,23 +298,47 @@ export type DelegationRoute = {
 /**
  * 给这句话找一个对口的专项智能体。找不到或两个专项分数打平时返回 undefined，
  * 交给模型自己判断——横跨两边的硬猜比如实说「我不确定」更糟。
+ *
+ * `contextText` 是上一轮的助手原话，用来接住「10 道题左右，15 分钟，难度中等」这类
+ * 只有参数、没有任务词的追问：光看这一句会判不出归属，模型就会随手挑一个专项。
+ * 权重上本轮说话算两倍，上下文只负责补词，不负责改判。
+ *
+ * `questionText` 决定转交时真正给专项看的那段话。追问要带上上一轮用户原话，
+ * 否则专项只看到「10 道题、15 分钟」，连年级学科都不知道，只能拿班级档案硬凑。
  */
 export function pickDelegationRoute(
   question: string,
-  catalog: ChatToolDescriptor[]
+  catalog: ChatToolDescriptor[],
+  options: { contextText?: string; questionText?: string } = {}
 ): DelegationRoute | undefined {
   const text = question.trim();
   if (text.length < 2) {
     return undefined;
   }
+  const context = options.contextText?.trim() ?? "";
+  const delegatedQuestion = (options.questionText ?? text).trim() || text;
 
   const scored = catalog
     .filter((item) => item.kind === "delegation")
-    .map((item) => ({ item, ...scoreDelegationFit(item, text) }))
+    .map((item) => {
+      const own = scoreDelegationFit(item, text);
+      const around = context ? scoreDelegationFit(item, context) : { score: 0, domainHits: 0 };
+      return {
+        item,
+        score: own.score * 2 + around.score,
+        domainHits: own.domainHits + around.domainHits,
+        ownDomainHits: own.domainHits
+      };
+    })
     // 只有名字撞上（比如都带「科研」）不算数：那多半是背景词，不是任务归属。
     .filter((entry) => entry.domainHits > 0 && entry.score >= DELEGATION_ROUTE_THRESHOLD)
     .sort((left, right) => right.score - left.score);
   if (scored.length === 0) {
+    return undefined;
+  }
+  // 一句话里点了两件事（备课顺带出卷、诊断顺带磨课）：该拆成多步、由主智能体逐步转交，
+  // 硬指定一个专项会把另一半活儿丢掉。
+  if (scored.filter((entry) => entry.ownDomainHits > 0).length > 1) {
     return undefined;
   }
   if (scored.length > 1 && scored[1].score === scored[0].score) {
@@ -290,7 +353,7 @@ export function pickDelegationRoute(
       type: "function",
       function: {
         name: item.functionName,
-        arguments: JSON.stringify({ question: text.slice(0, MAX_QUESTION_CHARS) })
+        arguments: JSON.stringify({ question: delegatedQuestion.slice(0, MAX_QUESTION_CHARS) })
       }
     }
   };

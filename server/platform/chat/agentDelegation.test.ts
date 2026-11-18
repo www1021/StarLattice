@@ -382,6 +382,60 @@ test("五类专项各按领域词路由，工具名与目标一一对应", () =>
   }
 });
 
+/** 师者工作台那六个专项，名字照抄共享注册表。 */
+function teacherTeam() {
+  return buildDelegationCatalog([
+    agentRecord({ id: "teacher-prep", name: "备课专项", role: "备课", description: "写教案、设计活动、分层评价" }),
+    agentRecord({ id: "teacher-qa", name: "答疑专项", role: "答疑", description: "定位错因、给三级提示" }),
+    agentRecord({ id: "teacher-exam", name: "命题专项", role: "命题", description: "出卷、审卷、难度区分度" }),
+    agentRecord({ id: "teacher-safety", name: "安全专项", role: "安全", description: "欺凌、伤害、自伤风险" }),
+    agentRecord({ id: "teacher-mind", name: "心理专项", role: "心理", description: "情绪、谈心、家庭变故" }),
+    agentRecord({ id: "teacher-observe", name: "观课专项", role: "观课", description: "评课、诊断、磨课" })
+  ]);
+}
+
+test("只给参数、没给任务词的追问靠上一轮原话补归属，别掉进别的专项", () => {
+  const team = teacherTeam();
+  // 用户上一轮问的是「备课 + 出一份小测」，这轮只补「10 道题、15 分钟、难度中等」。
+  const route = pickDelegationRoute("10道题左右，15分钟，难度中等", team, {
+    contextText: "请补充以上信息，我立刻为你生成符合考试质量标准的小测，并同步给出结构清晰、重难点突出的教案框架。",
+    questionText: "帮我给大一高数备一节《夹逼定理》的课，顺便出一份小测\n\n补充：10道题左右，15分钟，难度中等"
+  });
+  assert.equal(route?.descriptor.toolId, "agent://teacher-exam");
+  // 转交出去的问题要带上一轮的用户原话，否则专项只知道「10 道题」，年级学科全靠猜。
+  assert.match(
+    (JSON.parse(route!.call.function.arguments) as { question: string }).question,
+    /夹逼定理/
+  );
+});
+
+test("出题与答疑都带「题」字，靠动作词分开，不会互相抢", () => {
+  const team = teacherTeam();
+  const cases: Array<[string, string]> = [
+    ["帮我出一份小测，10道题", "agent://teacher-exam"],
+    ["难度中等偏上，选择题五道", "agent://teacher-exam"],
+    ["学生这道题答错了，怎么给提示", "agent://teacher-qa"],
+    ["这道题怎么讲，学生完全不会做", "agent://teacher-qa"],
+    ["帮我把这堂课再磨一轮", "agent://teacher-observe"]
+  ];
+
+  for (const [question, expected] of cases) {
+    const route = pickDelegationRoute(question, team);
+    assert.equal(route?.descriptor.toolId, expected, question);
+  }
+});
+
+test("一句话点两件事时不硬指定专项，留给主智能体拆步转交", () => {
+  // 「备课 + 出小测」是两件活儿，硬指定命题专项会把备课那半截丢掉。
+  assert.equal(
+    pickDelegationRoute(
+      "帮我给大一高数备一节《夹逼定理》的课，顺便出一份小测，小测要有选择题、填空题、简答题",
+      teacherTeam()
+    ),
+    undefined
+  );
+});
+
 test("归属不明、只有背景词或者两边打平时不硬猜，交回模型", () => {
   const team = researchTeam();
 
