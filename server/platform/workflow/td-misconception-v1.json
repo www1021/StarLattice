@@ -4,25 +4,58 @@
   "version": 1,
   "description": "答疑线的错因子流：先解析题意与缺失条件，再诊断错因，验证器核对诊断是否落到具体环节，不合格则由诊断师重做，最多两轮。只定位错因，不给答案。",
   "inputs": [
-    { "name": "question", "type": "string", "required": true, "description": "学生提问或原题" },
-    { "name": "studentAnswer", "type": "string", "required": false, "description": "学生的作答" },
-    { "name": "grade", "type": "string", "required": true, "description": "学段年级" },
-    { "name": "topic", "type": "string", "required": false, "description": "当前课题" }
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "学生提问或原题"
+    },
+    {
+      "name": "studentAnswer",
+      "type": "string",
+      "required": false,
+      "description": "学生的作答"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "学段年级"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "required": false,
+      "description": "当前课题"
+    }
   ],
   "nodes": [
-    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
     {
       "id": "parse",
       "kind": "agent",
       "title": "题意解析",
       "agent": "td-question-parser",
       "outputFormat": "json",
-      "outputContract": { "required": ["given", "target", "missing"] },
+      "outputContract": {
+        "required": [
+          "given",
+          "target",
+          "missing"
+        ]
+      },
       "inputs": {
         "question": "${input.question}"
       },
       "stubOutput": {
-        "given": ["把 12 个苹果平均分给 3 个小组", "每组得到总数的几分之几"],
+        "given": [
+          "把 12 个苹果平均分给 3 个小组",
+          "每组得到总数的几分之几"
+        ],
         "target": "求每组占总数的分数",
         "ambiguous": [],
         "missing": []
@@ -34,13 +67,20 @@
       "title": "错因诊断",
       "agent": "td-misconception-diagnoser",
       "outputFormat": "json",
-      "outputContract": { "required": ["category", "evidence", "rootCause", "nextStep"] },
+      "outputContract": {
+        "required": [
+          "category",
+          "evidence",
+          "rootCause",
+          "nextStep"
+        ]
+      },
       "inputs": {
         "grade": "${input.grade}",
         "topic": "${input.topic}",
         "question": "${input.question}",
         "studentAnswer": "${input.studentAnswer}",
-        "parsed": "${parse}"
+        "parsed": "${parse.output}"
       },
       "stubOutput": {
         "category": "表征缺失",
@@ -60,11 +100,14 @@
         "依据来自学生作答或题意解析"
       ],
       "threshold": 0.8,
-      "expectedKeywords": ["错因", "环节"],
+      "expectedKeywords": [
+        "错因",
+        "环节"
+      ],
       "minChars": 40,
       "inputs": {
-        "artifact": "${diagnose}",
-        "evidence": "${parse}"
+        "artifact": "${diagnose.output}",
+        "evidence": "${parse.output}"
       }
     },
     {
@@ -80,7 +123,10 @@
           "maxIterations": 2,
           "while": "${recheck.score} < 0.8",
           "patience": 2,
-          "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+          "budget": {
+            "maxDurationMs": 120000,
+            "maxTokens": 0
+          },
           "body": [
             {
               "id": "rediagnose",
@@ -93,7 +139,7 @@
                 "question": "${input.question}",
                 "studentAnswer": "${input.studentAnswer}",
                 "issues": "${check.issues}",
-                "parsed": "${parse}"
+                "parsed": "${parse.output}"
               },
               "stubOutput": {
                 "category": "概念混淆",
@@ -107,24 +153,46 @@
               "kind": "verify",
               "title": "重做后再验",
               "verifier": "td-solution-verifier",
-              "rubric": ["错因落到具体环节", "没有给出完整答案"],
+              "rubric": [
+                "错因落到具体环节",
+                "没有给出完整答案"
+              ],
               "threshold": 0.8,
               "inputs": {
-                "artifact": "${rediagnose}",
-                "evidence": "${parse}"
+                "artifact": "${rediagnose.output}",
+                "evidence": "${parse.output}"
               }
             }
           ]
         }
       ]
     },
-    { "id": "end", "kind": "end", "title": "结束" }
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
   ],
   "edges": [
-    { "from": "start", "to": "parse" },
-    { "from": "parse", "to": "diagnose" },
-    { "from": "diagnose", "to": "check" },
-    { "from": "check", "to": "redo-gate" },
-    { "from": "redo-gate", "to": "end" }
+    {
+      "from": "start",
+      "to": "parse"
+    },
+    {
+      "from": "parse",
+      "to": "diagnose"
+    },
+    {
+      "from": "diagnose",
+      "to": "check"
+    },
+    {
+      "from": "check",
+      "to": "redo-gate"
+    },
+    {
+      "from": "redo-gate",
+      "to": "end"
+    }
   ]
 }

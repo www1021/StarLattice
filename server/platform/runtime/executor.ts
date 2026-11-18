@@ -81,6 +81,18 @@ const EMBEDDED_REF_PATTERN = /\$\{([^}\s]+)\}/g;
 /** 节点级重试的硬上限，防止单节点把整条流程的时延拖穿。 */
 const MAX_NODE_ATTEMPTS = 6;
 
+export type WorkflowNodeProgress = {
+  nodeId: string;
+  title: string;
+  kind: string;
+  status: "running" | "succeeded" | "failed";
+  sequence: number;
+  workflowId: string;
+  /** 子流程节点带路径前缀，界面可据此缩进显示。 */
+  path?: string;
+  durationMs?: number;
+};
+
 export type RunOptions = {
   /** 试跑：执行到该顶层节点完成后停下，后续节点保持未执行。 */
   stopAfter?: string;
@@ -92,6 +104,8 @@ export type RunOptions = {
   arm?: "control" | "treatment";
   /** 运行落库后的回调，供控制面在真正执行前写入分流归属。 */
   onCreated?: (run: RunRecord) => void;
+  /** 每个节点结算后的进度回调，供聊天界面实时显示工作流走到哪一步。 */
+  onNodeProgress?: (event: WorkflowNodeProgress) => void;
   /** 运行级优先档，覆盖节点类别分档；数值越大越先出队。 */
   priorityClass?: number;
   /** 运行截止时间；临近或超时的任务在全局队列中获得加成。 */
@@ -385,6 +399,8 @@ export type RunState = ExecutionContext & {
   /** 全局队列排序使用的运行级优先档与截止时间。 */
   priorityClass?: number;
   deadlineAt?: string;
+  /** 节点结算进度回调，由 run() 注入，子流程共用同一条通道。 */
+  onNodeProgress?: (event: WorkflowNodeProgress) => void;
 };
 
 /** 检查点里保存的可恢复状态：已结算的顶层节点 + 作用域。 */
@@ -680,7 +696,13 @@ export class WorkflowExecutor {
       options.stopAfter,
       (taskId, attempted) =>
         replanForTask(schedule, taskId, attempted, agents, this.schedulerLoads()),
-      { release, agents, experimentId: options.experimentId, arm: options.arm }
+      {
+        release,
+        agents,
+        experimentId: options.experimentId,
+        arm: options.arm,
+        onNodeProgress: options.onNodeProgress
+      }
     );
     return { run: this.store.getRun(run.id)!, steps: this.store.listSteps(run.id) };
   }
@@ -699,7 +721,13 @@ export class WorkflowExecutor {
       options.stopAfter,
       (taskId, attempted) =>
         replanForTask(schedule, taskId, attempted, agents, this.schedulerLoads()),
-      { release, agents, experimentId: options.experimentId, arm: options.arm }
+      {
+        release,
+        agents,
+        experimentId: options.experimentId,
+        arm: options.arm,
+        onNodeProgress: options.onNodeProgress
+      }
     ).catch(() => {
       // execute 内部已把失败写回 run，这里只负责吞掉 fire-and-forget 的 rejection。
     });
@@ -791,7 +819,8 @@ export class WorkflowExecutor {
         release: prepared.release,
         agents: prepared.agents,
         experimentId: prepared.run.experimentId,
-        arm: prepared.run.arm
+        arm: prepared.run.arm,
+        onNodeProgress: options.onNodeProgress
       },
       resume
     );
@@ -1193,6 +1222,7 @@ export class WorkflowExecutor {
       agents: AgentRecord[];
       experimentId?: string;
       arm?: string;
+      onNodeProgress?: (event: WorkflowNodeProgress) => void;
     },
     resume?: ResumeData
   ) {
@@ -1210,6 +1240,7 @@ export class WorkflowExecutor {
       workflowKnowledgeBaseIds: plan.workflow.knowledgeBaseIds ?? [],
       ...(runRecord?.priorityClass !== undefined ? { priorityClass: runRecord.priorityClass } : {}),
       ...(runRecord?.deadlineAt !== undefined ? { deadlineAt: runRecord.deadlineAt } : {}),
+      onNodeProgress: release?.onNodeProgress,
       scope: resume?.scope ?? { input, outputs: new Map(), evidence: [], verifyRounds: 0 },
       ...(release?.release
         ? {
@@ -2146,6 +2177,16 @@ export class WorkflowExecutor {
       nodeKind: node.kind,
       input
     });
+    const stepStartedAt = Date.now();
+    state.onNodeProgress?.({
+      nodeId: step.nodeId,
+      title: node.title || step.nodeId,
+      kind: node.kind,
+      status: "running",
+      sequence: state.sequence,
+      workflowId: state.workflowId,
+      ...(step.path ? { path: step.path } : {})
+    });
 
     if (node.kind === "approve") {
       await this.executeApprovalStep(effectiveStep, input, state, stepId);
@@ -2208,6 +2249,15 @@ export class WorkflowExecutor {
       input
     });
     const startedAt = Date.now();
+    state.onNodeProgress?.({
+      nodeId: node.id,
+      title: node.title || node.id,
+      kind: node.kind,
+      status: "running",
+      sequence: state.sequence,
+      workflowId: state.workflowId,
+      ...(statement.path ? { path: statement.path } : {})
+    });
     const parentScope = state.scope;
     const parentLoops = state.loops;
     const parentIteration = state.iteration;
@@ -2269,6 +2319,16 @@ export class WorkflowExecutor {
     this.store.completeStep(stepId, "succeeded", payload, undefined, {
       attempts: 1,
       snapshot: serializeScope(state.scope)
+    });
+    state.onNodeProgress?.({
+      nodeId: node.id,
+      title: node.title || node.id,
+      kind: node.kind,
+      status: "succeeded",
+      sequence: state.sequence,
+      workflowId: state.workflowId,
+      ...(statement.path ? { path: statement.path } : {}),
+      durationMs: Math.max(0, Date.now() - startedAt)
     });
   }
 
@@ -2852,6 +2912,7 @@ export class WorkflowExecutor {
     state: RunState,
     stepId: string
   ) {
+    const stepStartedAt = Date.now();
     let lastError: unknown;
     let currentStep = step;
     const attemptedAgents: string[] = [];
@@ -2976,6 +3037,16 @@ export class WorkflowExecutor {
           attempts: attempt,
           snapshot: serializeScope(state.scope)
         });
+        state.onNodeProgress?.({
+          nodeId: step.nodeId,
+          title: step.node.title || step.nodeId,
+          kind: step.node.kind,
+          status: "succeeded",
+          sequence: state.sequence,
+          workflowId: state.workflowId,
+          ...(step.path ? { path: step.path } : {}),
+          durationMs: Math.max(0, Date.now() - stepStartedAt)
+        });
         return;
       } catch (error) {
         releaseReason =
@@ -3071,6 +3142,16 @@ export class WorkflowExecutor {
 
     this.store.completeStep(stepId, "failed", undefined, errorDetail(lastError), {
       attempts: maxAttempts
+    });
+    state.onNodeProgress?.({
+      nodeId: step.nodeId,
+      title: step.node.title || step.nodeId,
+      kind: step.node.kind,
+      status: "failed",
+      sequence: state.sequence,
+      workflowId: state.workflowId,
+      ...(step.path ? { path: step.path } : {}),
+      durationMs: Math.max(0, Date.now() - stepStartedAt)
     });
     throw lastError;
   }

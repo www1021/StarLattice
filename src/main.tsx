@@ -144,6 +144,8 @@ type ChatMessage = {
   insightMode?: InsightMode;
   /** 智能体在回答前调用过的工具，用来告诉用户「这条结论是查出来的」。 */
   toolNotes?: ToolNote[];
+  /** 工作流执行中实时推送的节点进度，正文到来后由生成态切换到具体步骤。 */
+  workflowStep?: WorkflowStepEvent;
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
   traceAgents?: TraceAgent[];
   /** 这条回复由哪个智能体给出；默认助手留空。 */
@@ -949,6 +951,19 @@ type InternshipReflectionState = {
 type ChatStreamEvent = {
   event: string;
   data: string;
+};
+
+type WorkflowStepEvent = {
+  nodeId: string;
+  title: string;
+  kind: string;
+  status: "running" | "succeeded" | "failed";
+  sequence: number;
+  workflowId: string;
+  path?: string;
+  durationMs?: number;
+  stepText: string;
+  totalSteps?: number;
 };
 
 type StreamDonePayload = {
@@ -2401,7 +2416,9 @@ function Conversation({
               <MessageMarkdown
                 text={
                   message.content ||
-                  (message.status === "generating" ? "正在生成..." : "")
+                  (message.status === "generating"
+                    ? message.workflowStep?.stepText || "正在生成..."
+                    : "")
                 }
               />
             )}
@@ -7100,6 +7117,7 @@ async function readChatStream(
     onCitation: (citation: KnowledgeCitation) => void;
     onEvaluation: (evaluation: TrainingEvaluation) => void;
     onTool?: (note: ToolNote) => void;
+    onWorkflowStep?: (event: WorkflowStepEvent) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
@@ -7167,6 +7185,8 @@ function handleChatStreamEvent(
     onCitation: (citation: KnowledgeCitation) => void;
     onEvaluation: (evaluation: TrainingEvaluation) => void;
     onTool?: (note: ToolNote) => void;
+    /** 工作流每个节点的实时进度，用来把「正在生成」换成具体走到哪一步。 */
+    onWorkflowStep?: (event: WorkflowStepEvent) => void;
     /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
@@ -7184,6 +7204,16 @@ function handleChatStreamEvent(
   const payload = JSON.parse(streamEvent.data) as {
     artifact?: ChatArtifact;
     content?: string;
+    nodeId?: string;
+    title?: string;
+    stepKind?: string;
+    stepStatus?: "running" | "succeeded" | "failed";
+    sequence?: number;
+    workflowId?: string;
+    path?: string;
+    durationMs?: number;
+    stepText?: string;
+    totalSteps?: number;
     conversationId?: string;
     message?: string;
     name?: string;
@@ -7395,6 +7425,21 @@ function handleChatStreamEvent(
       snippet: payload.snippet,
       source: payload.source,
       score: payload.score
+    });
+  }
+
+  if (streamEvent.event === "workflow_step" && payload.nodeId && payload.workflowId) {
+    handlers.onWorkflowStep?.({
+      nodeId: payload.nodeId,
+      title: String(payload.title ?? payload.nodeId),
+      kind: String(payload.stepKind ?? ""),
+      status: payload.stepStatus ?? "running",
+      sequence: Number(payload.sequence ?? 0),
+      workflowId: payload.workflowId,
+      ...(typeof payload.path === "string" ? { path: payload.path } : {}),
+      ...(typeof payload.durationMs === "number" ? { durationMs: payload.durationMs } : {}),
+      stepText: String(payload.stepText ?? ""),
+      ...(typeof payload.totalSteps === "number" ? { totalSteps: payload.totalSteps } : {})
     });
   }
 
@@ -11318,6 +11363,14 @@ function App() {
               }
               return { ...item, toolNotes: notes };
             })
+          );
+        },
+        onWorkflowStep(event) {
+          // 只更新正文的进度占位；正文一旦开始流式吐字，MessageMarkdown 优先显示真实内容。
+          setMessages((current) =>
+            current.map((item) =>
+              item.id === assistantId ? { ...item, workflowStep: event } : item
+            )
           );
         },
         onThinkingDelta(content) {

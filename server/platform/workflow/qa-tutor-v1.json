@@ -4,14 +4,43 @@
   "version": 1,
   "description": "师者工作台的答疑线：先跑错因诊断子流定位问题，再生成三级启发提示，校验器检查是否泄题或超纲，不合格重写提示最多两轮。全程不给完整答案，只给可复述的追问。",
   "inputs": [
-    { "name": "question", "type": "string", "required": true, "description": "学生提问或原题" },
-    { "name": "studentAnswer", "type": "string", "required": false, "description": "学生的作答" },
-    { "name": "grade", "type": "string", "required": true, "description": "学段年级" },
-    { "name": "subject", "type": "string", "required": true, "description": "学科" },
-    { "name": "topic", "type": "string", "required": false, "description": "当前课题" }
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "学生提问或原题"
+    },
+    {
+      "name": "studentAnswer",
+      "type": "string",
+      "required": false,
+      "description": "学生的作答"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "学段年级"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "required": false,
+      "description": "当前课题"
+    }
   ],
   "nodes": [
-    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
     {
       "id": "diagnose",
       "kind": "subworkflow",
@@ -24,14 +53,27 @@
         "topic": "${input.topic}"
       },
       "outputs": {
-        "parsed": "${parse}",
-        "diagnosis": "${diagnose}",
+        "parsed": "${parse.output}",
+        "diagnosis": "${diagnose.output}",
         "recheck": "${recheck}"
       },
       "stubOutput": {
-        "parsed": { "given": ["12 个苹果分 3 组"], "target": "每组占总数的分数", "missing": [] },
-        "diagnosis": { "category": "表征缺失", "evidence": "答成 4/3", "rootCause": "未把 12 个苹果看作整体", "nextStep": "先画图圈整体" },
-        "recheck": { "score": 0.92 }
+        "parsed": {
+          "given": [
+            "12 个苹果分 3 组"
+          ],
+          "target": "每组占总数的分数",
+          "missing": []
+        },
+        "diagnosis": {
+          "category": "表征缺失",
+          "evidence": "答成 4/3",
+          "rootCause": "未把 12 个苹果看作整体",
+          "nextStep": "先画图圈整体"
+        },
+        "recheck": {
+          "score": 0.92
+        }
       }
     },
     {
@@ -40,7 +82,12 @@
       "title": "三级提示",
       "agent": "td-hint-generator",
       "outputFormat": "json",
-      "outputContract": { "required": ["hints", "promptBack"] },
+      "outputContract": {
+        "required": [
+          "hints",
+          "promptBack"
+        ]
+      },
       "inputs": {
         "grade": "${input.grade}",
         "subject": "${input.subject}",
@@ -67,10 +114,13 @@
         "结尾含学生复述追问"
       ],
       "threshold": 0.8,
-      "expectedKeywords": ["分母", "分子"],
+      "expectedKeywords": [
+        "分母",
+        "分子"
+      ],
       "minChars": 40,
       "inputs": {
-        "artifact": "${hint}",
+        "artifact": "${hint.output}",
         "evidence": "${diagnose.parsed}"
       }
     },
@@ -87,7 +137,10 @@
           "maxIterations": 2,
           "while": "${reverify.score} < 0.8",
           "patience": 2,
-          "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+          "budget": {
+            "maxDurationMs": 120000,
+            "maxTokens": 0
+          },
           "body": [
             {
               "id": "rewrite",
@@ -114,10 +167,13 @@
               "kind": "verify",
               "title": "重写后再验",
               "verifier": "td-solution-verifier",
-              "rubric": ["未给出完整答案", "不超出该学段"],
+              "rubric": [
+                "未给出完整答案",
+                "不超出该学段"
+              ],
               "threshold": 0.8,
               "inputs": {
-                "artifact": "${rewrite}",
+                "artifact": "${rewrite.output}",
                 "evidence": "${diagnose.parsed}"
               }
             }
@@ -129,19 +185,41 @@
       "id": "deliver",
       "kind": "template",
       "title": "答复定稿",
-      "template": "【题意】${diagnose.parsed}\n【错因】${diagnose.diagnosis}\n【一级提示】${hint.hints[0]}\n【二级提示】${hint.hints[1]}\n【三级提示】${hint.hints[2]}\n【追问】${hint.promptBack}\n【校验】${reverify}",
+      "template": "【题意】${diagnose.parsed}\n【错因】${diagnose.diagnosis}\n【一级提示】${hint.output.hints.0}\n【二级提示】${hint.output.hints.1}\n【三级提示】${hint.output.hints.2}\n【追问】${hint.output.promptBack}\n【校验】${reverify}",
       "stubOutput": {
         "output": "【题意】12 个苹果平均分成 3 组，求每组占总数的分数。\n【错因】表征缺失：未把 12 个苹果看作单位「1」，答成分母分子颠倒。\n【一级提示】先别急着写分数，看看题目里把什么当作一整份。\n【二级提示】把 12 个苹果圈成一圈，再数平均分成几份、取了几份。\n【三级提示】分母写份数，分子写取了几份，写完念一遍含义。\n【追问】你能说说分母和分子各表示什么吗？\n【校验】三级提示未泄题、未超纲，通过。"
       }
     },
-    { "id": "end", "kind": "end", "title": "结束" }
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
   ],
   "edges": [
-    { "from": "start", "to": "diagnose" },
-    { "from": "diagnose", "to": "hint" },
-    { "from": "hint", "to": "verify" },
-    { "from": "verify", "to": "verify-gate" },
-    { "from": "verify-gate", "to": "deliver" },
-    { "from": "deliver", "to": "end" }
+    {
+      "from": "start",
+      "to": "diagnose"
+    },
+    {
+      "from": "diagnose",
+      "to": "hint"
+    },
+    {
+      "from": "hint",
+      "to": "verify"
+    },
+    {
+      "from": "verify",
+      "to": "verify-gate"
+    },
+    {
+      "from": "verify-gate",
+      "to": "deliver"
+    },
+    {
+      "from": "deliver",
+      "to": "end"
+    }
   ]
 }

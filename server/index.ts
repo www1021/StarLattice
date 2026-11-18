@@ -151,7 +151,7 @@ import { registerCounseling } from "./counseling/routes.js";
 import { registerPlatform } from "./platform/routes.js";
 import { PlatformStateStore } from "./platform/runtime/stateStore.js";
 import { WorkflowExecutor } from "./platform/runtime/executor.js";
-import { McpManager } from "./platform/mcp/mcpManager.js";
+import { McpManager, type WorkflowProgressEvent } from "./platform/mcp/mcpManager.js";
 import { runWorkflowTool, syncWorkflowTools } from "./platform/mcp/workflowTools.js";
 import { PluginService } from "./platform/plugins/pluginService.js";
 import { PLUGIN_TOOL_ENDPOINT_PREFIX, syncPluginTools } from "./platform/plugins/pluginTools.js";
@@ -514,8 +514,8 @@ registerPlatform(app, {
   }
 });
 // 工作流即工具：注册为平台内联 MCP 工具，工具节点可像调用外部 MCP 一样调用工作流。
-platformMcp.setWorkflowRunner((tool, args) =>
-  runWorkflowTool(platformStore, platformExecutor, tool, args)
+platformMcp.setWorkflowRunner((tool, args, onNodeProgress) =>
+  runWorkflowTool(platformStore, platformExecutor, tool, args, onNodeProgress)
 );
 // 平台插件（builtin）同样内联执行：知识库检索、课堂/谈心训练、报告与导出等本地服务。
 platformMcp.setBuiltinRunner((tool, args) => executeBuiltinTool(tool, args));
@@ -2052,6 +2052,25 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
   let answerStreamed = false;
   const requestStartedAt = Date.now();
+  /** 工作流节点进度转成 SSE：正文还没吐字时，前端拿它替换「正在生成」占位。 */
+  const emitWorkflowStep = (event: WorkflowProgressEvent) => {
+    const inChild = Boolean(event.path);
+    const staged =
+      event.status === "running"
+        ? "执行中"
+        : event.status === "failed"
+          ? "失败"
+          : event.durationMs !== undefined
+            ? `${(event.durationMs / 1000).toFixed(1)}s`
+            : "完成";
+    const stepText = `${inChild ? "↳ " : ""}${event.title} · ${staged}`;
+    writeSse(response, "workflow_step", {
+      ...event,
+      stepKind: event.kind,
+      stepStatus: event.status,
+      stepText
+    });
+  };
 
   response.on("close", () => {
     if (!response.writableEnded) {
@@ -2130,7 +2149,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 question,
                 getAgent: (id) => platformStore.getAgent(id),
                 getTool: (id) => platformStore.getTool(id),
-                callTool: (childTool, childArgs) => platformMcp.callToolRecord(childTool, childArgs),
+                callTool: (childTool, childArgs) =>
+                  platformMcp.callToolRecord(childTool, childArgs, emitWorkflowStep),
                 // 子智能体用自己的模型；它没配就用主持有者的模型，免得直接掉回默认。
                 resolveModel: (id) => resolveChatModel(id || picked.model || ""),
                 maxTokens: target?.chatConfig?.maxTokens ?? undefined,
@@ -2171,7 +2191,7 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
                 }
               });
             }
-            return platformMcp.callToolRecord(tool, args);
+            return platformMcp.callToolRecord(tool, args, emitWorkflowStep);
           },
           model: picked.model,
           provider: picked.provider,
@@ -4415,6 +4435,7 @@ function writeSse(
     | "citation"
     | "evaluation"
     | "tool"
+    | "workflow_step"
     | "delegated"
     | "done"
     | "error",

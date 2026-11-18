@@ -4,14 +4,43 @@
   "version": 1,
   "description": "师者工作台的备课线：先跑学情档案子流拿分层与易错点，目标、活动、评价三路并行产出，交付校验员检查目标覆盖与课时守恒，不合格回环重写最多两轮，通过后出完整教案。",
   "inputs": [
-    { "name": "grade", "type": "string", "required": true, "description": "学段年级" },
-    { "name": "subject", "type": "string", "required": true, "description": "学科" },
-    { "name": "topic", "type": "string", "required": true, "description": "课题" },
-    { "name": "minutes", "type": "string", "required": false, "description": "课时长度，默认 40 分钟" },
-    { "name": "objectives", "type": "string", "required": false, "description": "教师给定的教学目标，可不填" }
+    {
+      "name": "grade",
+      "type": "string",
+      "required": true,
+      "description": "学段年级"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": true,
+      "description": "学科"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "required": true,
+      "description": "课题"
+    },
+    {
+      "name": "minutes",
+      "type": "string",
+      "required": false,
+      "description": "课时长度，默认 40 分钟"
+    },
+    {
+      "name": "objectives",
+      "type": "string",
+      "required": false,
+      "description": "教师给定的教学目标，可不填"
+    }
   ],
   "nodes": [
-    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
     {
       "id": "profile",
       "kind": "subworkflow",
@@ -23,24 +52,86 @@
         "topic": "${input.topic}"
       },
       "outputs": {
-        "tiers": "${analyse.tiers}",
-        "misconceptions": "${analyse.misconceptions}",
-        "followUps": "${analyse.followUps}",
-        "students": "${filter.students}"
+        "tiers": "${analyse.output.tiers}",
+        "misconceptions": "${analyse.output.misconceptions}",
+        "followUps": "${analyse.output.followUps}",
+        "students": "${filter.output.students}"
       },
       "stubOutput": {
         "tiers": [
-          { "level": "扎实", "students": ["周语桐"], "evidence": ["分数单元 85 左右"] },
-          { "level": "波动", "students": ["赵一鸣"], "evidence": ["78-85，应用题波动大"] },
-          { "level": "薄弱", "students": ["黄子轩", "林小满"], "evidence": ["58、61 与 63、68"] }
+          {
+            "level": "扎实",
+            "students": [
+              "周语桐"
+            ],
+            "evidence": [
+              "分数单元 85 左右"
+            ]
+          },
+          {
+            "level": "波动",
+            "students": [
+              "赵一鸣"
+            ],
+            "evidence": [
+              "78-85，应用题波动大"
+            ]
+          },
+          {
+            "level": "薄弱",
+            "students": [
+              "黄子轩",
+              "林小满"
+            ],
+            "evidence": [
+              "58、61 与 63、68"
+            ]
+          }
         ],
-        "misconceptions": ["分子分母越大分数越大", "分子分母含义颠倒", "单位「1」变化时找不到整体"],
-        "followUps": ["黄子轩：折纸建立等量概念", "林小满：先画图再写符号"],
+        "misconceptions": [
+          "分子分母越大分数越大",
+          "分子分母含义颠倒",
+          "单位「1」变化时找不到整体"
+        ],
+        "followUps": [
+          "黄子轩：折纸建立等量概念",
+          "林小满：先画图再写符号"
+        ],
         "students": [
-          { "id": "huangzx", "name": "黄子轩", "average": 59.5, "tags": ["数学"] },
-          { "id": "linxm", "name": "林小满", "average": 65.5, "tags": ["数学", "心理"] },
-          { "id": "zhaoym", "name": "赵一鸣", "average": 81.5, "tags": ["数学"] },
-          { "id": "zhouyt", "name": "周语桐", "average": 85.5, "tags": ["安全", "心理"] }
+          {
+            "id": "huangzx",
+            "name": "黄子轩",
+            "average": 59.5,
+            "tags": [
+              "数学"
+            ]
+          },
+          {
+            "id": "linxm",
+            "name": "林小满",
+            "average": 65.5,
+            "tags": [
+              "数学",
+              "心理"
+            ]
+          },
+          {
+            "id": "zhaoym",
+            "name": "赵一鸣",
+            "average": 81.5,
+            "tags": [
+              "数学"
+            ]
+          },
+          {
+            "id": "zhouyt",
+            "name": "周语桐",
+            "average": 85.5,
+            "tags": [
+              "安全",
+              "心理"
+            ]
+          }
         ]
       }
     },
@@ -55,7 +146,11 @@
           "title": "目标拆解",
           "agent": "td-goal-designer",
           "outputFormat": "json",
-          "outputContract": { "required": ["objectives"] },
+          "outputContract": {
+            "required": [
+              "objectives"
+            ]
+          },
           "inputs": {
             "grade": "${input.grade}",
             "subject": "${input.subject}",
@@ -65,8 +160,18 @@
           },
           "stubOutput": {
             "objectives": [
-              { "dimension": "知识与技能", "text": "能举例说明 3/4 的含义", "observable": "能说出整体与份数", "linkedIssue": "分子分母含义颠倒" },
-              { "dimension": "过程与方法", "text": "能把 12 个苹果看作单位「1」平均分组", "observable": "能画出分组图并写出分数", "linkedIssue": "单位「1」变化时找不到整体" }
+              {
+                "dimension": "知识与技能",
+                "text": "能举例说明 3/4 的含义",
+                "observable": "能说出整体与份数",
+                "linkedIssue": "分子分母含义颠倒"
+              },
+              {
+                "dimension": "过程与方法",
+                "text": "能把 12 个苹果看作单位「1」平均分组",
+                "observable": "能画出分组图并写出分数",
+                "linkedIssue": "单位「1」变化时找不到整体"
+              }
             ]
           }
         },
@@ -76,7 +181,11 @@
           "title": "活动设计",
           "agent": "td-activity-designer",
           "outputFormat": "json",
-          "outputContract": { "required": ["activities"] },
+          "outputContract": {
+            "required": [
+              "activities"
+            ]
+          },
           "inputs": {
             "topic": "${input.topic}",
             "minutes": "${input.minutes}",
@@ -85,11 +194,46 @@
           },
           "stubOutput": {
             "activities": [
-              { "phase": "导入", "minutes": 5, "teacher": "分 4 张纸给 2 人", "students": "说出每人得到多少", "objective": "单位「1」", "tiering": "全体" },
-              { "phase": "探究", "minutes": 15, "teacher": "8 个圆片分 4 份再换 12 个", "students": "画图并写分数", "objective": "分数意义", "tiering": "薄弱档用实物，扎实档直接抽象" },
-              { "phase": "对比", "minutes": 8, "teacher": "组织折纸验证 1/2 与 2/4", "students": "折纸并说理由", "objective": "等值分数", "tiering": "全体" },
-              { "phase": "巩固", "minutes": 8, "teacher": "发三层练习", "students": "按层做题", "objective": "分层达标", "tiering": "三层" },
-              { "phase": "小结", "minutes": 4, "teacher": "回扣目标", "students": "一句话说分数含义", "objective": "目标回扣", "tiering": "全体" }
+              {
+                "phase": "导入",
+                "minutes": 5,
+                "teacher": "分 4 张纸给 2 人",
+                "students": "说出每人得到多少",
+                "objective": "单位「1」",
+                "tiering": "全体"
+              },
+              {
+                "phase": "探究",
+                "minutes": 15,
+                "teacher": "8 个圆片分 4 份再换 12 个",
+                "students": "画图并写分数",
+                "objective": "分数意义",
+                "tiering": "薄弱档用实物，扎实档直接抽象"
+              },
+              {
+                "phase": "对比",
+                "minutes": 8,
+                "teacher": "组织折纸验证 1/2 与 2/4",
+                "students": "折纸并说理由",
+                "objective": "等值分数",
+                "tiering": "全体"
+              },
+              {
+                "phase": "巩固",
+                "minutes": 8,
+                "teacher": "发三层练习",
+                "students": "按层做题",
+                "objective": "分层达标",
+                "tiering": "三层"
+              },
+              {
+                "phase": "小结",
+                "minutes": 4,
+                "teacher": "回扣目标",
+                "students": "一句话说分数含义",
+                "objective": "目标回扣",
+                "tiering": "全体"
+              }
             ]
           }
         },
@@ -99,7 +243,11 @@
           "title": "分层评价",
           "agent": "td-assessment-designer",
           "outputFormat": "json",
-          "outputContract": { "required": ["items"] },
+          "outputContract": {
+            "required": [
+              "items"
+            ]
+          },
           "inputs": {
             "topic": "${input.topic}",
             "misconceptions": "${profile.misconceptions}",
@@ -107,9 +255,30 @@
           },
           "stubOutput": {
             "items": [
-              { "tier": "基础", "stem": "把 8 个圆片平均分成 4 份，每份是整体的几分之几", "answer": "1/4", "rubric": "写出 1/4 且圈出整体得满分", "objective": "分数意义", "misconception": "单位「1」" },
-              { "tier": "提高", "stem": "举例说明 3/5 的含义并画图", "answer": "整体分 5 份取 3 份", "rubric": "文字说明与图形一致", "objective": "分数表述", "misconception": "分子分母颠倒" },
-              { "tier": "挑战", "stem": "整体的 1/3 是否可能小于另一个整体的 1/2", "answer": "可能，整体不同", "rubric": "举出反例得满分", "objective": "单位「1」相对性", "misconception": "分母越大分数越小" }
+              {
+                "tier": "基础",
+                "stem": "把 8 个圆片平均分成 4 份，每份是整体的几分之几",
+                "answer": "1/4",
+                "rubric": "写出 1/4 且圈出整体得满分",
+                "objective": "分数意义",
+                "misconception": "单位「1」"
+              },
+              {
+                "tier": "提高",
+                "stem": "举例说明 3/5 的含义并画图",
+                "answer": "整体分 5 份取 3 份",
+                "rubric": "文字说明与图形一致",
+                "objective": "分数表述",
+                "misconception": "分子分母颠倒"
+              },
+              {
+                "tier": "挑战",
+                "stem": "整体的 1/3 是否可能小于另一个整体的 1/2",
+                "answer": "可能，整体不同",
+                "rubric": "举出反例得满分",
+                "objective": "单位「1」相对性",
+                "misconception": "分母越大分数越小"
+              }
             ]
           }
         }
@@ -121,33 +290,51 @@
       "title": "完整性校验",
       "agent": "td-lesson-reviewer",
       "outputFormat": "json",
-      "outputContract": { "required": ["passed", "issues"] },
+      "outputContract": {
+        "required": [
+          "passed",
+          "issues"
+        ]
+      },
       "inputs": {
-        "objectives": "${goal.objectives}",
-        "activities": "${activity.activities}",
-        "items": "${assessment.items}",
+        "objectives": "${goal.output.objectives}",
+        "activities": "${activity.output.activities}",
+        "items": "${assessment.output.items}",
         "minutes": "${input.minutes}"
       },
       "stubOutput": {
         "passed": false,
-        "issues": [{ "detail": "易错点「分子分母越大分数越大」未在活动中安排针对性对比", "where": "activity.activities" }],
-        "coverage": { "objectiveCovered": 2, "activityCount": 5, "itemCount": 3, "minutesSum": 40 }
+        "issues": [
+          {
+            "detail": "易错点「分子分母越大分数越大」未在活动中安排针对性对比",
+            "where": "activity.activities"
+          }
+        ],
+        "coverage": {
+          "objectiveCovered": 2,
+          "activityCount": 5,
+          "itemCount": 3,
+          "minutesSum": 40
+        }
       }
     },
     {
       "id": "review-gate",
       "kind": "condition",
       "title": "校验不过闸门",
-      "when": "${review.passed} == false",
+      "when": "${review.output.passed} == false",
       "then": [
         {
           "id": "rewrite-loop",
           "kind": "loop",
           "title": "活动重写循环",
           "maxIterations": 2,
-          "while": "${recheck.passed} == false",
+          "while": "${recheck.output.passed} == false",
           "patience": 2,
-          "budget": { "maxDurationMs": 180000, "maxTokens": 0 },
+          "budget": {
+            "maxDurationMs": 180000,
+            "maxTokens": 0
+          },
           "body": [
             {
               "id": "rewrite",
@@ -156,17 +343,52 @@
               "agent": "td-activity-designer",
               "outputFormat": "json",
               "inputs": {
-                "issues": "${review.issues}",
-                "activities": "${activity.activities}",
+                "issues": "${review.output.issues}",
+                "activities": "${activity.output.activities}",
                 "minutes": "${input.minutes}"
               },
               "stubOutput": {
                 "activities": [
-                  { "phase": "导入", "minutes": 5, "teacher": "分 4 张纸给 2 人", "students": "说出每人得到多少", "objective": "单位「1」", "tiering": "全体" },
-                  { "phase": "探究", "minutes": 15, "teacher": "8 个圆片分 4 份再换 12 个", "students": "画图并写分数", "objective": "分数意义", "tiering": "薄弱档用实物，扎实档直接抽象" },
-                  { "phase": "对比", "minutes": 10, "teacher": "用 1/2 与 1/3 反例说明分母大不一定分数大，再折纸验证 1/2=2/4", "students": "举例并说理由", "objective": "分数大小与等值", "tiering": "全体" },
-                  { "phase": "巩固", "minutes": 6, "teacher": "发三层练习", "students": "按层做题", "objective": "分层达标", "tiering": "三层" },
-                  { "phase": "小结", "minutes": 4, "teacher": "回扣目标", "students": "一句话说分数含义", "objective": "目标回扣", "tiering": "全体" }
+                  {
+                    "phase": "导入",
+                    "minutes": 5,
+                    "teacher": "分 4 张纸给 2 人",
+                    "students": "说出每人得到多少",
+                    "objective": "单位「1」",
+                    "tiering": "全体"
+                  },
+                  {
+                    "phase": "探究",
+                    "minutes": 15,
+                    "teacher": "8 个圆片分 4 份再换 12 个",
+                    "students": "画图并写分数",
+                    "objective": "分数意义",
+                    "tiering": "薄弱档用实物，扎实档直接抽象"
+                  },
+                  {
+                    "phase": "对比",
+                    "minutes": 10,
+                    "teacher": "用 1/2 与 1/3 反例说明分母大不一定分数大，再折纸验证 1/2=2/4",
+                    "students": "举例并说理由",
+                    "objective": "分数大小与等值",
+                    "tiering": "全体"
+                  },
+                  {
+                    "phase": "巩固",
+                    "minutes": 6,
+                    "teacher": "发三层练习",
+                    "students": "按层做题",
+                    "objective": "分层达标",
+                    "tiering": "三层"
+                  },
+                  {
+                    "phase": "小结",
+                    "minutes": 4,
+                    "teacher": "回扣目标",
+                    "students": "一句话说分数含义",
+                    "objective": "目标回扣",
+                    "tiering": "全体"
+                  }
                 ]
               }
             },
@@ -177,14 +399,19 @@
               "agent": "td-lesson-reviewer",
               "outputFormat": "json",
               "inputs": {
-                "objectives": "${goal.objectives}",
-                "activities": "${rewrite.activities}",
-                "items": "${assessment.items}"
+                "objectives": "${goal.output.objectives}",
+                "activities": "${rewrite.output.activities}",
+                "items": "${assessment.output.items}"
               },
               "stubOutput": {
                 "passed": true,
                 "issues": [],
-                "coverage": { "objectiveCovered": 2, "activityCount": 5, "itemCount": 3, "minutesSum": 40 }
+                "coverage": {
+                  "objectiveCovered": 2,
+                  "activityCount": 5,
+                  "itemCount": 3,
+                  "minutesSum": 40
+                }
               }
             }
           ]
@@ -195,19 +422,41 @@
       "id": "finalize",
       "kind": "template",
       "title": "教案定稿",
-      "template": "【课题】${input.grade}${input.subject}《${input.topic}》\n【学情】${profile.tiers}\n【易错点】${profile.misconceptions}\n【教学目标】${goal.objectives}\n【教学环节】${activity.activities}\n【分层评价】${assessment.items}\n【校验结论】${recheck}",
+      "template": "【课题】${input.grade}${input.subject}《${input.topic}》\n【学情】${profile.tiers}\n【易错点】${profile.misconceptions}\n【教学目标】${goal.output.objectives}\n【教学环节】${activity.output.activities}\n【分层评价】${assessment.output.items}\n【校验结论】${recheck.output}",
       "stubOutput": {
         "output": "【课题】五年级数学《分数的意义》\n【学情】扎实 1 人、波动 1 人、薄弱 2 人\n【教学目标】能举例说明分数含义；能确定单位「1」\n【教学环节】导入 5 分钟 → 探究 15 分钟 → 对比 10 分钟 → 巩固 6 分钟 → 小结 4 分钟\n【分层评价】基础 1 题、提高 1 题、挑战 1 题\n【校验结论】易错点全部覆盖，课时 40 分钟守恒"
       }
     },
-    { "id": "end", "kind": "end", "title": "结束" }
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束"
+    }
   ],
   "edges": [
-    { "from": "start", "to": "profile" },
-    { "from": "profile", "to": "design" },
-    { "from": "design", "to": "review" },
-    { "from": "review", "to": "review-gate" },
-    { "from": "review-gate", "to": "finalize" },
-    { "from": "finalize", "to": "end" }
+    {
+      "from": "start",
+      "to": "profile"
+    },
+    {
+      "from": "profile",
+      "to": "design"
+    },
+    {
+      "from": "design",
+      "to": "review"
+    },
+    {
+      "from": "review",
+      "to": "review-gate"
+    },
+    {
+      "from": "review-gate",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "end"
+    }
   ]
 }

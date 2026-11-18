@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import { PlatformError, type McpCallResult, type ToolRecord } from "../types.js";
 import type { PlatformStateStore } from "../runtime/stateStore.js";
-import type { WorkflowExecutor } from "../runtime/executor.js";
+import type { WorkflowExecutor, WorkflowNodeProgress } from "../runtime/executor.js";
 
 export const WORKFLOW_TOOL_ENDPOINT_PREFIX = "workflow://";
 export const WORKFLOW_TOOL_SERVER_ID = "platform-workflows";
@@ -77,7 +77,8 @@ export async function runWorkflowTool(
   store: PlatformStateStore,
   executor: WorkflowExecutor,
   tool: ToolRecord,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  onNodeProgress?: (event: WorkflowNodeProgress) => void
 ): Promise<McpCallResult> {
   const workflowId = workflowIdFromTool(tool);
   const startedAt = performance.now();
@@ -107,7 +108,7 @@ export async function runWorkflowTool(
 
   try {
     const result = await callStack.run(new Set([...stack, workflowId]), () =>
-      executor.run(stored.definition, args, {})
+      executor.run(stored.definition, args, { ...(onNodeProgress ? { onNodeProgress } : {}) })
     );
     const status = result.run.status;
     const output = finalOutputOf(result.steps);

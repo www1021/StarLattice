@@ -7,6 +7,24 @@ import { isWorkflowToolEndpoint } from "./workflowTools.js";
 
 export type McpConnection = Pick<McpClient, "listTools" | "callTool" | "close">;
 
+/** 工作流节点结算事件，聊天层据此把每一步的进度推给前端。 */
+export type WorkflowProgressEvent = {
+  nodeId: string;
+  title: string;
+  kind: string;
+  status: "running" | "succeeded" | "failed";
+  sequence: number;
+  workflowId: string;
+  path?: string;
+  durationMs?: number;
+};
+
+type WorkflowRunner = (
+  tool: ToolRecord,
+  args: Record<string, unknown>,
+  onNodeProgress?: (event: WorkflowProgressEvent) => void
+) => Promise<McpCallResult>;
+
 export type McpConnect = (
   config: McpClientConfig
 ) => Promise<{ client: McpConnection; info: McpConnectionInfo }>;
@@ -53,7 +71,7 @@ export class McpManager {
   private readonly clients = new Map<string, Promise<{ client: McpConnection; info: McpConnectionInfo }>>();
   private readonly connect: McpConnect;
   private readonly timeoutMs: number;
-  private workflowRunner?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
+  private workflowRunner?: WorkflowRunner;
   /** 平台插件（builtin）执行器：由服务端注入，把 builtin:// 端点分发到本地服务实现。 */
   private builtinRunner?: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>;
 
@@ -173,9 +191,7 @@ export class McpManager {
   }
 
   /** 工作流工具由平台执行器内联运行，不走外部 MCP 连接池。 */
-  setWorkflowRunner(
-    runner: (tool: ToolRecord, args: Record<string, unknown>) => Promise<McpCallResult>
-  ) {
+  setWorkflowRunner(runner: WorkflowRunner) {
     this.workflowRunner = runner;
   }
 
@@ -186,12 +202,16 @@ export class McpManager {
     this.builtinRunner = runner;
   }
 
-  callToolRecord(tool: ToolRecord, args: Record<string, unknown>): Promise<McpCallResult> {
+  callToolRecord(
+    tool: ToolRecord,
+    args: Record<string, unknown>,
+    onNodeProgress?: (event: WorkflowProgressEvent) => void
+  ): Promise<McpCallResult> {
     if (isWorkflowToolEndpoint(tool.endpoint)) {
       if (!this.workflowRunner) {
         throw new PlatformError("工作流工具执行器尚未接入，无法执行该工具。", 500);
       }
-      return this.workflowRunner(tool, args);
+      return this.workflowRunner(tool, args, onNodeProgress);
     }
     if (tool.type === "builtin" || (tool.endpoint ?? "").startsWith("builtin://")) {
       if (!this.builtinRunner) {
