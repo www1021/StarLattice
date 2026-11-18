@@ -532,6 +532,45 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
       ["courseId", "lessonPlan"]
     ),
     enabled: false
+  },
+  {
+    id: "game.play",
+    name: "学科小游戏",
+    type: "builtin",
+    endpoint: "builtin://game/play",
+    description:
+      "开一局学科小游戏：数学速算、24 点、数独、飞花令。学生说想练一练、想挑战一下、想玩个游戏、想接诗句时调用。" +
+      "题目会以可玩卡片的形式发到界面，调用后不要复述题目、不要报答案。",
+    schema: jsonSchema(
+      {
+        game: {
+          type: "string",
+          enum: ["math_sprint", "twenty_four", "sudoku", "flying_flower"],
+          description: "math_sprint=数学速算，twenty_four=24 点，sudoku=数独，flying_flower=飞花令"
+        },
+        grade: {
+          type: "number",
+          minimum: 1,
+          maximum: 9,
+          description: "年级 1-9（初一记 7）。学生没提就按六年级算"
+        },
+        topic: { type: "string", description: "知识点，如「分数」「小数」「一元一次方程」" },
+        difficulty: {
+          type: "string",
+          enum: ["easy", "normal", "hard"],
+          description: "难度，缺省 normal"
+        },
+        count: {
+          type: "number",
+          minimum: 1,
+          maximum: 12,
+          description: "题量或轮数：速算 4-12 题、24 点 1-6 组、飞花令 3-8 轮，缺省按各玩法给默认值"
+        },
+        char: { type: "string", description: "飞花令的令字，只能是春、月、花、风、雪、山、水、云、雨、江、酒、柳之一" }
+      },
+      ["game"]
+    ),
+    enabled: true
   }
 ];
 

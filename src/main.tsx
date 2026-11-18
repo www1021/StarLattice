@@ -65,6 +65,8 @@ import { platformApi } from "./features/platform/api";
 import type { AgentRecord } from "./features/platform/types";
 import { AgentAvatar } from "./features/agents/AgentAvatar";
 import { MessageMarkdown } from "./features/chat/MessageMarkdown";
+import { GameCard } from "./features/games/GameCard";
+import { isGameCardData, type GameCardData } from "./features/games/types";
 import {
   buildWorkflowChatInput,
   readWorkflowOptions,
@@ -158,6 +160,8 @@ type ChatMessage = {
   workflowSteps?: WorkflowStepEvent[];
   /** 回答还没开始时的过程小字：正文一开始就折叠，不抢正文的位置。 */
   processNotes?: ProcessNote[];
+  /** 学科小游戏卡片：智能体调 game.play 时推过来的可玩局，跟在正文后面。 */
+  games?: GameCardData[];
   /** 工作流跑到人工节点时等待用户发言；提交后清空，工作流继续往下跑。 */
   pendingInteraction?: WorkflowInteraction;
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
@@ -2225,7 +2229,8 @@ function Conversation({
   onUpdateLessonPlanInput,
   onUpdateReflectionInput,
   onSubmitInteraction,
-  onOpenCounselingRoom
+  onOpenCounselingRoom,
+  onSendGameRequest
 }: {
   messages: ChatMessage[];
   activeInsightMessageId?: string;
@@ -2256,6 +2261,8 @@ function Conversation({
   onSubmitInteraction: (messageId: string, interactionId: string, values: Record<string, unknown>) => Promise<void>;
   /** 心理专项的回复下面给一个演练入口，点了才进聊天室，不打断正常问答。 */
   onOpenCounselingRoom?: (mode: CounselingRoomMode, topic: string) => void;
+  /** 游戏结算后的「讲讲错题 / 再来一局」把一句话发回聊天。 */
+  onSendGameRequest?: (text: string) => void;
 }) {
   const conversationRef = useRef<HTMLElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -2589,6 +2596,23 @@ function Conversation({
                       : "")
                   }
                 />
+                {message.games?.length ? (
+                  <div className="message-games">
+                    {message.games.map((game) => (
+                      <GameCard
+                        game={game}
+                        key={game.gameId}
+                        onAsk={
+                          // 正文还在流式生成时不接话：sendMessage 会把自己拦下来，
+                          // 按钮点了没反应比不显示更让人困惑。
+                          message.status === "generating" || !onSendGameRequest
+                            ? undefined
+                            : onSendGameRequest
+                        }
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </>
             )}
             {message.attachments?.length ? (
@@ -7459,6 +7483,8 @@ async function readChatStream(
     onInteraction?: (interaction: WorkflowInteraction) => void;
     /** 回答前的过程小字：一小段一小段地推，正文开始时折叠。 */
     onProgressNote?: (note: ProcessNote) => void;
+    /** 学科小游戏：工具返回的整局数据，直接渲染成可玩卡片。 */
+    onGameCard?: (game: GameCardData) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
@@ -7532,6 +7558,8 @@ function handleChatStreamEvent(
     onInteraction?: (interaction: WorkflowInteraction) => void;
     /** 回答前的过程小字，正文一开始就折叠。 */
     onProgressNote?: (note: ProcessNote) => void;
+    /** 学科小游戏：工具返回的整局数据，直接渲染成可玩卡片。 */
+    onGameCard?: (game: GameCardData) => void;
     /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
@@ -7564,6 +7592,8 @@ function handleChatStreamEvent(
     text?: string;
     /** 同上：同一工作流节点的多次播报共用这个 id，前端据此原地更新那一行。 */
     noteId?: string;
+    /** game_card 事件：一局游戏的完整数据（题目、答案、盘面等）。 */
+    game?: unknown;
     conversationId?: string;
     message?: string;
     name?: string;
@@ -7803,6 +7833,10 @@ function handleChatStreamEvent(
     const note = payload.text.trim();
     const noteId = typeof payload.noteId === "string" ? payload.noteId : undefined;
     if (note) handlers.onProgressNote?.(noteId ? { text: note, stepId: noteId } : { text: note });
+  }
+
+  if (streamEvent.event === "game_card" && isGameCardData(payload.game)) {
+    handlers.onGameCard?.(payload.game);
   }
 
   if (streamEvent.event === "evaluation" && isTrainingEvaluation(payload)) {
@@ -11823,6 +11857,18 @@ function App() {
             })
           );
         },
+        onGameCard(game) {
+          setMessages((current) =>
+            current.map((item) => {
+              if (item.id !== assistantId) return item;
+              // 同一局只挂一次：重连重放事件时不会冒出两张一样的卡片。
+              if (item.games?.some((existing) => existing.gameId === game.gameId)) {
+                return item;
+              }
+              return { ...item, games: [...(item.games ?? []), game] };
+            })
+          );
+        },
         onThinkingDelta(content) {
           setMessages((current) =>
             current.map((message) =>
@@ -12705,6 +12751,7 @@ function App() {
             onUpdateReflectionInput={updateReflectionMessageInput}
             onSubmitInteraction={submitWorkflowInteraction}
             onOpenCounselingRoom={(mode, topic) => setCounselingRoom({ mode, topic })}
+            onSendGameRequest={(text) => void sendMessage(text)}
           />
           <Composer
             ariaLabel={

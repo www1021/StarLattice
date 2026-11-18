@@ -1,0 +1,619 @@
+/*
+ * 学科小游戏卡片。
+ *
+ * 跟消息气泡同一套质感：浅底、细边、圆角，不另起一套视觉语言。
+ * 所有颜色走主题变量，深浅模式都不用单独写。
+ */
+
+.game-card {
+  margin-top: 12px;
+  padding: 14px 16px 16px;
+  border-radius: 16px;
+  background: rgba(var(--rgb-surface), 0.62);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+}
+
+.game-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.game-card-badge {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--surf-99);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.game-card-title h4 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.game-card-title p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.game-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── 顶部状态条 ─────────────────────────────────── */
+
+.game-sprint-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.game-step {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.game-step i {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.game-combo {
+  margin-left: auto;
+}
+
+.game-timer {
+  min-width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-timer.is-urgent {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.game-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(var(--rgb-shadow), 0.08);
+  overflow: hidden;
+}
+
+.game-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+/* ── 题干与选项 ─────────────────────────────────── */
+
+.game-stem {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.9;
+  color: var(--ink);
+}
+
+.game-stem .md-p {
+  margin: 0;
+}
+
+.game-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.game-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: rgba(var(--rgb-surface), 0.9);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  color: var(--ink);
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s ease, box-shadow 0.16s ease, transform 0.12s ease;
+}
+
+.game-option:hover:not(:disabled) {
+  background: rgba(var(--rgb-shadow), 0.05);
+  transform: translateY(-1px);
+}
+
+.game-option:disabled {
+  cursor: default;
+}
+
+.game-option-key {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(var(--rgb-shadow), 0.07);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.game-option-text {
+  min-width: 0;
+}
+
+.game-option.is-right {
+  background: rgba(22, 163, 74, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.45);
+}
+
+.game-option.is-right .game-option-key {
+  background: rgba(22, 163, 74, 0.16);
+  color: #15803d;
+}
+
+.game-option.is-wrong {
+  background: rgba(220, 38, 38, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.4);
+}
+
+.game-option.is-wrong .game-option-key {
+  background: rgba(220, 38, 38, 0.14);
+  color: #b91c1c;
+}
+
+/* ── 反馈 ─────────────────────────────────────── */
+
+.game-feedback {
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: rgba(var(--rgb-shadow), 0.045);
+}
+
+.game-feedback.is-ok {
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.game-feedback.is-bad {
+  background: rgba(220, 38, 38, 0.06);
+}
+
+.game-feedback-head {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.game-feedback-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.game-feedback-text b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.game-feedback .game-action {
+  margin-top: 9px;
+}
+
+/* ── 结算 ─────────────────────────────────────── */
+
+.game-result {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(var(--rgb-surface), 0.9);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+}
+
+.game-result-score strong {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.game-result-score span {
+  margin-left: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.game-result-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.game-wrong-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-wrong-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.game-wrong-item {
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: rgba(var(--rgb-shadow), 0.04);
+}
+
+.game-wrong-stem {
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.7;
+}
+
+.game-wrong-stem .md-p {
+  margin: 0;
+}
+
+.game-wrong-why {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.game-wrong-why b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.game-wrong-explain {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.game-all-clear {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.game-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.game-action {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(var(--rgb-shadow), 0.07);
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+
+.game-action.primary {
+  background: var(--accent);
+  color: var(--surf-99);
+}
+
+.game-action:hover {
+  opacity: 0.86;
+}
+
+.game-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* ── 24 点 ─────────────────────────────────────── */
+
+.twenty-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.twenty-card {
+  padding: 14px 0;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(var(--rgb-surface), 0.95);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.16s ease;
+}
+
+.twenty-card:hover {
+  transform: translateY(-2px);
+  background: rgba(var(--rgb-shadow), 0.05);
+}
+
+.twenty-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(var(--rgb-surface), 0.95);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.twenty-input::placeholder {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+}
+
+.twenty-keys {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.twenty-keys button {
+  min-width: 38px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(var(--rgb-shadow), 0.06);
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.twenty-keys button.is-submit {
+  margin-left: auto;
+  background: var(--accent);
+  color: var(--surf-99);
+  font-size: 13px;
+}
+
+.twenty-message {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.twenty-message.is-ok {
+  color: #15803d;
+}
+
+.twenty-message.is-bad {
+  color: #b91c1c;
+}
+
+.twenty-foot {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.twenty-hint {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* ── 数独 ─────────────────────────────────────── */
+
+.sudoku-grid {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 1px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--line-92);
+  outline: none;
+}
+
+.sudoku-cell {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: rgba(var(--rgb-surface), 0.97);
+  color: var(--accent);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.sudoku-cell.is-fixed {
+  color: var(--ink);
+  font-weight: 650;
+  background: rgba(var(--rgb-shadow), 0.045);
+  cursor: default;
+}
+
+.sudoku-cell.is-peer {
+  background: rgba(59, 130, 246, 0.07);
+}
+
+.sudoku-cell.is-same {
+  background: rgba(59, 130, 246, 0.13);
+}
+
+.sudoku-cell.is-selected {
+  background: rgba(59, 130, 246, 0.24);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.sudoku-cell.is-hint {
+  color: #7c3aed;
+}
+
+.sudoku-cell.is-conflict {
+  background: rgba(220, 38, 38, 0.14);
+  color: #b91c1c;
+}
+
+.sudoku-cell.edge-right {
+  margin-right: 2px;
+}
+
+.sudoku-cell.edge-bottom {
+  margin-bottom: 2px;
+}
+
+.sudoku-keys {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sudoku-keys button {
+  flex: 1 1 auto;
+  min-width: 34px;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(var(--rgb-shadow), 0.06);
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.sudoku-keys button:hover {
+  background: rgba(var(--rgb-shadow), 0.1);
+}
+
+/* ── 飞花令 ─────────────────────────────────────── */
+
+.flower-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.flower-line {
+  max-width: 84%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.flower-line p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.flower-line span {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.flower-line.is-ai {
+  align-self: flex-start;
+  background: rgba(var(--rgb-surface), 0.95);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  border-bottom-left-radius: 4px;
+}
+
+.flower-line.is-me {
+  align-self: flex-end;
+  background: var(--accent);
+  border-bottom-right-radius: 4px;
+}
+
+.flower-line.is-me p {
+  color: var(--surf-99);
+}
+
+.flower-input {
+  display: flex;
+  gap: 8px;
+}
+
+.flower-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(var(--rgb-surface), 0.95);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  color: var(--ink);
+  font-size: 13.5px;
+}
+
+.flower-input button {
+  flex: none;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--surf-99);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.flower-input button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 一局游戏跟着一条回复走，多局之间留点缝。 */
+.message-games {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}

@@ -155,6 +155,9 @@ import {
   XfyunSpeechError
 } from "./xfyunSpeechService.js";
 import { registerCounseling } from "./counseling/routes.js";
+import { playGame } from "./games/index.js";
+import { verifyFlyingFlower } from "./games/poetry.js";
+import { isGamePayload } from "./games/types.js";
 import { registerPlatform } from "./platform/routes.js";
 import { PlatformStateStore } from "./platform/runtime/stateStore.js";
 import { WorkflowExecutor } from "./platform/runtime/executor.js";
@@ -741,6 +744,28 @@ async function executeBuiltinTool(
   try {
     const endpoint = (tool.endpoint ?? "").replace(/^builtin:\/\//, "");
     switch (endpoint) {
+      case "game/play": {
+        // 出题全在本地算：一局 8 道题毫秒级返回，学生点「再来一局」不用等模型。
+        // 返回的 text 是给模型看的说明书（别复述题目），payload 才是发给前端的卡片数据。
+        const gameResult = await playGame({
+          game: typeof args.game === "string" ? args.game : undefined,
+          grade: typeof args.grade === "number" ? args.grade : undefined,
+          topic: typeof args.topic === "string" ? args.topic : undefined,
+          difficulty: typeof args.difficulty === "string" ? args.difficulty : undefined,
+          count: typeof args.count === "number" ? args.count : undefined,
+          char: typeof args.char === "string" ? args.char : undefined
+        });
+        const gameLabels: Record<string, string> = {
+          math_sprint: "速算挑战",
+          twenty_four: "24 点",
+          sudoku: "数独",
+          flying_flower: "飞花令"
+        };
+        return reply(gameResult.payload, gameResult.text, false, {
+          serverName: "学科小游戏",
+          tool: gameLabels[gameResult.payload.type] ?? "开一局"
+        });
+      }
       case "knowledge/search": {
         const query = readToolString(args.query, "query");
         const citations = await searchKnowledge({
@@ -1136,6 +1161,22 @@ app.get("/api/conversations/:id", (request, response) => {
   }
 
   response.json({ conversation });
+});
+
+/**
+ * 飞花令校验：学生接的诗句是不是真诗句、有没有重、含不含令字。
+ * 这几件都要查诗库，只能放在后端；判定不过时把一句人话直接回给卡片显示。
+ */
+app.post("/api/games/poetry/verify", async (request, response) => {
+  const body = (request.body ?? {}) as Record<string, unknown>;
+  const result = await verifyFlyingFlower({
+    char: typeof body.char === "string" ? body.char : "",
+    line: typeof body.line === "string" ? body.line : "",
+    used: Array.isArray(body.used)
+      ? body.used.filter((item): item is string => typeof item === "string")
+      : []
+  });
+  response.json(result);
 });
 
 app.post("/api/evaluations", express.json({ limit: "1mb" }), async (request, response) => {
@@ -2091,6 +2132,11 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
    */
   const emitToolNote = (progress: ChatToolProgress) => {
     if (progress.kind === "delegation") return;
+    // 开一局游戏要摆题（飞花令还得联网取诗句），先给一句反馈，别让学生盯着空白等。
+    if (progress.toolId === "game.play" && progress.stage === "running") {
+      emitProgressNote("正在摆这一局…");
+      return;
+    }
     if (progress.stage !== "done" || progress.ok !== false) return;
     const workflowTitle = /^工作流[:：]\s*(.+)$/u.exec(progress.name.trim())?.[1]?.trim();
     if (!workflowTitle) return;
@@ -2291,7 +2337,13 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               !(Array.isArray(args.knowledgeBaseIds) && (args.knowledgeBaseIds as unknown[]).length > 0)
                 ? { ...args, knowledgeBaseIds }
                 : args;
-            return platformMcp.callToolRecord(tool, toolArgs, emitWorkflowStep);
+            const toolResult = await platformMcp.callToolRecord(tool, toolArgs, emitWorkflowStep);
+            // 学科小游戏：结构化载荷直接推给前端渲染成可玩卡片。
+            // 模型那边只拿到一句说明书（别复述题目），学生看到的是能点的东西。
+            if (!toolResult.isError && isGamePayload(toolResult.structuredContent)) {
+              writeSse(response, "game_card", { game: toolResult.structuredContent });
+            }
+            return toolResult;
           },
           model: picked.model,
           provider: picked.provider,
@@ -4568,6 +4620,7 @@ function writeSse(
     | "tool"
     | "workflow_step"
     | "progress_note"
+    | "game_card"
     | "delegated"
     | "done"
     | "error",

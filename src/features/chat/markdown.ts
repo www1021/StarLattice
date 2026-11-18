@@ -220,8 +220,15 @@ function renderList(items: Array<{ indent: number; ordered: boolean; text: strin
   return out;
 }
 
-export function renderMarkdown(source: string): string {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+/**
+ * 行内渲染：游戏卡片里的题干、选项都是半行文字，套一层 <p> 会把格子撑开。
+ * 只走 inline()，模型自己写的换行用 <br /> 保留。
+ */
+export function renderInlineMarkdown(source: string): string {
+  return inline(source.replace(/\r\n?/g, "\n")).replace(/\n/g, "<br />");
+}
+
+export function renderMarkdown(source: string): string {  const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const html: string[] = [];
   let index = 0;
 
