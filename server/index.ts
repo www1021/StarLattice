@@ -84,7 +84,6 @@ import {
   pickDelegationRoute,
   runAgentDelegation
 } from "./platform/chat/agentDelegation.js";
-import { narrateNodeResult } from "./platform/chat/workflowNarration.js";
 import { AuthStore } from "./auth/store.js";
 import { registerAuth, resolveRequestAuth } from "./auth/routes.js";
 import {
@@ -2053,9 +2052,8 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
   let answerStreamed = false;
   const requestStartedAt = Date.now();
-  /** 工作流边跑边说：首个节点到达时先给一句开场白，之后每个节点完成就吐一段摘要。 */
+  /** 工作流首帧先给一句开场白，进度细节只走 workflow_step 事件，不进正文。 */
   let narratedWorkflowIntro = false;
-  const narratedSteps = new Set<string>();
   const emitWorkflowStep = (event: WorkflowProgressEvent) => {
     const inChild = Boolean(event.path);
     const staged =
@@ -2085,17 +2083,11 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
     if (event.status === "running" && !narratedWorkflowIntro) {
       narratedWorkflowIntro = true;
       // 工具调用期间正文原本是空的；先给一句可见反馈，用户不用干等。
+      // 节点流水只走 workflow_step 事件（前端折叠展示），不再写进正文，
+      // 否则用户看到的是「事实记录完成」「模板渲染完成」这类他并不关心的日志。
       writeSse(response, "delta", {
-        content: "收到，我这就按流程处理，每完成一步都会同步给你。\n\n"
+        content: "收到，我先把材料过一遍，整理好了直接给你结论。\n\n"
       });
-    }
-    if (event.status === "succeeded" && event.resultExcerpt) {
-      const stepKey = `${event.workflowId}:${event.path ?? ""}:${event.nodeId}:${event.sequence}`;
-      if (!narratedSteps.has(stepKey)) {
-        narratedSteps.add(stepKey);
-        const line = narrateNodeResult(event.nodeId, event.title, event.resultExcerpt);
-        if (line) writeSse(response, "delta", { content: `- ${line}\n` });
-      }
     }
   };
 
@@ -2170,11 +2162,11 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               const targetId = delegationTargetId(tool.id);
               const target = platformStore.getAgent(targetId);
               let delegatedBadgeSent = false;
-              // 转交一命中就给可见反馈，不等工作流或模型慢慢跑；后面节点摘要接着这条写。
+              // 转交一命中就先给一句反馈，别让用户盯着空白等。
               if (!narratedWorkflowIntro) {
                 narratedWorkflowIntro = true;
                 writeSse(response, "delta", {
-                  content: `收到，我交给「${target?.name ?? "专项助手"}」处理，每完成一步都会同步给你。\n\n`
+                  content: `收到，我让「${target?.name ?? "专项助手"}」来答。\n\n`
                 });
               }
               return runAgentDelegation({

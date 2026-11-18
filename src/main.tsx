@@ -51,6 +51,7 @@ import { Sidebar } from "./components/Sidebar";
 import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { ClassroomTrainingPage } from "./features/classroom/ClassroomTrainingPage";
 import { CounselingTrainingPage } from "./features/counseling/CounselingTrainingPage";
+import { CounselingRoom, type CounselingRoomMode } from "./features/counseling/CounselingRoom";
 import { WorkflowCanvasPage } from "./features/platform/WorkflowCanvasPage";
 import { ScenarioValidationPage } from "./features/platform/ScenarioValidationPage";
 import { RegistryPage } from "./features/platform/RegistryPage";
@@ -155,6 +156,8 @@ type ChatMessage = {
   /** 这条回复由哪个智能体给出；默认助手留空。 */
   agentName?: string;
   agentAvatar?: string;
+  /** 作答智能体 id：用来判断这条回复来自哪个专项（比如心理专项要不要给演练入口）。 */
+  agentId?: string;
   /** 从提问到回复结束的耗时，恢复的历史会话没有这个值。 */
   durationMs?: number;
 };
@@ -2208,7 +2211,8 @@ function Conversation({
   onToggleThinking,
   onUpdateLessonPlanInput,
   onUpdateReflectionInput,
-  onSubmitInteraction
+  onSubmitInteraction,
+  onOpenCounselingRoom
 }: {
   messages: ChatMessage[];
   activeInsightMessageId?: string;
@@ -2237,6 +2241,8 @@ function Conversation({
     patch: Partial<InternshipReflectionInput>
   ) => void;
   onSubmitInteraction: (messageId: string, interactionId: string, values: Record<string, unknown>) => Promise<void>;
+  /** 心理专项的回复下面给一个演练入口，点了才进聊天室，不打断正常问答。 */
+  onOpenCounselingRoom?: (mode: CounselingRoomMode, topic: string) => void;
 }) {
   const conversationRef = useRef<HTMLElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -2245,6 +2251,15 @@ function Conversation({
 
   function isNearConversationBottom(element: HTMLElement) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+  }
+
+  /** 演练入口要带上「这次在说哪件事」，取这条回复之前最近的一条用户消息。 */
+  function lastUserTextBefore(index: number) {
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const item = messages[cursor];
+      if (item?.role === "user" && item.content.trim()) return item.content;
+    }
+    return "";
   }
 
   useEffect(() => {
@@ -2299,7 +2314,7 @@ function Conversation({
           setShowScrollToBottom(!nearBottom);
         }}
       >
-        {messages.map((message) => (
+        {messages.map((message, messageIndex) => (
         <article
           className={`message message-${message.role}`}
           key={message.id}
@@ -2440,30 +2455,54 @@ function Conversation({
               <ClassroomRecordCard message={message} />
             ) : (
               <>
-                {message.role === "assistant" && message.workflowSteps?.length ? (
-                  <div className="workflow-progress-list">
-                    {message.workflowSteps.map((step) => (
-                      <div
-                        className={`workflow-progress-row workflow-progress-${step.status}`}
-                        key={`${step.workflowId}:${step.path ?? ""}:${step.nodeId}:${step.sequence}`}
-                      >
-                        <span className="workflow-progress-mark">
-                          {step.status === "succeeded" ? "✓" : step.status === "failed" ? "✗" : "·"}
-                        </span>
-                        <span className="workflow-progress-title">
-                          {step.path ? "↳ " : ""}{step.title}
-                        </span>
-                        <span className="workflow-progress-time">
-                          {step.status === "running"
-                            ? "执行中"
-                            : step.durationMs !== undefined
-                              ? `${(step.durationMs / 1000).toFixed(1)}s`
-                              : ""}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+                {message.role === "assistant" && message.workflowSteps?.length
+                  ? (() => {
+                      const steps = message.workflowSteps ?? [];
+                      const running = steps.some((step) => step.status === "running");
+                      const done = steps.filter((step) => step.status === "succeeded").length;
+                      const failed = steps.some((step) => step.status === "failed");
+                      // 节点流水是给排查用的，默认收起：正文只留用户真正关心的结论。
+                      return (
+                        <details className="workflow-trace">
+                          <summary className="workflow-trace-summary">
+                            {running ? (
+                              <span className="workflow-trace-live">
+                                <span className="workflow-trace-dot" />
+                                正在处理
+                                {steps.length ? ` · 已完成 ${done} 步` : ""}
+                              </span>
+                            ) : (
+                              <span>
+                                {failed ? "执行过程（有失败节点）" : "执行过程"} · {steps.length} 步
+                              </span>
+                            )}
+                          </summary>
+                          <div className="workflow-progress-list">
+                            {steps.map((step) => (
+                              <div
+                                className={`workflow-progress-row workflow-progress-${step.status}`}
+                                key={`${step.workflowId}:${step.path ?? ""}:${step.nodeId}:${step.sequence}`}
+                              >
+                                <span className="workflow-progress-mark">
+                                  {step.status === "succeeded" ? "✓" : step.status === "failed" ? "✗" : "·"}
+                                </span>
+                                <span className="workflow-progress-title">
+                                  {step.path ? "↳ " : ""}{step.title}
+                                </span>
+                                <span className="workflow-progress-time">
+                                  {step.status === "running"
+                                    ? "执行中"
+                                    : step.durationMs !== undefined
+                                      ? `${(step.durationMs / 1000).toFixed(1)}s`
+                                      : ""}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      );
+                    })()
+                  : null}
                 {message.pendingInteraction ? (
                   <WorkflowInteractionCard
                     interaction={message.pendingInteraction}
@@ -2547,6 +2586,48 @@ function Conversation({
                   </details>
                 ))}
               </div>
+            ) : null}
+            {message.role === "assistant" &&
+            message.agentId === "teacher-mind" &&
+            message.status !== "generating" &&
+            onOpenCounselingRoom ? (
+              looksLikeSelfDistress(lastUserTextBefore(messageIndex)) ? (
+                <div className="mind-room-invite">
+                  <p>要不要现在说说话？我不评价，也不催你。</p>
+                  <div className="mind-room-invite-actions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenCounselingRoom("seeker", lastUserTextBefore(messageIndex))
+                      }
+                    >
+                      我想找个人聊聊
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mind-room-invite">
+                  <p>想不想把刚才这套做法练一遍？我陪你走一场模拟谈话。</p>
+                  <div className="mind-room-invite-actions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenCounselingRoom("counselor", lastUserTextBefore(messageIndex))
+                      }
+                    >
+                      模拟开导学生
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenCounselingRoom("seeker", lastUserTextBefore(messageIndex))
+                      }
+                    >
+                      我想找个人聊聊
+                    </button>
+                  </div>
+                </div>
+              )
             ) : null}
           </div>
         </article>
@@ -8983,12 +9064,39 @@ function persistChatModelId(id: string) {
   }
 }
 
+/**
+ * 只有明确说「模拟/演练」才进聊天室；单纯问「怎么开导」应该直接给方法。
+ * 这是两件不同的事，混在一起用户会被拽进一个他并不想开的对话。
+ */
+function detectCounselingRoomIntent(text: string): CounselingRoomMode | undefined {
+  const value = text.trim();
+  if (!value) return undefined;
+  const wantsSimulation = /(模拟|演练|练一练|陪我练|角色扮演|走一遍)/.test(value);
+  const aboutTalk = /(谈话|谈心|开导|对话|聊聊|聊一聊|沟通)/.test(value);
+  if (!wantsSimulation || !aboutTalk) return undefined;
+  if (/(我当|我扮演|我是)(学生|被开导)|开导我|安慰我|陪我聊/.test(value)) return "seeker";
+  return "counselor";
+}
+
+/** 他自己就是当事人时说「我想找个人聊聊」，比请他练怎么开导别人更合适。 */
+function looksLikeSelfDistress(text: string) {
+  if (!text.trim()) return false;
+  const firstPerson = /(^我|我最近|我现在|我有点|我总是|我快|我好)/.test(text);
+  const distress = /(心情|难受|焦虑|压力|睡不着|考差|不想|崩溃|累|低落|烦)/.test(text);
+  return firstPerson && distress;
+}
+
 function App() {
   const auth = useAuth();
   const [appearance, setAppearance] = useState<Appearance>(readAppearance);
   const [petPref, setPetPref] = useState<PetPreference>(readPetPreference);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  /** 谈心聊天室是全屏浮层：退出就回到当前对话，不切页面、不丢上下文。 */
+  const [counselingRoom, setCounselingRoom] = useState<{
+    mode: CounselingRoomMode;
+    topic: string;
+  } | null>(null);
   /** 从模型选择器点「添加或管理模型」时直接落到模型页签。 */
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
   /** 对话页单独选的模型；空值表示跟随设置里的默认。 */
@@ -11354,6 +11462,14 @@ function App() {
       }
     }
 
+    // 「帮我模拟一下」这类明确要求演练的，直接开聊天室，不去跑一轮问答再让用户点卡片。
+    const roomIntent = chatMode === "office" ? undefined : detectCounselingRoomIntent(trimmedText);
+    if (roomIntent && attachments.length === 0) {
+      setInputValue("");
+      setCounselingRoom({ mode: roomIntent, topic: trimmedText });
+      return;
+    }
+
     const sentAttachments = attachments;
     const sourcePrompt =
       trimmedText ||
@@ -11387,7 +11503,8 @@ function App() {
       knowledgeQueryMode,
       // 记住这条回复是谁给的：换过智能体之后，历史里也能看出各自说过什么。
       agentName: activeAgent?.name,
-      agentAvatar: activeAgent?.avatar
+      agentAvatar: activeAgent?.avatar,
+      agentId: activeAgent?.id
     };
     const requestStartedAt = Date.now();
     const nextMessages = [...messages, userMessage];
@@ -11623,7 +11740,8 @@ function App() {
                 ? {
                     ...message,
                     agentName: delegated.agentName,
-                    agentAvatar: delegated.agentAvatar
+                    agentAvatar: delegated.agentAvatar,
+                    agentId: delegated.agentId
                   }
                 : message
             )
@@ -12471,6 +12589,7 @@ function App() {
             onUpdateLessonPlanInput={updateLessonPlanMessageInput}
             onUpdateReflectionInput={updateReflectionMessageInput}
             onSubmitInteraction={submitWorkflowInteraction}
+            onOpenCounselingRoom={(mode, topic) => setCounselingRoom({ mode, topic })}
           />
           <Composer
             ariaLabel={
@@ -12667,6 +12786,16 @@ function App() {
           }}
         />
       ) : null}
+      {counselingRoom
+        ? createPortal(
+            <CounselingRoom
+              mode={counselingRoom.mode}
+              topic={counselingRoom.topic}
+              onClose={() => setCounselingRoom(null)}
+            />,
+            document.body
+          )
+        : null}
       {accountOpen
         ? createPortal(
             <AccountDialog onClose={() => setAccountOpen(false)} />,

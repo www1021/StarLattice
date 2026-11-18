@@ -5292,7 +5292,59 @@ button {
   white-space: pre-wrap;
 }
 
-/* 工作流边跑边说的步骤流水：正文还没吐字时顶上，吐字后留在正文上方。 */
+/* 节点流水默认收起，只在正文上方留一行状态，避免把「记录完成」这类日志推给用户。 */
+.workflow-trace {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.workflow-trace-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(var(--rgb-surface), 0.42);
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-shadow), 0.07);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+
+.workflow-trace-summary::-webkit-details-marker {
+  display: none;
+}
+
+.workflow-trace-summary:hover {
+  color: var(--ink);
+}
+
+.workflow-trace[open] .workflow-trace-summary {
+  margin-bottom: 6px;
+}
+
+.workflow-trace-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+}
+
+.workflow-trace-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--n-48);
+  animation: workflow-trace-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes workflow-trace-pulse {
+  0%, 100% { opacity: 0.32; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
 .workflow-progress-list {
   margin: 0 0 10px;
   padding: 8px 12px;
@@ -14084,4 +14136,388 @@ select,
   width: 24px;
   height: 24px;
   font-size: 11px;
+}
+
+/* 谈心聊天室：微信式双栏气泡，用户与 AI 各占一侧，退出即结束。 */
+.croom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(10, 10, 12, 0.44);
+  backdrop-filter: blur(7px);
+  animation: croom-fade 0.18s ease;
+}
+
+@keyframes croom-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.croom {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100%);
+  height: min(790px, 100%);
+  overflow: hidden;
+  border-radius: 20px;
+  background: var(--surf-96);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.3), inset 0 0 0 1px var(--line-90);
+}
+
+.croom-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surf-98);
+  box-shadow: inset 0 -1px 0 var(--line-94);
+}
+
+.croom-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.croom-icon-btn:hover {
+  background: rgba(var(--rgb-shadow), 0.08);
+}
+
+.croom-head-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.croom-head-text strong {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.croom-head-text span {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.croom-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.croom-ghost-btn,
+.croom-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+
+.croom-ghost-btn {
+  background: rgba(var(--rgb-shadow), 0.07);
+  color: var(--ink);
+}
+
+.croom-ghost-btn:hover {
+  background: rgba(var(--rgb-shadow), 0.12);
+}
+
+.croom-primary-btn {
+  background: var(--accent);
+  color: var(--surf-99);
+}
+
+.croom-primary-btn:hover {
+  opacity: 0.88;
+}
+
+.croom-ghost-btn:disabled,
+.croom-primary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.croom-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 16px 16px 10px;
+  scrollbar-width: thin;
+}
+
+.croom-day {
+  align-self: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(var(--rgb-shadow), 0.06);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.croom-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.croom-spin {
+  animation: croom-rotate 0.9s linear infinite;
+}
+
+@keyframes croom-rotate {
+  to { transform: rotate(360deg); }
+}
+
+.croom-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  max-width: 100%;
+}
+
+.croom-row.is-mine {
+  flex-direction: row-reverse;
+}
+
+.croom-avatar {
+  display: grid;
+  flex: 0 0 30px;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--surf-99);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.croom-avatar.is-mine {
+  background: var(--accent);
+  box-shadow: none;
+  color: var(--surf-99);
+}
+
+.croom-bubble {
+  max-width: 76%;
+  padding: 9px 13px;
+  border-radius: 14px;
+  border-top-left-radius: 5px;
+  background: var(--surf-99);
+  box-shadow: inset 0 0 0 1px var(--line-94);
+  font-size: 14.5px;
+  line-height: 1.62;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.croom-row.is-mine .croom-bubble {
+  border-radius: 14px;
+  border-top-right-radius: 5px;
+  background: #95ec69;
+  box-shadow: none;
+  color: #16210f;
+}
+
+html[data-theme="dark"] .croom-row.is-mine .croom-bubble {
+  background: #3f7a37;
+  color: #f2fbf0;
+}
+
+.croom-typing {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 13px;
+}
+
+.croom-typing i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: croom-typing 1.1s ease-in-out infinite;
+}
+
+.croom-typing i:nth-child(2) { animation-delay: 0.15s; }
+.croom-typing i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes croom-typing {
+  0%, 100% { opacity: 0.28; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-3px); }
+}
+
+.croom-summary {
+  margin: 6px 0 2px;
+  padding: 13px 15px;
+  border-radius: 14px;
+  background: var(--surf-99);
+  box-shadow: inset 0 0 0 1px var(--line-90);
+}
+
+.croom-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.croom-summary p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.croom-summary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.croom-error {
+  align-self: center;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: rgba(192, 80, 62, 0.1);
+  font-size: 12.5px;
+  color: #c0503e;
+}
+
+.croom-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  padding: 10px 14px 6px;
+  background: var(--surf-98);
+  box-shadow: inset 0 1px 0 var(--line-94);
+}
+
+.croom-composer textarea {
+  flex: 1 1 auto;
+  min-height: 38px;
+  max-height: 132px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--surf-99);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  resize: none;
+  outline: none;
+}
+
+.croom-composer textarea:focus {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.croom-send {
+  display: grid;
+  flex: 0 0 36px;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--accent);
+  color: var(--surf-99);
+  cursor: pointer;
+}
+
+.croom-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.croom-note {
+  margin: 0;
+  padding: 0 14px 9px;
+  background: var(--surf-98);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .croom-backdrop { padding: 0; }
+  .croom { width: 100%; height: 100%; border-radius: 0; }
+  .croom-head-actions .croom-ghost-btn { display: none; }
+}
+
+/* 心理专项回复下方的演练入口：默认不出现在正文里，只有用户主动点才进聊天室。 */
+.mind-room-invite {
+  margin-top: 12px;
+  padding: 11px 13px;
+  border-radius: 13px;
+  background: rgba(var(--rgb-surface), 0.62);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+}
+
+.mind-room-invite p {
+  margin: 0 0 9px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.mind-room-invite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mind-room-invite-actions button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(var(--rgb-shadow), 0.07);
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+
+.mind-room-invite-actions button:first-child {
+  background: var(--accent);
+  color: var(--surf-99);
+}
+
+.mind-room-invite-actions button:hover {
+  opacity: 0.86;
 }

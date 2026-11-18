@@ -8,10 +8,25 @@ import type { SQLiteChatRepository } from "../storage/chatRepository.js";
 import { counselingCases } from "./cases.js";
 import { CounselingError } from "./engine.js";
 import { CounselingService } from "./service.js";
+import { openRoomTurn, resolveRoomCase, streamRoomTurn, summarizeRoom, type RoomMessage, type RoomMode } from "./room.js";
 import { bindConnectionAuth } from "../auth/context.js";
 
 function errorResponse(response: Response, error: unknown) {
   response.status(error instanceof CounselingError ? error.status : 500).json({ message: error instanceof Error ? error.message : "谈话请求失败。" });
+}
+
+function readRoomBody(body: unknown) {
+  const value = (body ?? {}) as Record<string, unknown>;
+  const mode: RoomMode = value.mode === "seeker" ? "seeker" : "counselor";
+  const messages: RoomMessage[] = Array.isArray(value.messages)
+    ? (value.messages as RoomMessage[]).map((item) => ({ role: item?.role === "assistant" ? "assistant" : "user", content: String(item?.content ?? "") }))
+    : [];
+  return {
+    mode,
+    caseId: typeof value.caseId === "string" ? value.caseId : undefined,
+    topic: typeof value.topic === "string" ? value.topic.slice(0, 600) : undefined,
+    messages
+  };
 }
 
 export function registerCounseling(app: Express, server: Server, repository: SQLiteChatRepository) {
@@ -37,6 +52,37 @@ export function registerCounseling(app: Express, server: Server, repository: SQL
   });
   app.get("/api/counseling/sessions/:id/report", (request, response) => {
     try { response.setHeader("Content-Disposition", 'attachment; filename="counseling-report.md"'); response.type("text/markdown").send(service.markdown(request.params.id)); } catch (error) { errorResponse(response, error); }
+  });
+
+  // 谈心聊天室：不带工作流、不落库，一问一答地聊，退出就结束。
+  app.post("/api/counseling/room/open", (request, response) => {
+    const body = readRoomBody(request.body);
+    const student = resolveRoomCase(body.topic, body.caseId);
+    response.json({ student: { id: student.id, name: student.name, year: student.year, title: student.title }, opening: openRoomTurn(body.mode, student) });
+  });
+  app.post("/api/counseling/room/turn", async (request, response) => {
+    const body = readRoomBody(request.body);
+    const abort = new AbortController();
+    // 监听 response 而不是 request：request 的 close 在请求体读完时就触发，
+    // 会立刻把正在生成的回复 abort 掉。
+    response.on("close", () => { if (!response.writableEnded) abort.abort(); });
+    response.writeHead(200, { "cache-control": "no-cache, no-transform", connection: "keep-alive", "content-type": "text/event-stream; charset=utf-8", "x-accel-buffering": "no" });
+    response.flushHeaders?.();
+    const send = (event: string, data: unknown) => { response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+    try {
+      await streamRoomTurn({ request: body, signal: abort.signal, onDelta: (delta) => send("delta", { content: delta }) });
+      send("done", { ok: true });
+    } catch (error) {
+      send("error", { message: error instanceof Error ? error.message : "聊天室回复失败。" });
+    } finally {
+      response.end();
+    }
+  });
+  app.post("/api/counseling/room/summary", async (request, response) => {
+    try {
+      const body = readRoomBody(request.body);
+      response.json({ summary: await summarizeRoom({ request: body }) });
+    } catch (error) { errorResponse(response, error); }
   });
 
   const realtime = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
