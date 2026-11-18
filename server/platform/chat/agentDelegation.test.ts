@@ -491,3 +491,102 @@ test("无工具的专项智能体流式吐正文：逐段回调，首字不必�
   assert.equal(result.delegatedAnswer?.answer, pieces.join(""));
   assert.match(String(streamOptions?.system ?? ""), /科研规划/);
 });
+
+test("有工具的专项智能体：工具跑完之后的那一轮改流式，正文分段推出", async () => {
+  const prep = agentRecord({
+    id: "teacher-prep",
+    name: "备课专项",
+    role: "教学设计",
+    tools: ["plugin.pl-1"],
+    description: "备课、教案、课时安排"
+  });
+  const deltas: string[] = [];
+  const pieces = [
+    "【学情】扎实 1 人、波动 1 人、薄弱 2 人。",
+    "【目标】能举例说明 3/4 的含义。",
+    "【环节】导入 5 分钟 → 探究 15 分钟。"
+  ];
+  let completeRounds = 0;
+  let streamCalls = 0;
+
+  const result = await runAgentDelegation({
+    host: agentRecord(),
+    targetId: "teacher-prep",
+    question: "帮我给五年级备一节分数的意义",
+    getAgent: (id) => (id === prep.id ? prep : undefined),
+    getTool: (id) => (id === "plugin.pl-1" ? toolRecord() : undefined),
+    callTool: async () => mcpResult("检索到 3 条学情记录"),
+    resolveModel: () => ({}),
+    // 第一轮只负责挑工具：非流式。
+    complete: async () => {
+      completeRounds += 1;
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "call-1",
+            type: "function" as const,
+            function: { name: "literature_search_plugin_pl_1", arguments: '{"search":"分数 学情"}' }
+          }
+        ]
+      };
+    },
+    // 第二轮是写给用户看的答复：走流式。
+    streamComplete: async (options) => {
+      streamCalls += 1;
+      for (const piece of pieces) {
+        options.onDelta?.(piece);
+      }
+      return { content: pieces.join(""), toolCalls: [] };
+    },
+    onAnswerDelta: (delta) => deltas.push(delta)
+  });
+
+  assert.equal(completeRounds, 1);
+  assert.equal(streamCalls, 1);
+  assert.equal(result.isError, false);
+  // 正文分成多段推，不是等整段写完才一次性发。
+  assert.ok(deltas.length >= 2, `deltas=${JSON.stringify(deltas)}`);
+  assert.equal(deltas.join(""), pieces.join(""));
+  assert.equal(result.delegatedAnswer?.answer, pieces.join(""));
+});
+
+test("成文轮先攒着的短尾巴，在确认不调工具后补发，一个字都不丢", async () => {
+  const prep = agentRecord({
+    id: "teacher-prep",
+    name: "备课专项",
+    role: "教学设计",
+    tools: ["plugin.pl-1"],
+    description: "备课、教案"
+  });
+  const deltas: string[] = [];
+  const answer = "学情已看过，薄弱的是黄子轩和林小满。";
+
+  const result = await runAgentDelegation({
+    host: agentRecord(),
+    targetId: "teacher-prep",
+    question: "备课",
+    getAgent: (id) => (id === prep.id ? prep : undefined),
+    getTool: (id) => (id === "plugin.pl-1" ? toolRecord() : undefined),
+    callTool: async () => mcpResult("ok"),
+    resolveModel: () => ({}),
+    complete: async () => ({
+      content: "",
+      toolCalls: [
+        {
+          id: "call-1",
+          type: "function" as const,
+          function: { name: "literature_search_plugin_pl_1", arguments: "{}" }
+        }
+      ]
+    }),
+    streamComplete: async (options) => {
+      options.onDelta?.(answer);
+      return { content: answer, toolCalls: [] };
+    },
+    onAnswerDelta: (delta) => deltas.push(delta)
+  });
+
+  assert.equal(deltas.join(""), answer);
+  assert.equal(result.delegatedAnswer?.answer, answer);
+});

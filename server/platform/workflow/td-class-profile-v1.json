@@ -61,6 +61,7 @@
       "kind": "llm",
       "title": "档案结构化",
       "temperature": 0.1,
+      "model": "qwen-flash",
       "inputs": {
         "citations": "${archive.output.citations}"
       },

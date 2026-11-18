@@ -515,6 +515,8 @@ export async function completeQwenToolChat({
             model,
             temperature,
             max_tokens: maxTokens,
+            // 工具轮次不做真流式，思考内容没人看，开着只会白等几秒推理 token。
+            enable_thinking: false,
             messages: [
               ...(system ? [{ role: "system" as const, content: system }] : []),
               ...messages
@@ -581,8 +583,217 @@ export async function completeQwenToolChat({
   );
 }
 
+export type StreamToolChatOptions = CompleteToolChatOptions & {
+  onDelta?: (content: string) => void;
+  onThinkingDelta?: (content: string) => void;
+};
+
+/**
+ * 带工具的流式补全：用来「边生成边出字」。
+ *
+ * 工具调用的参数在流里是碎片（同一个调用按 index 分很多片 arguments 过来），
+ * 这里按 index 累加成完整调用；正文则逐段回调。
+ *
+ * 只在「已经有工具结果、这一轮就是写给用户看」的时候才开流式。模型如果先吐半句话
+ * 再去调工具，那半句会留在屏幕上但不进存档，所以调用方要自己把握时机。
+ */
+export async function streamQwenToolChat({
+  system,
+  messages,
+  model: requestedModel,
+  maxTokens = 2048,
+  temperature = 0.2,
+  tools = [],
+  toolChoice = "auto",
+  onDelta,
+  onThinkingDelta,
+  onThinking,
+  signal,
+  provider
+}: StreamToolChatOptions): Promise<ToolChatResult> {
+  const apiKey = provider?.apiKey || getQwenApiKey();
+
+  if (!apiKey) {
+    throw new UpstreamModelError(
+      `还没有可用的模型密钥。请打开「设置 → 模型与密钥」，添加一个模型并填入自己的 API Key。${
+        provider?.label ? `（当前模型：${provider.label}）` : ""
+      }`
+    );
+  }
+
+  const baseUrl = trimTrailingSlash(provider?.baseUrl || getQwenBaseUrl());
+  const providerLabel = provider?.label || "qwen";
+  const model = requestedModel?.trim() || getQwenModel();
+
+  return observeGeneration(
+    "qwen.chat.tools.stream",
+    {
+      input: {
+        system: summarizeText(system || "", 900),
+        messages: summarizeToolMessages(messages)
+      },
+      model,
+      modelParameters: {
+        temperature,
+        maxTokens,
+        toolCount: String(tools.length),
+        stream: "true"
+      },
+      metadata: { provider: providerLabel, baseUrl }
+    },
+    async (generation) => {
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            temperature,
+            max_tokens: maxTokens,
+            stream: true,
+            enable_thinking: false,
+            messages: [
+              ...(system ? [{ role: "system" as const, content: system }] : []),
+              ...messages
+            ],
+            ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {})
+          }),
+          signal: requestSignal(signal)
+        });
+
+        if (!response.ok) {
+          const details = await response.text().catch(() => "");
+          throw new UpstreamModelError(
+            details || `Qwen model request failed with status ${response.status}`,
+            response.status
+          );
+        }
+
+        if (!response.body) {
+          throw new UpstreamModelError("模型返回了空响应流，请稍后重试。");
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let content = "";
+        let thinking = "";
+        let finishReason: string | undefined;
+        const pending = new Map<number, { id: string; name: string; arguments: string }>();
+
+        const consume = (event: string) => {
+          const dataLines = event
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.replace(/^data:\s?/, ""));
+
+          for (const line of dataLines) {
+            if (!line || line === "[DONE]") continue;
+            const payload = JSON.parse(line) as {
+              choices?: Array<{
+                finish_reason?: string;
+                delta?: {
+                  content?: string | null;
+                  reasoning_content?: string | null;
+                  tool_calls?: Array<{
+                    index?: number;
+                    id?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+              }>;
+              error?: { message?: string };
+            };
+
+            if (payload.error?.message) {
+              throw new UpstreamModelError(payload.error.message);
+            }
+
+            for (const choice of payload.choices ?? []) {
+              if (choice.finish_reason) {
+                finishReason = choice.finish_reason;
+              }
+              const reasoning = choice.delta?.reasoning_content;
+              if (reasoning) {
+                thinking += reasoning;
+                onThinkingDelta?.(reasoning);
+              }
+              const piece = choice.delta?.content;
+              if (piece) {
+                content += piece;
+                onDelta?.(piece);
+              }
+              for (const call of choice.delta?.tool_calls ?? []) {
+                const index = call.index ?? 0;
+                const slot = pending.get(index) ?? { id: "", name: "", arguments: "" };
+                if (call.id) slot.id = call.id;
+                if (call.function?.name) slot.name = call.function.name;
+                if (call.function?.arguments) slot.arguments += call.function.arguments;
+                pending.set(index, slot);
+              }
+            }
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split(/\r?\n\r?\n/);
+          buffer = events.pop() ?? "";
+          for (const event of events) {
+            consume(event);
+          }
+        }
+        if (buffer.trim()) {
+          consume(buffer);
+        }
+
+        const toolCalls: QwenToolCall[] = [...pending.entries()]
+          .sort((left, right) => left[0] - right[0])
+          .map(([, slot]) => ({
+            id: slot.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+            type: "function" as const,
+            function: { name: slot.name, arguments: slot.arguments || "{}" }
+          }))
+          .filter((call) => Boolean(call.function.name));
+
+        if (thinking && onThinking) {
+          onThinking(thinking);
+        }
+
+        generation.update({
+          output: {
+            content: summarizeText(content),
+            characterCount: content.length,
+            toolCalls: toolCalls.map((call) => call.function.name)
+          }
+        });
+
+        return {
+          content: content.trim(),
+          thinking: thinking || undefined,
+          toolCalls,
+          finishReason
+        };
+      } catch (error) {
+        generation.update({
+          level: "ERROR",
+          statusMessage:
+            error instanceof Error ? error.message : "Qwen tool stream failed",
+          output: { error: error instanceof Error ? error.message : String(error) }
+        });
+        throw error;
+      }
+    }
+  );
+}
+
 function summarizeToolMessages(messages: ToolChatMessage[]) {
   return messages.map((message) => {
+
     if (message.role === "tool") {
       return { role: message.role, content: summarizeText(message.content, 600) };
     }

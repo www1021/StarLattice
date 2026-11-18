@@ -14,6 +14,7 @@
 import {
   completeQwenToolChat,
   streamQwenChat,
+  streamQwenToolChat,
   type ModelProviderConfig,
   type QwenToolCall
 } from "../../qwenOpenAiClient.js";
@@ -399,6 +400,8 @@ export async function runAgentDelegation(input: {
   complete?: typeof completeQwenToolChat;
   /** 无工具子智能体的流式生成函数，可注入以便测试；缺省走真实的 Qwen 流式。 */
   stream?: typeof streamQwenChat;
+  /** 有工具子智能体的「成文轮」流式补全，可注入以便测试。 */
+  streamComplete?: typeof streamQwenToolChat;
   /** 子智能体自己的 maxTokens，流式直出时沿用；不传则走模型默认。 */
   maxTokens?: number;
   signal?: AbortSignal;
@@ -492,7 +495,11 @@ export async function runAgentDelegation(input: {
         maxRounds: CHILD_MAX_ROUNDS,
         signal: input.signal,
         presetToolCall: presetSearch ?? undefined,
-        onProgress: input.onProgress
+        onProgress: input.onProgress,
+        // 工具跑完之后的那一轮才是写给用户看的答复：从这一轮起改流式，
+        // 否则「正在处理…」会一直停到整段答复生成完。
+        onDelta: input.onAnswerDelta,
+        streamComplete: input.streamComplete
       });
       text = result.content;
       calls = result.calls.map((call) => ({ name: call.name }));

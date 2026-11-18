@@ -10,6 +10,7 @@
 
 import {
   completeQwenToolChat,
+  streamQwenToolChat,
   UpstreamModelError,
   type ModelProviderConfig,
   type QwenToolCall,
@@ -277,6 +278,16 @@ export async function runChatToolLoop(input: {
   /** 转交成功后立刻收尾，把这轮交给专项智能体作答。 */
   stopAfterDelegation?: boolean;
   onProgress?: (progress: ChatToolProgress) => void;
+  /**
+   * 成文轮边生成边回调。只在「已经执行过工具、这一轮基本就是写给用户看」的时候开流式，
+   * 让第一个字随模型吐字出现，而不是等整段写完再一次性发。
+   *
+   * 前 24 个字先攒着不发：模型偶尔会先来一句「我先查一下」再去调工具，
+   * 那半句不该出现在正文里。攒够 60 字还没调工具，就当它确实在写答复了。
+   */
+  onDelta?: (delta: string) => void;
+  /** 流式补全实现，可注入以便测试。 */
+  streamComplete?: typeof streamQwenToolChat;
 }): Promise<ChatToolLoopResult> {
   const complete = input.complete ?? completeQwenToolChat;
   const maxRounds = input.maxRounds ?? maxChatToolRounds();
@@ -301,9 +312,41 @@ export async function runChatToolLoop(input: {
       signal: input.signal
     };
     const preset = round === 1 ? input.presetToolCall : undefined;
-    let response: ToolChatResult = preset
-      ? { content: "", toolCalls: [preset] }
-      : await complete({ ...base, messages });
+    // 已经跑过工具之后的那一轮，基本就是成文轮：改走流式，第一个字立刻推给前端。
+    const streamAnswer = Boolean(input.onDelta) && calls.length > 0 && !preset;
+    let spill = "";
+    let spilling = false;
+    const pushDelta = (delta: string) => {
+      if (!input.onDelta || !delta) {
+        return;
+      }
+      if (!spilling) {
+        spill += delta;
+        // 攒够 24 字还没去调工具，就当它确实在写答复了：再攒下去首字就白等了。
+        if (spill.length < 24) {
+          return;
+        }
+        spilling = true;
+        input.onDelta(spill);
+        spill = "";
+        return;
+      }
+      input.onDelta(delta);
+    };
+
+    let response: ToolChatResult;
+    if (preset) {
+      response = { content: "", toolCalls: [preset] };
+    } else if (streamAnswer) {
+      response = await (input.streamComplete ?? streamQwenToolChat)({
+        ...base,
+        messages,
+        onDelta: pushDelta,
+        onThinkingDelta: () => {}
+      });
+    } else {
+      response = await complete({ ...base, messages });
+    }
 
     // 首轮模型一个工具都不调、而用户明显在要真实资料时，逐级兜底：
     // required → 强制提示词 → 后端直接构造一次调用。这样「挂了插件却像纯 AI 回答」不会再发生。
@@ -354,6 +397,14 @@ export async function runChatToolLoop(input: {
           }
         }
       }
+    }
+
+    // 成文轮里没攒够 24 字的那点尾巴，等确认这一轮确实不调工具再补发。
+    if (spill) {
+      if (!spilling && response.toolCalls.length === 0) {
+        input.onDelta?.(spill);
+      }
+      spill = "";
     }
 
     if (response.toolCalls.length === 0) {

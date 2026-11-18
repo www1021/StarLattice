@@ -2319,9 +2319,13 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
           assistantContent = toolRun.content;
         }
         // 流式已经逐段发过就不再整段重发，否则正文会显示两遍。
+        // 关掉逐字回复时，流式那段只是攒在 bufferedContent 里，这里要补一次下发。
         if (!answerStreamed) {
-          writeSse(response, "delta", { content: assistantContent });
+          writeSse(response, "delta", { content: bufferedContent || assistantContent });
+        } else if (bufferedContent) {
+          writeSse(response, "delta", { content: bufferedContent });
         }
+        bufferedContent = "";
       } else {
         // 智能体真的一个工具都没配、用户却在要文献/数据时，先说清楚「本轮不会调用插件」，
         // 否则模型会顺着提示词演一句「我为你启动 XX Agent」，再凭记忆编一串带 DOI 的文献。
