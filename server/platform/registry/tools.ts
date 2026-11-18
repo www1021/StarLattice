@@ -425,6 +425,69 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     enabled: true
   },
   {
+    id: "td.student-profile",
+    name: "班级档案查询",
+    type: "builtin",
+    endpoint: "builtin://teacher/student-profile",
+    description:
+      "按分数线或标记从结构化班级档案中筛选学生，给出平均分与命中原因。分数由代码计算，供备课分层、课后跟进与关注名单使用；不涉及真实隐私数据。",
+    schema: jsonSchema(
+      {
+        students: {
+          type: "array",
+          description: "学生档案数组，含 id、name、scores、tags 等字段",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+              level: { type: "string" },
+              scores: { type: "array", items: { type: "number" } },
+              tags: { type: "array", items: { type: "string" } },
+              missedAssignments: { type: "number" },
+              mutedTurns: { type: "number" },
+              note: { type: "string" }
+            },
+            required: ["id", "name"]
+          }
+        },
+        scoreBelow: { type: "number", description: "只看平均分低于该值的学生" },
+        tags: { type: "array", items: { type: "string" }, description: "只看带这些标记的学生，命中任一即可" },
+        order: { type: "string", enum: ["asc", "desc"], description: "按平均分排序" },
+        limit: { type: "number", description: "最多返回人数" }
+      },
+      ["students"]
+    ),
+    enabled: true
+  },
+  {
+    id: "td.risk-classify",
+    name: "学生安全风险分级",
+    type: "builtin",
+    endpoint: "builtin://teacher/risk-classify",
+    description:
+      "按硬规则关键词与学生既往记录判定风险为红线、橙线、黄线或无风险，输出允许动作、禁止动作与上报模板。红线为一票否决，模型不得改写等级或自行生成处置意见。",
+    schema: jsonSchema(
+      {
+        text: { type: "string", description: "事件原话或事实描述" },
+        history: {
+          type: "array",
+          description: "既往事件记录，用于判断是否重复出现",
+          items: {
+            type: "object",
+            properties: {
+              date: { type: "string" },
+              level: { type: "string" },
+              note: { type: "string" }
+            }
+          }
+        }
+      },
+      ["text"]
+    ),
+    enabled: true
+  },
+  {
     id: "lms.publish",
     name: "学习平台发布（HTTP）",
     type: "http",

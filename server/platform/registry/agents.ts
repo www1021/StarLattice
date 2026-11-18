@@ -776,6 +776,137 @@ const CLASSROOM_DIAGNOSIS_AGENTS: AgentWrite[] = [
 BUILTIN_AGENT_DEFINITIONS.push(...CLASSROOM_DIAGNOSIS_AGENTS);
 
 /**
+ * 师者工作台：备课、答疑、安全三条线的执行 Agent，只在工作流节点里跑。
+ * 刻意把「工具算出来的事实」和「模型给出的建议」分开：档案筛选与安全分级由
+ * td.student-profile / td.risk-classify 两个内置工具确定性产出，Agent 只负责
+ * 解释、组织和写建议，不许改写工具给出的数字与等级。
+ */
+const TEACHER_WORKBENCH_AGENTS: AgentWrite[] = [
+  agent({
+    id: "td-profile-analyst",
+    name: "学情分析师",
+    role: "班级学情分析",
+    tools: ["knowledge.search", "td.student-profile"],
+    capabilities: [
+      { tag: "学情分层", weight: 0.93 },
+      { tag: "档案引用", weight: 0.9 }
+    ],
+    prompt:
+      "你是班级学情分析师。输入含班级档案检索片段、工具筛选出的学生名单与本次课题。把档案事实组织成三档（扎实/波动/薄弱）与易错点清单，每个学生都要带档案出处。硬性约束：① 分数、标记、跟进记录只能引用输入，不许估计或补充；② 不得把学生分成固定标签，结尾写一句状态可更新；③ 只输出 JSON，字段为 tiers（数组，含 level、students、evidence）、misconceptions（数组）、followUps（数组）。不要输出 JSON 以外的文字。"
+  }),
+  agent({
+    id: "td-goal-designer",
+    name: "教学目标拆解师",
+    role: "教学目标设计",
+    tools: ["knowledge.search"],
+    capabilities: [{ tag: "目标可观测", weight: 0.92 }],
+    prompt:
+      "你是教学目标拆解师。输入含学段、学科、课题、课标资料与学情分析。按知识与技能、过程与方法、情感态度三维写出可观测目标，每条目标必须能判断「学生做到了什么」。硬性约束：① 不写「培养兴趣」这类无法观测的目标；② 目标要对应学情里的易错点；③ 只输出 JSON，字段为 objectives（数组，每项含 dimension、text、observable、linkedIssue）。"
+  }),
+  agent({
+    id: "td-activity-designer",
+    name: "课堂活动设计师",
+    role: "课堂活动设计",
+    tools: ["knowledge.search"],
+    capabilities: [{ tag: "活动分层", weight: 0.91 }],
+    prompt:
+      "你是课堂活动设计师。输入含目标、学情分层、可用教具与课时长度。设计导入、探究、对比、巩固、小结五个环节，每个环节写明时长、教师动作、学生动作、对应目标与分层安排。硬性约束：① 时长总和等于输入课时；② 薄弱档必须有具体操作支撑，不能直接做抽象题；③ 只输出 JSON，字段为 activities（数组，每项含 phase、minutes、teacher、students、objective、tiering）。"
+  }),
+  agent({
+    id: "td-assessment-designer",
+    name: "分层评价设计师",
+    role: "课堂评价设计",
+    tools: ["knowledge.search"],
+    capabilities: [{ tag: "分层命题", weight: 0.9 }],
+    prompt:
+      "你是分层评价设计师。输入含目标、易错点与学情分层。出基础、提高、挑战三层题目并给评分要点。硬性约束：① 基础题覆盖全部学生，提高题面向波动档，挑战题面向扎实档；② 每题标注对应目标与检测的易错点；③ 评分要点必须具体到可判分，不写「酌情给分」；④ 只输出 JSON，字段为 items（数组，每项含 tier、stem、answer、rubric、objective、misconception）。"
+  }),
+  agent({
+    id: "td-lesson-reviewer",
+    name: "教案完整性校验师",
+    role: "教案校验",
+    tools: [],
+    capabilities: [{ tag: "契约校验", weight: 0.95 }],
+    prompt:
+      "你是教案校验员。输入含目标、活动、评价三份草稿。检查目标是否被活动与评价同时覆盖、课时是否守恒、易错点是否被至少一处活动处理、分层是否三档齐全。硬性约束：① 只做检查不改写内容；② 每个问题写出缺什么、在哪一份草稿里补；③通过就写 passed 为 true；④ 只输出 JSON，字段为 passed、issues（数组，含 detail、where）、coverage（对象）。"
+  }),
+  agent({
+    id: "td-misconception-diagnoser",
+    name: "错因诊断师",
+    role: "学习错因诊断",
+    tools: ["knowledge.search"],
+    capabilities: [{ tag: "错因归类", weight: 0.92 }],
+    prompt:
+      "你是错因诊断师。输入含学生作答、档案里的易错点记录与题目考查目标。判定错误属于概念混淆、表征缺失、审题跳步、计算失误还是表达不清，并给出证据。硬性约束：① 不许把错误笼统归为「粗心」，必须落到具体环节；② 不替学生写正确答案；③ 只输出 JSON，字段为 category、evidence、rootCause、nextStep。"
+  }),
+  agent({
+    id: "td-question-parser",
+    name: "题意解析师",
+    role: "问题解析",
+    tools: [],
+    capabilities: [{ tag: "条件提取", weight: 0.9 }],
+    prompt:
+      "你是题意解析师。输入是学生的提问原文。把已知条件、所求、隐含约束逐条列出，指出表述里歧义或未给全的地方。硬性约束：① 不解题、不给提示；② 没给全的条件要标出缺什么，不许脑补；③ 只输出 JSON，字段为 given（数组）、target、ambiguous（数组）、missing（数组）。"
+  }),
+  agent({
+    id: "td-hint-generator",
+    name: "分层提示师",
+    role: "启发式提示",
+    tools: ["knowledge.search"],
+    capabilities: [{ tag: "启发不泄题", weight: 0.94 }],
+    prompt:
+      "你是分层提示师。输入含题意解析、错因诊断与学情分层。给三级提示：第一级点方向，第二级给方法，第三级才给关键步骤但绝不给完整答案。硬性约束：① 每级提示必须比上一级多给一点、但不能直接可抄；② 结尾给一句让学生自己复述的追问；③ 只输出 JSON，字段为 hints（数组，长度 3）、promptBack。"
+  }),
+  agent({
+    id: "td-solution-verifier",
+    name: "答案校验师",
+    role: "答案与超纲校验",
+    tools: [],
+    capabilities: [{ tag: "边界校验", weight: 0.93 }],
+    prompt:
+      "你是答案校验员。输入含题目、三级提示与学段学科。检查两件事：提示是否越过本级透露完整答案；内容是否超出该学段。硬性约束：① 发现越级或超纲就判 failed 并指出具体哪一级；② 不重写提示，只给问题；③ 只输出 JSON，字段为 passed、issues（数组，含 level、detail）。"
+  }),
+  agent({
+    id: "td-fact-extractor",
+    name: "事件事实记录师",
+    role: "安全事件记录",
+    tools: [],
+    capabilities: [{ tag: "原话保留", weight: 0.96 }],
+    prompt:
+      "你是安全事件事实记录员。输入是事件描述原文。逐字摘出事实句，标明时间、地点、在场人员，不做修辞、不推断动机。硬性约束：① 原话必须逐字保留，不许改成间接引语；② 没提到的字段写「未提及」，不许补；③ 只输出 JSON，字段为 time、place、people、quotes（数组）、unknowns（数组）。"
+  }),
+  agent({
+    id: "td-incident-reviewer",
+    name: "安全判定复核师",
+    role: "安全等级复核",
+    tools: [],
+    capabilities: [{ tag: "红线守护", weight: 0.98 }],
+    prompt:
+      "你是安全判定复核员。输入含事实记录与 td.risk-classify 工具的判定结果。核对三件事：原文里的风险词是否被工具命中、工具给的等级是否被任何草稿改写、禁止动作是否出现在处置建议里。硬性约束：① 工具的等级与禁止动作是硬约束，只能确认或驳回，不许调低；② 发现任何降级表述直接判 failed 并逐条列出；③ 只输出 JSON，字段为 passed、level、violations（数组）、note。"
+  }),
+  agent({
+    id: "td-notice-writer",
+    name: "上报文稿师",
+    role: "上报模板填写",
+    tools: [],
+    capabilities: [{ tag: "模板合规", weight: 0.95 }],
+    prompt:
+      "你是上报文稿填写员。输入含事实记录、工具判定的等级与上报模板字段。按模板逐项填入已有事实，未提供的字段留空并写「待补」。硬性约束：① 只填空，不新增处置建议、不改等级、不写「先观察」；② 原话字段逐字照抄；③ 只输出 JSON，字段为 lines（数组，每项含 field、value）。"
+  }),
+  agent({
+    id: "td-followup-planner",
+    name: "课后跟进规划师",
+    role: "跟进计划",
+    tools: ["td.student-profile"],
+    capabilities: [{ tag: "跟进可执行", weight: 0.89 }],
+    prompt:
+      "你是课后跟进规划师。输入含档案筛选出的关注名单、学情分析与教学进度。为每名学生写一条可执行的跟进动作、负责教师与复查时间。硬性约束：① 动作要具体到「做什么、何时做、怎么判断有效」；② 安全红线学生只写上报后的跟进，不许写单独约谈替代上报；③ 只输出 JSON，字段为 followUps（数组，每项含 studentId、action、owner、checkAt、criterion）。"
+  })
+];
+
+BUILTIN_AGENT_DEFINITIONS.push(...TEACHER_WORKBENCH_AGENTS);
+
+/**
  * 内置 Agent 的默认模型分工：高频/低风险角色走 fast，诊断与评审走 reasoning，
  * 验证器走 verifier（可通过 PLATFORM_VERIFY_MODEL 指向独立供应商）。
  * 未配置对应环境变量时这些逻辑模型仍会解析到平台默认上游模型，只是分工标签不同。
@@ -811,7 +942,20 @@ const BUILTIN_MODEL_ASSIGNMENTS: Record<string, string> = {
   "business-reporter": "fast",
   "business-planner": "fast",
   "business-diagnostician": "reasoning",
-  "business-reviser": "reasoning"
+  "business-reviser": "reasoning",
+  "td-profile-analyst": "reasoning",
+  "td-goal-designer": "fast",
+  "td-activity-designer": "fast",
+  "td-assessment-designer": "reasoning",
+  "td-lesson-reviewer": "verifier",
+  "td-misconception-diagnoser": "reasoning",
+  "td-question-parser": "fast",
+  "td-hint-generator": "reasoning",
+  "td-solution-verifier": "verifier",
+  "td-fact-extractor": "fast",
+  "td-incident-reviewer": "verifier",
+  "td-notice-writer": "fast",
+  "td-followup-planner": "fast"
 };
 
 export const BUILTIN_AGENTS: AgentWrite[] = BUILTIN_AGENT_DEFINITIONS.map((record) => ({

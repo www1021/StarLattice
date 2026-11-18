@@ -7,6 +7,7 @@ import path from "node:path";
 import { PDFParse } from "pdf-parse";
 import { computePsychometrics, normalizeItems } from "./platform/exam/psychometrics.js";
 import { checkRubric, computeClassroomEvidence } from "./platform/classroom/classroomEvidence.js";
+import { classifyRisk, queryStudentProfiles } from "./platform/teacher/teacherTools.js";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   type ArtifactRequest,
@@ -829,6 +830,35 @@ async function executeBuiltinTool(
               : undefined,
             discriminationMin:
               typeof args.discriminationMin === "number" ? args.discriminationMin : undefined
+          })
+        );
+      }
+      case "teacher/student-profile": {
+        return reply(
+          queryStudentProfiles({
+            students: Array.isArray(args.students) ? (args.students as never) : [],
+            scoreBelow: typeof args.scoreBelow === "number" ? args.scoreBelow : undefined,
+            tags: Array.isArray(args.tags) ? (args.tags as unknown[]).map((tag) => String(tag)) : undefined,
+            order: args.order === "asc" || args.order === "desc" ? args.order : undefined,
+            limit: typeof args.limit === "number" ? args.limit : undefined
+          })
+        );
+      }
+      case "teacher/risk-classify": {
+        const text = typeof args.text === "string" ? args.text : "";
+        if (!text.trim()) {
+          return reply("风险判定失败：没有可用的事件描述，请提供 text。", undefined, true);
+        }
+        return reply(
+          classifyRisk({
+            text,
+            history: Array.isArray(args.history)
+              ? (args.history as Array<{ date?: unknown; level?: unknown; note?: unknown }>).map((item) => ({
+                  date: typeof item.date === "string" ? item.date : undefined,
+                  level: typeof item.level === "string" ? item.level : undefined,
+                  note: typeof item.note === "string" ? item.note : undefined
+                }))
+              : []
           })
         );
       }

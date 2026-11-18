@@ -1,4 +1,4 @@
-export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase" | "exam" | "classroom-diagnosis";
+export type ScenarioPackId = "core" | "education" | "business-analysis" | "research" | "showcase" | "exam" | "classroom-diagnosis" | "teacher-workbench";
 
 export type ScenePackId = "education" | "business-analysis";
 
@@ -47,6 +47,10 @@ export const SCENARIO_PACK_META: Record<ScenarioPackId, { label: string; descrip
   "classroom-diagnosis": {
     label: "观课磨课工坊",
     description: "课堂诊断与磨课闭环：五路并行观察、证据核验、量表仲裁、红线下线、多轮改课复核"
+  },
+  "teacher-workbench": {
+    label: "师者工作台",
+    description: "教师全场景智能中枢：备课、答疑、命题、安全、心理、观课六线协同，班级档案自动召回，安全红线硬判定"
   }
 };
 
@@ -58,6 +62,7 @@ export const SCENARIO_PACK_FILTERS: Array<{ id: ScenarioPackFilter; label: strin
   { id: "showcase", label: SCENARIO_PACK_META.showcase.label },
   { id: "exam", label: SCENARIO_PACK_META.exam.label },
   { id: "classroom-diagnosis", label: SCENARIO_PACK_META["classroom-diagnosis"].label },
+  { id: "teacher-workbench", label: SCENARIO_PACK_META["teacher-workbench"].label },
   { id: "custom", label: "自定义" }
 ];
 
@@ -210,6 +215,35 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     ],
     tools: ["classroom.evidence", "rubric.check"],
     workflows: ["cd-master-v1", "cd-observe-v1", "cd-improve-v1", "cd-report-v1"],
+    templates: []
+  },
+  "teacher-workbench": {
+    // 师者工作台：14 个执行 Agent、六条教学线工作流、两个独有确定性工具。
+    // 命题/心理/观课三条线复用已有工作流，这里只登记新写的备课、答疑、安全线与两个子流。
+    agents: [
+      "td-profile-analyst",
+      "td-goal-designer",
+      "td-activity-designer",
+      "td-assessment-designer",
+      "td-lesson-reviewer",
+      "td-misconception-diagnoser",
+      "td-question-parser",
+      "td-hint-generator",
+      "td-solution-verifier",
+      "td-fact-extractor",
+      "td-incident-reviewer",
+      "td-notice-writer",
+      "td-followup-planner"
+    ],
+    tools: ["td.student-profile", "td.risk-classify"],
+    workflows: [
+      "lesson-prep-v1",
+      "qa-tutor-v1",
+      "safety-health-v1",
+      "td-class-profile-v1",
+      "td-misconception-v1",
+      "td-risk-grade-v1"
+    ],
     templates: []
   }
 };

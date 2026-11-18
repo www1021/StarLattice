@@ -1,0 +1,112 @@
+{
+  "id": "safety-health-v1",
+  "name": "学生安全健康主流程",
+  "version": 1,
+  "description": "师者工作台的安全线：内嵌风险分级子流做硬规则判定，按等级分支处置。红线只出上报模板并禁止单独处理，橙线安排约谈与心理介入，黄线记录观察。全程不调用模型自由生成处置意见。",
+  "inputs": [
+    { "name": "eventText", "type": "string", "required": true, "description": "事件原话或事实描述" },
+    { "name": "grade", "type": "string", "required": false, "description": "学段年级" },
+    { "name": "studentId", "type": "string", "required": false, "description": "相关学生标识" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "triage",
+      "kind": "subworkflow",
+      "title": "风险分级",
+      "workflowId": "td-risk-grade-v1",
+      "inputs": {
+        "eventText": "${input.eventText}",
+        "grade": "${input.grade}"
+      },
+      "outputs": {
+        "classification": "${grade}",
+        "facts": "${facts}",
+        "review": "${review}",
+        "notice": "${notice}",
+        "followup": "${followup}"
+      },
+      "stubOutput": {
+        "classification": {
+          "level": "红线",
+          "code": "safety-red",
+          "hits": [{ "keyword": "打我", "category": "人身伤害" }],
+          "allowedActions": ["立即上报德育处与校安全办", "同步家长并记录通知时间"],
+          "forbiddenActions": ["教师单独处理或承诺保密", "用「先观察」「再聊聊」降低等级"]
+        },
+        "facts": { "time": "2026-11-12 课间", "place": "操场", "quotes": ["他说要打我"], "unknowns": ["未提及在场教师"] },
+        "review": { "passed": true, "level": "红线", "violations": [] },
+        "notice": { "lines": [{ "field": "初判等级", "value": "红线" }, { "field": "上报对象", "value": "德育处、校安全办" }] },
+        "followup": { "followUps": [] }
+      }
+    },
+    {
+      "id": "decision",
+      "kind": "condition",
+      "title": "等级处置分支",
+      "when": "${triage.classification.level} == 红线",
+      "then": [
+        {
+          "id": "red-path",
+          "kind": "template",
+          "title": "红线上报路径",
+          "template": "【判定】红线，一票否决，模型不得改写等级。\n【事实】${triage.facts}\n【禁止动作】${triage.classification.forbiddenActions}\n【上报模板】${triage.notice}\n【复核】${triage.review}",
+          "stubOutput": {
+            "output": "【判定】红线，一票否决，模型不得改写等级。\n【事实】2026-11-12 课间，操场，原话「他说要打我」。\n【禁止动作】不得单独处理或承诺保密；不得用「先观察」降低等级。\n【上报模板】初判等级红线；上报对象德育处、校安全办；家长通知时间待补。\n【复核】等级未被改写，原话保留。"
+          }
+        }
+      ],
+      "else": [
+        {
+          "id": "non-red",
+          "kind": "condition",
+          "title": "橙黄线分支",
+          "when": "${triage.classification.level} == 橙线",
+          "then": [
+            {
+              "id": "orange-path",
+              "kind": "agent",
+              "title": "橙线跟进安排",
+              "agent": "td-followup-planner",
+              "outputFormat": "json",
+              "inputs": {
+                "classification": "${triage.classification}",
+                "facts": "${triage.facts}"
+              },
+              "stubOutput": {
+                "followUps": [{ "studentId": "zhouyt", "action": "24 小时内约谈并记录，通知心理老师介入", "owner": "班主任", "checkAt": "2026-11-20", "criterion": "一周内跟进两次且有记录" }]
+              }
+            }
+          ],
+          "else": [
+            {
+              "id": "yellow-path",
+              "kind": "template",
+              "title": "黄线观察记录",
+              "template": "【判定】${triage.classification.level}\n【事实】${triage.facts}\n【处置】当次沟通并记录，一周内留意是否复现。\n【禁止】不得上报为红线。",
+              "stubOutput": {
+                "output": "【判定】黄线\n【事实】课间与同学争执，无身体伤害。\n【处置】当次沟通并记录，一周内留意是否复现。\n【禁止】不得上报为红线。"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "record",
+      "kind": "template",
+      "title": "处置结论",
+      "template": "【学生】${input.studentId}\n【等级】${triage.classification.level}\n【判定依据】${triage.classification.hits}\n【处置路径】${red-path}\n【橙线安排】${orange-path}\n【黄线记录】${yellow-path}\n【复核】${triage.review}",
+      "stubOutput": {
+        "output": "【学生】zhouyt\n【等级】红线\n【判定依据】命中「打我」，人身伤害\n【处置路径】上报德育处与校安全办，禁止单独处理\n【复核】等级未被改写，原话逐字保留"
+      }
+    },
+    { "id": "end", "kind": "end", "title": "结束" }
+  ],
+  "edges": [
+    { "from": "start", "to": "triage" },
+    { "from": "triage", "to": "decision" },
+    { "from": "decision", "to": "record" },
+    { "from": "record", "to": "end" }
+  ]
+}

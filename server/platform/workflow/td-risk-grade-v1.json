@@ -1,0 +1,124 @@
+{
+  "id": "td-risk-grade-v1",
+  "name": "安全风险分级子流",
+  "version": 1,
+  "description": "安全线的严谨子流：事实记录师逐字保留原话，内置工具按硬规则分级，复核师确认工具等级未被任何草稿改写，红线分支只出上报模板不允许单独处理。红线是一票否决，模型不得调低。",
+  "inputs": [
+    { "name": "eventText", "type": "string", "required": true, "description": "事件原话或事实描述" },
+    { "name": "grade", "type": "string", "required": false, "description": "学段年级" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "facts",
+      "kind": "agent",
+      "title": "事实记录",
+      "agent": "td-fact-extractor",
+      "outputFormat": "json",
+      "outputContract": { "required": ["quotes", "unknowns"] },
+      "inputs": {
+        "eventText": "${input.eventText}"
+      },
+      "stubOutput": {
+        "time": "2026-11-12 课间",
+        "place": "操场",
+        "people": ["周语桐", "同学甲"],
+        "quotes": ["他说要打我"],
+        "unknowns": ["未提及在场教师"]
+      }
+    },
+    {
+      "id": "grade",
+      "kind": "tool",
+      "title": "硬规则分级",
+      "tool": "td.risk-classify",
+      "args": {
+        "text": "${input.eventText}",
+        "history": []
+      },
+      "stubOutput": {
+        "level": "红线",
+        "code": "safety-red",
+        "hits": [{ "keyword": "打我", "category": "人身伤害" }],
+        "repeat": false,
+        "allowedActions": ["立即上报德育处与校安全办", "同步家长并记录通知时间", "保留原话记录，不做修饰"],
+        "forbiddenActions": ["教师单独处理或承诺保密", "用「先观察」「再聊聊」降低等级", "由模型自行生成处置意见"],
+        "reportTemplate": ["事件时间：", "事件地点：", "当事人原话（逐字）：", "初判等级：红线", "上报对象：德育处、校安全办"],
+        "rationale": "命中红线关键词：打我。红线为硬判定，模型不得改写等级或处置意见。"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "title": "等级复核",
+      "agent": "td-incident-reviewer",
+      "outputFormat": "json",
+      "outputContract": { "required": ["passed", "level", "violations"] },
+      "inputs": {
+        "facts": "${facts}",
+        "classification": "${grade}",
+        "eventText": "${input.eventText}"
+      },
+      "stubOutput": {
+        "passed": true,
+        "level": "红线",
+        "violations": [],
+        "note": "工具等级与禁止动作未被改写，事实记录保留原话"
+      }
+    },
+    {
+      "id": "redline-gate",
+      "kind": "condition",
+      "title": "红线分支",
+      "when": "${grade.level} == 红线",
+      "then": [
+        {
+          "id": "notice",
+          "kind": "agent",
+          "title": "上报模板填写",
+          "agent": "td-notice-writer",
+          "outputFormat": "json",
+          "outputContract": { "required": ["lines"] },
+          "inputs": {
+            "facts": "${facts}",
+            "classification": "${grade}"
+          },
+          "stubOutput": {
+            "lines": [
+              { "field": "事件时间", "value": "2026-11-12 课间" },
+              { "field": "事件地点", "value": "操场" },
+              { "field": "当事人原话（逐字）", "value": "他说要打我" },
+              { "field": "初判等级", "value": "红线" },
+              { "field": "上报对象", "value": "德育处、校安全办" },
+              { "field": "家长通知时间", "value": "待补" }
+            ]
+          }
+        }
+      ],
+      "else": [
+        {
+          "id": "followup",
+          "kind": "agent",
+          "title": "非红线跟进安排",
+          "agent": "td-followup-planner",
+          "outputFormat": "json",
+          "inputs": {
+            "classification": "${grade}",
+            "facts": "${facts}"
+          },
+          "stubOutput": {
+            "followUps": [{ "studentId": "zhouyt", "action": "当次沟通并记录，一周内留意是否复现", "owner": "班主任", "checkAt": "2026-11-19", "criterion": "一周内无同类事件" }]
+          }
+        }
+      ]
+    },
+    { "id": "end", "kind": "end", "title": "结束" }
+  ],
+  "edges": [
+    { "from": "start", "to": "facts" },
+    { "from": "facts", "to": "grade" },
+    { "from": "grade", "to": "review" },
+    { "from": "review", "to": "redline-gate" },
+    { "from": "redline-gate", "to": "end" }
+  ]
+}

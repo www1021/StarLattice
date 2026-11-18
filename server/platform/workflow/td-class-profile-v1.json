@@ -1,0 +1,112 @@
+{
+  "id": "td-class-profile-v1",
+  "name": "班级学情档案分析子流",
+  "version": 1,
+  "description": "师者工作台的学情子流：从班级档案知识库召回学生画像与易错点，结构化成档案数组后交给内置工具做分层筛选，学情分析师据此输出三档分层、易错点清单与跟进建议。数字由工具算，分析师只解释不改写。",
+  "inputs": [
+    { "name": "grade", "type": "string", "required": true, "description": "学段年级" },
+    { "name": "subject", "type": "string", "required": true, "description": "学科" },
+    { "name": "topic", "type": "string", "required": true, "description": "当前课题" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "archive",
+      "kind": "tool",
+      "title": "档案检索",
+      "tool": "knowledge.search",
+      "args": {
+        "query": "${input.grade}${input.subject}班级档案 学生画像 易错点 跟进记录 ${input.topic}",
+        "topK": 8
+      },
+      "stubOutput": {
+        "citations": [
+          { "documentName": "学生画像.md", "snippet": "林小满：分数单元两次测验 63、68，画图能理解，符号推导出错率高。" },
+          { "documentName": "学生画像.md", "snippet": "黄子轩：分数单元 58、61，认为分子分母越大分数越大。" },
+          { "documentName": "班级概览.md", "snippet": "重点关注学生：林小满、赵一鸣、周语桐、黄子轩。" }
+        ],
+        "count": 3
+      }
+    },
+    {
+      "id": "structure",
+      "kind": "llm",
+      "title": "档案结构化",
+      "temperature": 0.1,
+      "inputs": {
+        "citations": "${archive.citations}"
+      },
+      "system": "你是档案整理员。只做格式转换，从检索片段里抽出能结构化表达的学生字段，不评价、不补充。",
+      "prompt": "把检索片段里的学生整理成数组。只保留片段里明确出现的信息，缺失字段不要编。只输出 JSON：{\"students\":[{\"id\":\"学号或姓名拼音\",\"name\":\"姓名\",\"scores\":[分数],\"tags\":[\"数学\",\"心理\",\"安全\"],\"note\":\"原文摘录\"}]}。检索片段：${archive.citations}",
+      "stubOutput": {
+        "students": [
+          { "id": "linxm", "name": "林小满", "scores": [63, 68], "tags": ["数学", "心理"], "note": "画图能理解，符号推导出错率高" },
+          { "id": "huangzx", "name": "黄子轩", "scores": [58, 61], "tags": ["数学"], "note": "认为分子分母越大分数越大" },
+          { "id": "zhaoym", "name": "赵一鸣", "scores": [78, 85], "tags": ["数学"], "note": "应用题审题跳步" },
+          { "id": "zhouyt", "name": "周语桐", "scores": [85, 86], "tags": ["安全", "心理"], "note": "家庭变故后情绪波动" }
+        ]
+      }
+    },
+    {
+      "id": "filter",
+      "kind": "tool",
+      "title": "分层筛选",
+      "tool": "td.student-profile",
+      "args": {
+        "students": "${structure.students}",
+        "order": "asc"
+      },
+      "stubOutput": {
+        "total": 4,
+        "matched": 4,
+        "filter": { "scoreBelow": null, "tags": [] },
+        "students": [
+          { "id": "huangzx", "name": "黄子轩", "average": 59.5, "tags": ["数学"], "reasons": [] },
+          { "id": "linxm", "name": "林小满", "average": 65.5, "tags": ["数学", "心理"], "reasons": [] },
+          { "id": "zhaoym", "name": "赵一鸣", "average": 81.5, "tags": ["数学"], "reasons": [] },
+          { "id": "zhouyt", "name": "周语桐", "average": 85.5, "tags": ["安全", "心理"], "reasons": [] }
+        ],
+        "summary": "共 4 人，命中 4 人，列出 4 人。"
+      }
+    },
+    {
+      "id": "analyse",
+      "kind": "agent",
+      "title": "学情分析",
+      "agent": "td-profile-analyst",
+      "outputFormat": "json",
+      "outputContract": { "required": ["tiers", "misconceptions", "followUps"] },
+      "inputs": {
+        "grade": "${input.grade}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}",
+        "citations": "${archive.citations}",
+        "students": "${filter.students}"
+      },
+      "stubOutput": {
+        "tiers": [
+          { "level": "扎实", "students": ["周语桐"], "evidence": ["学生画像.md：分数单元 85 左右"] },
+          { "level": "波动", "students": ["赵一鸣"], "evidence": ["学生画像.md：78-85，应用题波动大"] },
+          { "level": "薄弱", "students": ["黄子轩", "林小满"], "evidence": ["学生画像.md：58、61 与 63、68"] }
+        ],
+        "misconceptions": [
+          "分子分母越大分数越大",
+          "分子分母含义颠倒",
+          "单位「1」变化时找不到整体"
+        ],
+        "followUps": [
+          "黄子轩：用折纸建立 1/2 与 2/4 等量概念，暂不引入纯数字比较",
+          "林小满：先画图再写符号，每周三课后单独过一道例题"
+        ]
+      }
+    },
+    { "id": "end", "kind": "end", "title": "结束" }
+  ],
+  "edges": [
+    { "from": "start", "to": "archive" },
+    { "from": "archive", "to": "structure" },
+    { "from": "structure", "to": "filter" },
+    { "from": "filter", "to": "analyse" },
+    { "from": "analyse", "to": "end" }
+  ]
+}

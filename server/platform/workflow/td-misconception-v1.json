@@ -1,0 +1,130 @@
+{
+  "id": "td-misconception-v1",
+  "name": "错因诊断子流",
+  "version": 1,
+  "description": "答疑线的错因子流：先解析题意与缺失条件，再诊断错因，验证器核对诊断是否落到具体环节，不合格则由诊断师重做，最多两轮。只定位错因，不给答案。",
+  "inputs": [
+    { "name": "question", "type": "string", "required": true, "description": "学生提问或原题" },
+    { "name": "studentAnswer", "type": "string", "required": false, "description": "学生的作答" },
+    { "name": "grade", "type": "string", "required": true, "description": "学段年级" },
+    { "name": "topic", "type": "string", "required": false, "description": "当前课题" }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "parse",
+      "kind": "agent",
+      "title": "题意解析",
+      "agent": "td-question-parser",
+      "outputFormat": "json",
+      "outputContract": { "required": ["given", "target", "missing"] },
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "stubOutput": {
+        "given": ["把 12 个苹果平均分给 3 个小组", "每组得到总数的几分之几"],
+        "target": "求每组占总数的分数",
+        "ambiguous": [],
+        "missing": []
+      }
+    },
+    {
+      "id": "diagnose",
+      "kind": "agent",
+      "title": "错因诊断",
+      "agent": "td-misconception-diagnoser",
+      "outputFormat": "json",
+      "outputContract": { "required": ["category", "evidence", "rootCause", "nextStep"] },
+      "inputs": {
+        "grade": "${input.grade}",
+        "topic": "${input.topic}",
+        "question": "${input.question}",
+        "studentAnswer": "${input.studentAnswer}",
+        "parsed": "${parse}"
+      },
+      "stubOutput": {
+        "category": "表征缺失",
+        "evidence": "学生把 3/4 答成 4/3，分子分母含义颠倒",
+        "rootCause": "没有把「12 个苹果」看作单位「1」，直接从数字大小判断",
+        "nextStep": "先用画图把整体圈出来，再数平均分的份数"
+      }
+    },
+    {
+      "id": "check",
+      "kind": "verify",
+      "title": "诊断校验",
+      "verifier": "td-solution-verifier",
+      "rubric": [
+        "错因落到具体环节而不是粗心",
+        "没有给出完整答案",
+        "依据来自学生作答或题意解析"
+      ],
+      "threshold": 0.8,
+      "expectedKeywords": ["错因", "环节"],
+      "minChars": 40,
+      "inputs": {
+        "artifact": "${diagnose}",
+        "evidence": "${parse}"
+      }
+    },
+    {
+      "id": "redo-gate",
+      "kind": "condition",
+      "title": "诊断不过闸门",
+      "when": "${check.score} < 0.8",
+      "then": [
+        {
+          "id": "redo-loop",
+          "kind": "loop",
+          "title": "诊断重做循环",
+          "maxIterations": 2,
+          "while": "${recheck.score} < 0.8",
+          "patience": 2,
+          "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+          "body": [
+            {
+              "id": "rediagnose",
+              "kind": "agent",
+              "title": "按问题重做诊断",
+              "agent": "td-misconception-diagnoser",
+              "outputFormat": "json",
+              "inputs": {
+                "grade": "${input.grade}",
+                "question": "${input.question}",
+                "studentAnswer": "${input.studentAnswer}",
+                "issues": "${check.issues}",
+                "parsed": "${parse}"
+              },
+              "stubOutput": {
+                "category": "概念混淆",
+                "evidence": "学生作答里把分子分母含义说反",
+                "rootCause": "单位「1」未建立，直接比较数字大小",
+                "nextStep": "先圈整体再数份数，用图形表征过渡到符号"
+              }
+            },
+            {
+              "id": "recheck",
+              "kind": "verify",
+              "title": "重做后再验",
+              "verifier": "td-solution-verifier",
+              "rubric": ["错因落到具体环节", "没有给出完整答案"],
+              "threshold": 0.8,
+              "inputs": {
+                "artifact": "${rediagnose}",
+                "evidence": "${parse}"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    { "id": "end", "kind": "end", "title": "结束" }
+  ],
+  "edges": [
+    { "from": "start", "to": "parse" },
+    { "from": "parse", "to": "diagnose" },
+    { "from": "diagnose", "to": "check" },
+    { "from": "check", "to": "redo-gate" },
+    { "from": "redo-gate", "to": "end" }
+  ]
+}
