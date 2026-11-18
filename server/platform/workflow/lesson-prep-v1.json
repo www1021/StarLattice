@@ -173,7 +173,8 @@
                 "linkedIssue": "单位「1」变化时找不到整体"
               }
             ]
-          }
+          },
+          "model": "qwen-flash"
         },
         {
           "id": "activity",
@@ -235,7 +236,8 @@
                 "tiering": "全体"
               }
             ]
-          }
+          },
+          "model": "qwen-flash"
         },
         {
           "id": "assessment",
@@ -280,7 +282,8 @@
                 "misconception": "分母越大分数越小"
               }
             ]
-          }
+          },
+          "model": "qwen-flash"
         }
       ]
     },
@@ -316,7 +319,8 @@
           "itemCount": 3,
           "minutesSum": 40
         }
-      }
+      },
+      "model": "qwen-flash"
     },
     {
       "id": "review-gate",
@@ -390,7 +394,8 @@
                     "tiering": "全体"
                   }
                 ]
-              }
+              },
+              "model": "qwen-flash"
             },
             {
               "id": "recheck",
@@ -412,7 +417,8 @@
                   "itemCount": 3,
                   "minutesSum": 40
                 }
-              }
+              },
+              "model": "qwen-flash"
             }
           ]
         }

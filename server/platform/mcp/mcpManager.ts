@@ -17,6 +17,8 @@ export type WorkflowProgressEvent = {
   workflowId: string;
   path?: string;
   durationMs?: number;
+  /** 节点成功后的产物摘要，聊天层据此边跑边说。 */
+  resultExcerpt?: string;
 };
 
 type WorkflowRunner = (

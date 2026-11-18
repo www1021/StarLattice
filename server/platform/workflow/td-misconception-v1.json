@@ -59,7 +59,8 @@
         "target": "求每组占总数的分数",
         "ambiguous": [],
         "missing": []
-      }
+      },
+      "model": "qwen-flash"
     },
     {
       "id": "diagnose",
@@ -87,7 +88,8 @@
         "evidence": "学生把 3/4 答成 4/3，分子分母含义颠倒",
         "rootCause": "没有把「12 个苹果」看作单位「1」，直接从数字大小判断",
         "nextStep": "先用画图把整体圈出来，再数平均分的份数"
-      }
+      },
+      "model": "qwen-flash"
     },
     {
       "id": "check",
@@ -146,7 +148,8 @@
                 "evidence": "学生作答里把分子分母含义说反",
                 "rootCause": "单位「1」未建立，直接比较数字大小",
                 "nextStep": "先圈整体再数份数，用图形表征过渡到符号"
-              }
+              },
+              "model": "qwen-flash"
             },
             {
               "id": "recheck",

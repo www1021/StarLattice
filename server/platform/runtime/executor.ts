@@ -91,7 +91,19 @@ export type WorkflowNodeProgress = {
   /** 子流程节点带路径前缀，界面可据此缩进显示。 */
   path?: string;
   durationMs?: number;
+  /** 节点成功后的产物摘要，供聊天层边跑边说；只是文本片段，不参与执行。 */
+  resultExcerpt?: string;
 };
+
+/** 把节点产物压成短文本给聊天层播报，避免整段 JSON 灌进正文。 */
+function excerptForNarration(value: unknown, limit = 1600): string {
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return text.length > limit ? `${text.slice(0, limit)}…` : text;
+  } catch {
+    return "";
+  }
+}
 
 export type RunOptions = {
   /** 试跑：执行到该顶层节点完成后停下，后续节点保持未执行。 */
@@ -2328,7 +2340,8 @@ export class WorkflowExecutor {
       sequence: state.sequence,
       workflowId: state.workflowId,
       ...(statement.path ? { path: statement.path } : {}),
-      durationMs: Math.max(0, Date.now() - startedAt)
+      durationMs: Math.max(0, Date.now() - startedAt),
+      resultExcerpt: excerptForNarration(payload)
     });
   }
 
@@ -3045,7 +3058,8 @@ export class WorkflowExecutor {
           sequence: state.sequence,
           workflowId: state.workflowId,
           ...(step.path ? { path: step.path } : {}),
-          durationMs: Math.max(0, Date.now() - stepStartedAt)
+          durationMs: Math.max(0, Date.now() - stepStartedAt),
+          resultExcerpt: excerptForNarration(output)
         });
         return;
       } catch (error) {

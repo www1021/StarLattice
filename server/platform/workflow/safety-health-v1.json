@@ -139,7 +139,8 @@
                     "criterion": "一周内跟进两次且有记录"
                   }
                 ]
-              }
+              },
+              "model": "qwen-flash"
             }
           ],
           "else": [

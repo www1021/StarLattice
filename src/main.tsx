@@ -146,6 +146,8 @@ type ChatMessage = {
   toolNotes?: ToolNote[];
   /** 工作流执行中实时推送的节点进度，正文到来后由生成态切换到具体步骤。 */
   workflowStep?: WorkflowStepEvent;
+  /** 边跑边说的步骤流水，累积保留，正文出现后仍可见。 */
+  workflowSteps?: WorkflowStepEvent[];
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
   traceAgents?: TraceAgent[];
   /** 这条回复由哪个智能体给出；默认助手留空。 */
@@ -2413,14 +2415,40 @@ function Conversation({
             ) : message.evaluation?.trainingType === "模拟课堂" ? (
               <ClassroomRecordCard message={message} />
             ) : (
-              <MessageMarkdown
-                text={
-                  message.content ||
-                  (message.status === "generating"
-                    ? message.workflowStep?.stepText || "正在生成..."
-                    : "")
-                }
-              />
+              <>
+                {message.role === "assistant" && message.workflowSteps?.length ? (
+                  <div className="workflow-progress-list">
+                    {message.workflowSteps.map((step) => (
+                      <div
+                        className={`workflow-progress-row workflow-progress-${step.status}`}
+                        key={`${step.workflowId}:${step.path ?? ""}:${step.nodeId}:${step.sequence}`}
+                      >
+                        <span className="workflow-progress-mark">
+                          {step.status === "succeeded" ? "✓" : step.status === "failed" ? "✗" : "·"}
+                        </span>
+                        <span className="workflow-progress-title">
+                          {step.path ? "↳ " : ""}{step.title}
+                        </span>
+                        <span className="workflow-progress-time">
+                          {step.status === "running"
+                            ? "执行中"
+                            : step.durationMs !== undefined
+                              ? `${(step.durationMs / 1000).toFixed(1)}s`
+                              : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <MessageMarkdown
+                  text={
+                    message.content ||
+                    (message.status === "generating"
+                      ? message.workflowStep?.stepText || "正在生成..."
+                      : "")
+                  }
+                />
+              </>
             )}
             {message.attachments?.length ? (
               <div className="message-attachments">
@@ -11366,11 +11394,20 @@ function App() {
           );
         },
         onWorkflowStep(event) {
-          // 只更新正文的进度占位；正文一旦开始流式吐字，MessageMarkdown 优先显示真实内容。
+          // 累积成步骤流水：同一节点从 running 到 succeeded 是更新，不是新行。
           setMessages((current) =>
-            current.map((item) =>
-              item.id === assistantId ? { ...item, workflowStep: event } : item
-            )
+            current.map((item) => {
+              if (item.id !== assistantId) return item;
+              const steps = [...(item.workflowSteps ?? [])];
+              const key = `${event.workflowId}:${event.path ?? ""}:${event.nodeId}:${event.sequence}`;
+              const existing = steps.findIndex(
+                (step) =>
+                  `${step.workflowId}:${step.path ?? ""}:${step.nodeId}:${step.sequence}` === key
+              );
+              if (existing >= 0) steps[existing] = event;
+              else steps.push(event);
+              return { ...item, workflowStep: event, workflowSteps: steps };
+            })
           );
         },
         onThinkingDelta(content) {

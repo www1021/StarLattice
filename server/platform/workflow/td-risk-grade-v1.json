@@ -51,7 +51,8 @@
         "unknowns": [
           "未提及在场教师"
         ]
-      }
+      },
+      "model": "qwen-flash"
     },
     {
       "id": "grade",
@@ -115,7 +116,8 @@
         "level": "红线",
         "violations": [],
         "note": "工具等级与禁止动作未被改写，事实记录保留原话"
-      }
+      },
+      "model": "qwen-flash"
     },
     {
       "id": "redline-gate",
@@ -165,7 +167,8 @@
                 "value": "待补"
               }
             ]
-          }
+          },
+          "model": "qwen-flash"
         }
       ],
       "else": [
@@ -189,7 +192,8 @@
                 "criterion": "一周内无同类事件"
               }
             ]
-          }
+          },
+          "model": "qwen-flash"
         }
       ]
     },
