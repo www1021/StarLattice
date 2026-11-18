@@ -539,14 +539,25 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     type: "builtin",
     endpoint: "builtin://game/play",
     description:
-      "开一局学科小游戏：数学速算、24 点、数独、飞花令。学生说想练一练、想挑战一下、想玩个游戏、想接诗句时调用。" +
+      "开一局学科小游戏：数学速算、24 点、数独；语文诗句拼句、飞花令；英语单词拼写。" +
+      "学生说想练一练、想挑战一下、想玩个游戏、想拼诗句、想背单词时调用。" +
       "题目会以可玩卡片的形式发到界面，调用后不要复述题目、不要报答案。",
     schema: jsonSchema(
       {
         game: {
           type: "string",
-          enum: ["math_sprint", "twenty_four", "sudoku", "flying_flower"],
-          description: "math_sprint=数学速算，twenty_four=24 点，sudoku=数独，flying_flower=飞花令"
+          enum: [
+            "math_sprint",
+            "twenty_four",
+            "sudoku",
+            "flying_flower",
+            "poetry_order",
+            "word_spell"
+          ],
+          description:
+            "math_sprint=数学速算，twenty_four=24 点，sudoku=数独，flying_flower=飞花令（学生自己接诗句），" +
+            "poetry_order=诗句拼句（字块打乱排成一句，比飞花令简单，小学低年级优先用这个），" +
+            "word_spell=单词拼写（给中文意思拼英文单词）"
         },
         grade: {
           type: "number",
@@ -558,13 +569,15 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
         difficulty: {
           type: "string",
           enum: ["easy", "normal", "hard"],
-          description: "难度，缺省 normal"
+          description:
+            "难度，缺省 normal（诗句拼句与单词拼写缺省按 easy 出）。小学低年级用 easy，初高中用 normal 或 hard"
         },
         count: {
           type: "number",
           minimum: 1,
           maximum: 12,
-          description: "题量或轮数：速算 4-12 题、24 点 1-6 组、飞花令 3-8 轮，缺省按各玩法给默认值"
+          description:
+            "题量或轮数：速算 4-12 题、24 点 1-6 组、飞花令 3-8 轮、诗句拼句 3-8 句、单词拼写 3-8 个，缺省按各玩法给默认值"
         },
         char: { type: "string", description: "飞花令的令字，只能是春、月、花、风、雪、山、水、云、雨、江、酒、柳之一" }
       },

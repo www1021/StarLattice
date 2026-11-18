@@ -4,6 +4,8 @@ import { createMathSprint } from "./mathSprint.js";
 import { createTwentyFour, solveTwentyFour } from "./twentyFour.js";
 import { createSudoku } from "./sudoku.js";
 import { FALLBACK, FLYING_CHARS, normalizeLine, toClauses } from "./poetry.js";
+import { createPoetryOrder, poolSize as poetryPool } from "./poetryOrder.js";
+import { createWordSpell, poolSize as wordPool } from "./words.js";
 import { resolveType } from "./index.js";
 import { ensureMathDelimiters } from "../../src/features/games/mathSource.js";
 import { renderInlineMarkdown, setMathRenderer } from "../../src/features/chat/markdown.js";
@@ -147,6 +149,16 @@ test("游戏的类型参数写得再随意也要落到对的那一种", () => {
   assert.equal(resolveType("数独"), "sudoku");
   assert.equal(resolveType("练几道分数题"), "math_sprint");
   assert.equal(resolveType(undefined), "math_sprint");
+  // 语文两个玩法：笼统说「语文/古诗」先落到更简单的拼句，真想接诗才会说飞花令。
+  assert.equal(resolveType("poetry_order"), "poetry_order");
+  assert.equal(resolveType("word_spell"), "word_spell");
+  assert.equal(resolveType("拼诗句"), "poetry_order");
+  assert.equal(resolveType("古诗排序"), "poetry_order");
+  assert.equal(resolveType("语文"), "poetry_order");
+  assert.equal(resolveType("飞花令"), "flying_flower");
+  assert.equal(resolveType("接诗"), "flying_flower");
+  assert.equal(resolveType("拼单词"), "word_spell");
+  assert.equal(resolveType("英语背单词"), "word_spell");
 });
 
 test("游戏载荷有统一标记，别的工具结果不会被误当成游戏", () => {
@@ -193,4 +205,94 @@ test("选项是裸 LaTeX 时要补上 $，纯数字选项不补", () => {
   setMathRenderer((tex, displayMode) => `<x-math data-display="${displayMode}">${tex}</x-math>`);
   const html = renderInlineMarkdown(ensureMathDelimiters("\\frac{4}{2}"));
   assert.match(html, /<x-math data-display="false">\\frac\{4\}\{2\}<\/x-math>/);
+});
+
+test("诗句拼句：字块够用、干扰字不在句子里、三档长度对得上", () => {
+  for (const level of ["easy", "normal", "hard"] as const) {
+    const game = createPoetryOrder({ level, rounds: 5 });
+    assert.equal(game.type, "poetry_order");
+    assert.equal(game.rounds.length, 5);
+    assert.ok(poetryPool(level) >= 5, `${level} 档题库不够撑一局`);
+
+    const seen = new Set<string>();
+    for (const round of game.rounds) {
+      // 简单档五言、其余七言；接句档必须给上句。
+      assert.equal(round.answer.length, level === "easy" ? 5 : 7, `${level} ${round.answer}`);
+      if (level === "hard") {
+        assert.ok(round.prompt, "接句档要给上半句");
+      }
+      assert.ok(round.source.title.length > 0);
+
+      // 要填的字一个都不能少：重复字也要有对应数量的块。
+      const rest = [...round.answer].slice(game.prefilled);
+      const tiles = [...round.tiles];
+      for (const char of rest) {
+        const hit = tiles.indexOf(char);
+        assert.ok(hit >= 0, `${round.answer} 少了字块「${char}」`);
+        tiles.splice(hit, 1);
+      }
+      // 剩下的都是干扰字，且不能是这句话里的字（否则学生分不清该点哪个）。
+      for (const extra of tiles) {
+        assert.equal(round.answer.includes(extra), false, `「${extra}」不该出现在 ${round.answer} 里`);
+      }
+      assert.equal(round.tiles.length, rest.length + (level === "hard" ? 3 : 2));
+
+      seen.add(round.answer);
+    }
+    assert.equal(seen.size, 5, "一局里不该重复同一句");
+  }
+});
+
+test("诗句拼句：打乱后不能跟原句一样", () => {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const game = createPoetryOrder({ level: "normal", rounds: 4 });
+    for (const round of game.rounds) {
+      assert.notEqual(round.tiles.slice(0, round.answer.length).join(""), round.answer);
+    }
+  }
+});
+
+test("单词拼写：字母正好够用，挑战档多一块干扰", () => {
+  for (const level of ["easy", "normal", "hard"] as const) {
+    const game = createWordSpell({ level, rounds: 5 });
+    assert.equal(game.type, "word_spell");
+    assert.equal(game.rounds.length, 5);
+    assert.ok(wordPool(level) >= 5, `${level} 档词库不够撑一局`);
+
+    const seen = new Set<string>();
+    for (const round of game.rounds) {
+      assert.ok(round.meaning.length > 0);
+      assert.ok(round.pos.length > 0);
+
+      const letters = [...round.letters];
+      for (const char of round.word) {
+        const hit = letters.indexOf(char);
+        assert.ok(hit >= 0, `${round.word} 少了字母 ${char}`);
+        letters.splice(hit, 1);
+      }
+      // 多余的就是干扰牌：简单与普通档不许有，挑战档正好一块。
+      assert.equal(letters.length, level === "hard" ? 1 : 0, `${level} ${round.word} 多出 ${letters.join("")}`);
+      // 干扰字母不能是单词里已有的字母，否则学生会以为要拼两次。
+      for (const spare of letters) {
+        assert.equal(round.word.includes(spare), false);
+      }
+
+      seen.add(round.word);
+    }
+    assert.equal(seen.size, 5, "一局里不该重复同一个词");
+  }
+});
+
+test("单词拼写：字母是打乱的，不能直接读出来", () => {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const game = createWordSpell({ level: "normal", rounds: 4 });
+    for (const round of game.rounds) {
+      assert.notEqual(round.letters.join(""), round.word);
+    }
+  }
+});
+
+test("两种新玩法的载荷都能被认成游戏", () => {
+  assert.equal(isGamePayload(createPoetryOrder({ rounds: 3 })), true);
+  assert.equal(isGamePayload(createWordSpell({ rounds: 3 })), true);
 });

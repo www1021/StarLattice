@@ -4,6 +4,8 @@ import { MathSprintCard } from "./MathSprintCard";
 import { TwentyFourCard } from "./TwentyFourCard";
 import { SudokuCard } from "./SudokuCard";
 import { FlyingFlowerCard } from "./FlyingFlowerCard";
+import { PoetryOrderCard } from "./PoetryOrderCard";
+import { WordSpellCard } from "./WordSpellCard";
 import "./games.css";
 
 /**
@@ -36,6 +38,8 @@ export function GameCard({
       {game.type === "twenty_four" ? <TwentyFourCard game={game} onAsk={onAsk} /> : null}
       {game.type === "sudoku" ? <SudokuCard game={game} /> : null}
       {game.type === "flying_flower" ? <FlyingFlowerCard game={game} /> : null}
+      {game.type === "poetry_order" ? <PoetryOrderCard game={game} onAsk={onAsk} /> : null}
+      {game.type === "word_spell" ? <WordSpellCard game={game} onAsk={onAsk} /> : null}
     </section>
   );
 }

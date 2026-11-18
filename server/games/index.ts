@@ -9,6 +9,8 @@ import { createMathSprint } from "./mathSprint.js";
 import { createTwentyFour } from "./twentyFour.js";
 import { createSudoku } from "./sudoku.js";
 import { createFlyingFlower, FLYING_CHARS } from "./poetry.js";
+import { createPoetryOrder } from "./poetryOrder.js";
+import { createWordSpell } from "./words.js";
 import type { GamePayload, GameType } from "./types.js";
 
 export type PlayGameArgs = {
@@ -29,12 +31,18 @@ export function resolveType(input: string | undefined): GameType {
   // 先认工具 schema 里的规范 id：模型百分之百会照抄 "twenty_four" 这种写法，
   // 只按中文关键词匹配会把 24 点和飞花令都漏成速算。
   if (/flying[_\- ]?flower/.test(text)) return "flying_flower";
+  if (/poetry[_\- ]?order/.test(text)) return "poetry_order";
+  if (/word[_\- ]?spell/.test(text)) return "word_spell";
   if (/twenty[_\- ]?four/.test(text)) return "twenty_four";
   if (/math[_\- ]?sprint/.test(text)) return "math_sprint";
   // 其次认中文说法：模型自己改口时也要接得住。
   if (/24|二十四|凑二十四/.test(text)) return "twenty_four";
   if (/数独|sudoku/.test(text)) return "sudoku";
-  if (/飞花|诗词|古诗|诗歌|接诗|语文|poetry/.test(text)) return "flying_flower";
+  if (/拼单词|拼写|单词|英语|english|spell|vocab/.test(text)) return "word_spell";
+  // 拼句比飞花令简单，所以「语文 / 古诗 / 诗词」这些笼统说法先落到拼句上；
+  // 学生真想接诗，会自己说「飞花令」或「接诗」。
+  if (/拼句|拼诗|诗句|连句|排句|字块|古诗|诗词|诗歌|语文|poetry|order/.test(text)) return "poetry_order";
+  if (/飞花|接诗|令字/.test(text)) return "flying_flower";
   if (/速算|口算|刷题|练习|计算|math|数学/.test(text)) return "math_sprint";
   return "math_sprint";
 }
@@ -83,6 +91,10 @@ function summaryOf(payload: GamePayload): string {
     }
     case "flying_flower":
       return `飞花令，令字是「${payload.char}」，计划接 ${payload.rounds} 轮`;
+    case "poetry_order":
+      return `「${payload.title}」，${payload.rounds.length} 句诗`;
+    case "word_spell":
+      return `「${payload.title}」，${payload.rounds.length} 个单词`;
   }
 }
 
@@ -100,6 +112,35 @@ export async function playGame(args: PlayGameArgs): Promise<PlayGameResult> {
         `AI 先出的是「${payload.opener.line}」（${payload.opener.author}《${payload.opener.title}》）。`,
         "题目已经作为可玩的卡片发到学生界面上了。",
         "你只要说一句鼓励或引导的话（比如提示可以想哪一类诗），**不要复述题目、不要替学生答题、也不要要求他用文字把答案发给你**——直接在卡片里填就有反馈。"
+      ].join("")
+    };
+  }
+
+  if (type === "poetry_order") {
+    // 语文这两档默认往简单走：没明说难度就出五言拼句，小学生上手不至于卡住。
+    const level = args.difficulty ? difficulty : "easy";
+    const payload = createPoetryOrder({ level, rounds: args.count });
+    return {
+      payload,
+      text: [
+        `已经开了一局${summaryOf(payload)}。`,
+        "题目已经作为可玩的卡片发到学生界面上了：字块打乱，按诗句顺序点。",
+        "你只要说一句开场话（可以提一句「先看哪个字该在最前面」），**不要把整句念出来、不要说第几个字是什么、也不要让他把答案打字发给你**——学生在卡片里点，程序会判。",
+        "答完之后如果学生问这句诗的意思或者出处，正常讲，卡片里也留了出处。"
+      ].join("")
+    };
+  }
+
+  if (type === "word_spell") {
+    const level = args.difficulty ? difficulty : "easy";
+    const payload = createWordSpell({ level, rounds: args.count });
+    return {
+      payload,
+      text: [
+        `已经开了一局${summaryOf(payload)}。`,
+        "题目已经作为可玩的卡片发到学生界面上了：给中文意思和打乱的字母牌，按顺序点出单词。",
+        "你只要说一句开场话（可以提醒「先想第一个音是什么字母」），**不要把单词拼出来、不要逐个字母念、也不要让他把答案打字发给你**。",
+        "学生拼错时可以提示词性或者用它造一个短句，但别直接给拼写。"
       ].join("")
     };
   }

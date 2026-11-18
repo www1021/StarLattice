@@ -981,3 +981,406 @@
 .agent-chat-bar-play + .agent-chat-bar-switch {
   margin-left: 0;
 }
+
+/* ── 诗句拼句：活字排诗 ─────────────────────── */
+
+.game-card[data-game="poetry_order"] {
+  /* 朱红，取印章的意思 */
+  --game-tone: hsl(348 60% 47%);
+}
+
+.game-card[data-game="word_spell"] {
+  /* 青蓝，跟英语课本的冷色一致 */
+  --game-tone: hsl(198 74% 42%);
+}
+
+/* 诗笺：一整块浅底，诗句落在上面像写了字的纸。 */
+.poetry-paper {
+  padding: 15px 13px 13px;
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--game-tone) 7%, transparent), transparent 72%),
+    linear-gradient(180deg, rgba(var(--rgb-surface), 0.98), rgba(var(--rgb-shadow), 0.028));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 16%, var(--line-92));
+  transition: box-shadow 0.2s ease;
+}
+
+.poetry-paper.is-right {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-good) 48%, transparent);
+}
+
+.poetry-paper.is-wrong {
+  animation: poetry-shake 0.34s ease;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-bad) 46%, transparent);
+}
+
+@keyframes poetry-shake {
+  0%, 100% { transform: translateX(0); }
+  22% { transform: translateX(-5px); }
+  48% { transform: translateX(5px); }
+  72% { transform: translateX(-3px); }
+}
+
+.poetry-prompt {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  margin: 0 0 11px;
+  font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+  font-size: 14.5px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.poetry-prompt-label {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--game-tone) 10%, transparent);
+  color: var(--game-tone);
+  font-family: var(--font-ui, inherit);
+  font-size: 10.5px;
+  letter-spacing: 0;
+}
+
+.poetry-slots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+}
+
+.poetry-slot {
+  width: clamp(30px, 8.2vw, 38px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(var(--rgb-shadow), 0.045);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 10%, var(--line-92));
+  color: var(--ink);
+  font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+  font-size: 20px;
+  font-weight: 600;
+  cursor: default;
+  transition:
+    background 0.13s ease,
+    box-shadow 0.15s ease;
+}
+
+.poetry-slot.is-filled {
+  background: rgba(var(--rgb-surface), 1);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--game-tone) 30%, transparent),
+    0 2px 6px -5px rgba(var(--rgb-shadow), 0.7);
+  cursor: pointer;
+}
+
+/* 简单档预填的首字：只留一条底线，暗示「这个已经给你了」。 */
+.poetry-slot.is-locked {
+  background: transparent;
+  box-shadow: none;
+  border-bottom: 2px solid color-mix(in srgb, var(--game-tone) 34%, transparent);
+  border-radius: 0;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+}
+
+.poetry-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 11px 9px;
+  border-radius: 13px;
+  /* 托盘：把字块圈在一块浅底上，看着像摆在案头的活字，而不是一排按钮。 */
+  background: color-mix(in srgb, var(--game-tone) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 9%, transparent);
+}
+
+/* 字块做成活字的样子：顶面浅、底下有一层厚度，按下去会陷进去。 */
+.poetry-tile {
+  width: clamp(34px, 9vw, 42px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(168deg, rgba(var(--rgb-surface), 1), rgba(var(--rgb-shadow), 0.055));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 20%, var(--line-92)),
+    0 3px 0 color-mix(in srgb, var(--game-tone) 13%, transparent),
+    0 7px 13px -11px rgba(var(--rgb-shadow), 0.7);
+  color: var(--ink);
+  font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+  font-size: 22px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+}
+
+.poetry-tile:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 32%, var(--line-92)),
+    0 4px 0 color-mix(in srgb, var(--game-tone) 16%, transparent),
+    0 9px 16px -11px rgba(var(--rgb-shadow), 0.7);
+}
+
+.poetry-tile:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 26%, var(--line-92)),
+    0 1px 0 color-mix(in srgb, var(--game-tone) 12%, transparent);
+}
+
+/* 用过的块留空占位，字块池不会突然重排。 */
+.poetry-tile.is-used {
+  visibility: hidden;
+}
+
+.poetry-answer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 11px;
+}
+
+.poetry-seal {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  transform: rotate(-8deg);
+  background: hsl(352 66% 46%);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 5px 12px -7px hsl(352 66% 38% / 0.9);
+  animation: poetry-seal-in 0.32s cubic-bezier(0.2, 1.5, 0.45, 1);
+}
+
+@keyframes poetry-seal-in {
+  from {
+    transform: rotate(-8deg) scale(1.9);
+    opacity: 0;
+  }
+  to {
+    transform: rotate(-8deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.poetry-source {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.poetry-timeout {
+  margin: 11px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.poetry-hint {
+  margin: 11px 0 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ── 单词拼写：拼字牌 ───────────────────────── */
+
+.word-board {
+  padding: 16px 13px 14px;
+  border-radius: 14px;
+  text-align: center;
+  background:
+    radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--game-tone) 9%, transparent), transparent 72%),
+    linear-gradient(180deg, rgba(var(--rgb-surface), 0.98), rgba(var(--rgb-shadow), 0.028));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 16%, var(--line-92));
+  transition: box-shadow 0.2s ease;
+}
+
+.word-board.is-right {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-good) 48%, transparent);
+}
+
+.word-board.is-wrong {
+  animation: poetry-shake 0.34s ease;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-bad) 46%, transparent);
+}
+
+.word-meaning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.word-emoji {
+  font-size: 38px;
+  line-height: 1;
+}
+
+.word-meaning-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+}
+
+.word-meaning-text strong {
+  font-size: 21px;
+  font-weight: 680;
+  line-height: 1.25;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.word-meta {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.word-slots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 15px;
+}
+
+.word-slot {
+  width: clamp(30px, 8.4vw, 40px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  border-bottom: 2.5px solid color-mix(in srgb, var(--game-tone) 32%, transparent);
+  background: rgba(var(--rgb-shadow), 0.06);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 8%, var(--line-92));
+  color: var(--ink);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: default;
+  transition:
+    background 0.13s ease,
+    border-color 0.15s ease;
+}
+
+.word-slot.is-filled {
+  background: rgba(var(--rgb-surface), 1);
+  border-bottom-color: var(--game-tone);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 28%, transparent);
+  cursor: pointer;
+}
+
+.word-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 15px;
+  padding: 11px 9px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--game-tone) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 9%, transparent);
+}
+
+/* 字母牌：受拼字游戏启发，米白牌面 + 底下压一层厚度。 */
+.word-tile {
+  width: clamp(32px, 8.6vw, 40px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(170deg, color-mix(in srgb, var(--game-tone) 10%, rgba(var(--rgb-surface), 1)), rgba(var(--rgb-surface), 1));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--rgb-surface), 0.95),
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 26%, var(--line-92)),
+    0 3px 0 color-mix(in srgb, var(--game-tone) 19%, transparent),
+    0 7px 13px -11px rgba(var(--rgb-shadow), 0.68);
+  color: var(--ink);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+}
+
+.word-tile:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.word-tile:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 26%, var(--line-92)),
+    0 1px 0 color-mix(in srgb, var(--game-tone) 14%, transparent);
+}
+
+.word-tile.is-used {
+  visibility: hidden;
+}
+
+.word-pronounce {
+  margin-top: 11px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--game-tone) 10%, transparent);
+  color: var(--game-tone);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.word-reveal {
+  margin: 11px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.word-reveal strong {
+  color: var(--ink);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.word-hint {
+  margin: 11px 0 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* 结算里「英文 + 中文」并排的一行 */
+.word-meaning-line {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--muted);
+}

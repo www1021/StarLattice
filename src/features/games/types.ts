@@ -45,7 +45,40 @@ export type FlyingFlowerGame = GameBase & {
   opener: { line: string; title: string; author: string };
 };
 
-export type GameCardData = MathSprintGame | TwentyFourGame | SudokuGame | FlyingFlowerGame;
+export type PoetryOrderGame = GameBase & {
+  type: "poetry_order";
+  level: "easy" | "normal" | "hard";
+  /** 开头已经填好的字数。 */
+  prefilled: number;
+  rounds: Array<{
+    answer: string;
+    prompt?: string;
+    tiles: string[];
+    source: { title: string; author: string };
+  }>;
+  secondsPerRound: number;
+};
+
+export type WordSpellGame = GameBase & {
+  type: "word_spell";
+  level: "easy" | "normal" | "hard";
+  rounds: Array<{
+    word: string;
+    meaning: string;
+    pos: string;
+    emoji?: string;
+    letters: string[];
+  }>;
+  secondsPerRound: number;
+};
+
+export type GameCardData =
+  | MathSprintGame
+  | TwentyFourGame
+  | SudokuGame
+  | FlyingFlowerGame
+  | PoetryOrderGame
+  | WordSpellGame;
 
 export function isGameCardData(value: unknown): value is GameCardData {
   if (!value || typeof value !== "object") {
