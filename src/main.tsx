@@ -124,6 +124,13 @@ type Attachment = {
   previewUrl?: string;
 };
 
+/**
+ * 回答前的一条过程小字。
+ * 带 stepId 的是工作流节点：同一个节点先「正在…」、跑完原地换成结果，
+ * 所以这里得留 id，不能只存字符串。
+ */
+type ProcessNote = { text: string; stepId?: string };
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -150,7 +157,7 @@ type ChatMessage = {
   /** 边跑边说的步骤流水，累积保留，正文出现后仍可见。 */
   workflowSteps?: WorkflowStepEvent[];
   /** 回答还没开始时的过程小字：正文一开始就折叠，不抢正文的位置。 */
-  processNotes?: string[];
+  processNotes?: ProcessNote[];
   /** 工作流跑到人工节点时等待用户发言；提交后清空，工作流继续往下跑。 */
   pendingInteraction?: WorkflowInteraction;
   /** 工作流会话：这轮真的走了哪些智能体/子流程节点（含耗时），渲染在回复上方的小字标签。 */
@@ -2491,10 +2498,18 @@ function Conversation({
                             {thinking ? (
                               <p className="process-thinking">{thinking.slice(-700)}</p>
                             ) : null}
-                            {notes.slice(-6).map((note, index) => (
-                              <p className="process-note-line" key={`${index}-${note}`}>
+                            {notes.slice(-10).map((note, index, visible) => (
+                              <p
+                                className={`process-note-line ${
+                                  // 只有最后一条、且是「正在…」时才闪，历史行要安静下来
+                                  index === visible.length - 1 && note.text.endsWith("…")
+                                    ? "is-active"
+                                    : ""
+                                }`}
+                                key={note.stepId ?? `${index}-${note.text}`}
+                              >
                                 <span className="process-note-dot" />
-                                {note}
+                                {note.text}
                               </p>
                             ))}
                             <p className="process-note-line is-live">
@@ -2512,15 +2527,20 @@ function Conversation({
                         <details className="workflow-trace">
                           <summary className="workflow-trace-summary">
                             <span>
-                              {failed ? "处理过程（有失败节点）" : "处理过程"} ·{" "}
+                              {failed ? "处理过程（有一步失败）" : "处理过程"}
+                              {" · "}
                               {steps.length || notes.length} 步
                             </span>
+                            <span className="workflow-trace-hint">展开/收起</span>
                           </summary>
                           <div className="workflow-progress-list">
                             {notes.map((note, index) => (
-                              <div className="workflow-progress-row" key={`note-${index}`}>
+                              <div
+                                className="workflow-progress-row"
+                                key={note.stepId ?? `note-${index}`}
+                              >
                                 <span className="workflow-progress-mark">·</span>
-                                <span className="workflow-progress-title">{note}</span>
+                                <span className="workflow-progress-title">{note.text}</span>
                               </div>
                             ))}
                             {steps.map((step) => (
@@ -7437,7 +7457,7 @@ async function readChatStream(
     onWorkflowStep?: (event: WorkflowStepEvent) => void;
     onInteraction?: (interaction: WorkflowInteraction) => void;
     /** 回答前的过程小字：一小段一小段地推，正文开始时折叠。 */
-    onProgressNote?: (text: string) => void;
+    onProgressNote?: (note: ProcessNote) => void;
     onMeta?: (workflowName: string) => void;
     onTrace?: (trace: { agents: TraceAgent[]; tools: ToolNote[] }) => void;
     /** 这一轮由专项智能体作答：把气泡上的徽标换成它。 */
@@ -7510,7 +7530,7 @@ function handleChatStreamEvent(
     /** 工作流在人工节点挂起，等待用户填写发言。 */
     onInteraction?: (interaction: WorkflowInteraction) => void;
     /** 回答前的过程小字，正文一开始就折叠。 */
-    onProgressNote?: (text: string) => void;
+    onProgressNote?: (note: ProcessNote) => void;
     /** 工作流会话：meta 事件带出工作流名，用作回复徽标。 */
     onMeta?: (workflowName: string) => void;
     /** 工作流会话：运行轨迹（走了哪些智能体、调了哪些工具）。 */
@@ -7541,6 +7561,8 @@ function handleChatStreamEvent(
     interaction?: WorkflowInteraction;
     /** progress_note 事件的过程小字。 */
     text?: string;
+    /** 同上：同一工作流节点的多次播报共用这个 id，前端据此原地更新那一行。 */
+    noteId?: string;
     conversationId?: string;
     message?: string;
     name?: string;
@@ -7778,7 +7800,8 @@ function handleChatStreamEvent(
 
   if (streamEvent.event === "progress_note" && typeof payload.text === "string") {
     const note = payload.text.trim();
-    if (note) handlers.onProgressNote?.(note);
+    const noteId = typeof payload.noteId === "string" ? payload.noteId : undefined;
+    if (note) handlers.onProgressNote?.(noteId ? { text: note, stepId: noteId } : { text: note });
   }
 
   if (streamEvent.event === "evaluation" && isTrainingEvaluation(payload)) {
@@ -11778,14 +11801,24 @@ function App() {
           );
         },
         onProgressNote(note) {
-          // 过程小字：连着重复的只留一条，最多留最近 12 条，免得越攒越长。
+          // 同一个工作流节点先出「正在…」，跑完把这一行原地换成结果，
+          // 不追加第二行：整段过程才读得连贯，而不是一串状态日志。
           setMessages((current) =>
             current.map((item) => {
               if (item.id !== assistantId) return item;
               const notes = [...(item.processNotes ?? [])];
-              if (notes[notes.length - 1] === note) return item;
+              if (note.stepId) {
+                const at = notes.findIndex((entry) => entry.stepId === note.stepId);
+                if (at >= 0) {
+                  notes[at] = note;
+                  return { ...item, processNotes: notes };
+                }
+              } else if (notes[notes.length - 1]?.text === note.text) {
+                return item;
+              }
               notes.push(note);
-              return { ...item, processNotes: notes.slice(-12) };
+              // 一条工作流能报二三十句，留够整段过程，正文开始时一并折叠。
+              return { ...item, processNotes: notes.slice(-40) };
             })
           );
         },

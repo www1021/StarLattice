@@ -5329,6 +5329,16 @@ button {
   color: var(--n-46);
 }
 
+/* 正在做的这一步：字亮一点、点跟着呼吸，和已经说完的话区分开。 */
+.process-note-line.is-active {
+  color: var(--n-64, var(--muted));
+}
+
+.process-note-line.is-active .process-note-dot {
+  animation: workflow-trace-pulse 1.2s ease-in-out infinite;
+  opacity: 0.75;
+}
+
 .process-note-dot {
   flex: 0 0 auto;
   width: 4px;
@@ -5377,6 +5387,12 @@ button {
 
 .workflow-trace-summary::-webkit-details-marker {
   display: none;
+}
+
+.workflow-trace-hint {
+  font-size: 11.5px;
+  color: var(--n-38, var(--muted));
+  opacity: 0.85;
 }
 
 .workflow-trace-summary:hover {

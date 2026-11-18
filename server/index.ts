@@ -66,7 +66,12 @@ import {
   UpstreamModelError
 } from "./qwenOpenAiClient.js";
 import { resolveModel } from "./platform/models/catalog.js";
-import { narrateNodeResult } from "./platform/chat/workflowNarration.js";
+import {
+  narrateNodeResult,
+  narrateStepFailure,
+  narrateStepRunning,
+  narrateStepSettled
+} from "./platform/chat/workflowNarration.js";
 import {
   buildAgentChatSystemPrompt,
   contextTurnsOf,
@@ -2065,34 +2070,48 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
   /** 转交的子智能体已经流式吐过正文了，主循环结尾就别再整段重发。 */
   let answerStreamed = false;
   const requestStartedAt = Date.now();
-  /** 工作流首帧先给一句过程提示，进度细节只走 workflow_step / progress_note，不进正文。 */
+  /** 这一轮已经说过「交给谁处理」了，重复说得再补一句同义的没意义。 */
   let narratedWorkflowIntro = false;
-  /** 已经播报过的节点，避免 running→succeeded 两次都写一行。 */
+  /** 已经播报过结果的节点，避免 running 之外的重跑把同一句写两遍。 */
   const narratedSteps = new Set<string>();
   /**
    * 过程小字：只出现在回答还没开始的时候，用来交代「现在在做什么」。
    * 前端拿它铺成一行行小字，正文一开始就折叠起来，不占正文版面。
+   *
+   * 带 stepId 的行按节点原地更新：同一个节点先出「正在…」，跑完把这一行
+   * 换成它的结果，而不是再追加一行，读起来才像一段连贯的过程。
    */
-  const emitProgressNote = (text: string) => {
+  const emitProgressNote = (text: string, stepId?: string) => {
     const line = text.trim();
     if (!line) return;
-    writeSse(response, "progress_note", { text: line });
+    writeSse(response, "progress_note", stepId ? { text: line, noteId: stepId } : { text: line });
   };
-  /** 工具调用的过程小字：只说在查什么、查完没有，不复述内部端点。 */
+  /**
+   * 工具调用的过程小字：只说人话的「现在在做什么」。
+   * 插件名、MCP 服务器名、耗时一律不念——用户要看的是这件事推进到哪了，
+   * 不是调用日志；真正有信息量的是工作流里每个节点在干什么。
+   */
   const emitToolNote = (progress: ChatToolProgress) => {
     if (progress.kind === "delegation") return;
-    if (progress.stage === "running") {
-      emitProgressNote(`在查「${progress.name}」…`);
+    if (progress.stage === "skipped") return;
+    const workflowTitle = /^工作流[:：]\s*(.+)$/u.exec(progress.name.trim())?.[1]?.trim();
+    if (!workflowTitle) {
+      // 普通检索/插件工具：名字对用户没意义，交给节点级播报和「正在处理」兜底。
       return;
     }
-    if (progress.stage === "skipped") return;
-    emitProgressNote(
-      progress.ok === false
-        ? `「${progress.name}」没查到，换个说法再试。`
-        : `「${progress.name}」查完了，正在整理。`
-    );
+    if (progress.stage === "running") {
+      emitProgressNote(`开始走「${workflowTitle}」这个流程，每一步做什么我都会说一声。`);
+      return;
+    }
+    if (progress.ok === false) {
+      emitProgressNote(`「${workflowTitle}」这一趟没跑通，我把已经拿到的部分整理给你。`);
+    }
   };
   const emitWorkflowStep = (event: WorkflowProgressEvent) => {
+    // 开始/结束只是流程标记，进折叠区也是噪音。
+    if (event.kind === "start" || event.kind === "end") {
+      return;
+    }
     const inChild = Boolean(event.path);
     const staged =
       event.status === "running"
@@ -2118,20 +2137,29 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
       });
     }
 
-    if (event.status === "running" && !narratedWorkflowIntro) {
-      narratedWorkflowIntro = true;
-      emitProgressNote("先把材料过一遍，理清这次要处理什么。");
+    // 逐节点说人话：开跑报「正在做什么」，跑完把同一行换成「得到什么」。
+    // 两行共用一个 stepId，前端按 id 原地替换，过程看起来是一条条推进的。
+    const stepKey = `${event.workflowId}:${event.path ?? ""}:${event.nodeId}:${event.sequence}`;
+
+    if (event.status === "running") {
+      const line = narrateStepRunning(event.kind, event.title);
+      if (line) emitProgressNote(line, stepKey);
+      return;
     }
 
-    // 节点产物转成一句过程小字：等待时用户至少能看到「查到什么了」。
-    if (event.status === "succeeded" && event.resultExcerpt) {
-      const stepKey = `${event.workflowId}:${event.path ?? ""}:${event.nodeId}:${event.sequence}`;
-      if (!narratedSteps.has(stepKey)) {
-        narratedSteps.add(stepKey);
-        const line = narrateNodeResult(event.nodeId, event.title, event.resultExcerpt);
-        if (line) emitProgressNote(line);
-      }
+    if (event.status === "failed") {
+      const line = narrateStepFailure(event.kind, event.title, event.resultExcerpt);
+      if (line) emitProgressNote(line, stepKey);
+      return;
     }
+
+    if (narratedSteps.has(stepKey)) return;
+    narratedSteps.add(stepKey);
+    const line =
+      (event.resultExcerpt
+        ? narrateNodeResult(event.nodeId, event.title, event.resultExcerpt, event.kind)
+        : "") || narrateStepSettled(event.kind, event.title);
+    if (line) emitProgressNote(line, stepKey);
   };
 
   response.on("close", () => {
@@ -2220,7 +2248,9 @@ app.post("/api/chat/stream", parseChatUpload, async (request, response) => {
               // 转交一命中就先给一句过程反馈，别让用户盯着空白等。
               if (!narratedWorkflowIntro) {
                 narratedWorkflowIntro = true;
-                emitProgressNote(`交给「${target?.name ?? "专项助手"}」处理，正在整理答复。`);
+                emitProgressNote(
+                  `这件事交给「${target?.name ?? "专项助手"}」，它专门管这一类，接下来它做什么我也会说出来。`
+                );
               }
               return runAgentDelegation({
                 host: chatAgent,
