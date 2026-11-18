@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Clock } from "lucide-react";
 import type { MathSprintGame } from "./types";
 import { MathText, plainMath } from "./MathText";
 
@@ -110,14 +111,21 @@ export function MathSprintCard({
     return (
       <div className="game-body">
         <div className="game-result">
-          <div className="game-result-score">
-            <strong>{correctCount}</strong>
-            <span>/ {total} 题</span>
+          <div className="game-score-ring" style={{ ["--rate" as string]: `${rate}%` }}>
+            <div className="game-score-inner">
+              <strong>{correctCount}</strong>
+              <span>/{total}</span>
+            </div>
           </div>
           <div className="game-result-meta">
-            <span>正确率 {rate}%</span>
-            <span>最高连击 ×{bestCombo}</span>
-            <span>得分 {score}</span>
+            <p className="game-result-head">
+              {rate === 100 ? "全对，稳" : rate >= 60 ? "过了大半，再练一局就顺了" : "慢一点，先把错的那几道弄明白"}
+            </p>
+            <div className="game-chips">
+              <span className="game-chip">正确率 {rate}%</span>
+              <span className="game-chip">最高连击 ×{bestCombo}</span>
+              <span className="game-chip">得分 {score}</span>
+            </div>
           </div>
         </div>
 
@@ -194,14 +202,24 @@ export function MathSprintCard({
           {step + 1}
           <i>/{total}</i>
         </span>
-        <span className="game-combo">连击 ×{combo}</span>
+        <div className="game-segments" aria-hidden="true">
+          {game.questions.map((_, index) => {
+            const record = records.find((item) => item.index === index);
+            const state = record
+              ? record.correct
+                ? "is-right"
+                : "is-wrong"
+              : index === step
+                ? "is-current"
+                : "";
+            return <span className={`game-segment ${state}`} key={index} />;
+          })}
+        </div>
+        {combo >= 2 ? <span className="game-combo">连击 ×{combo}</span> : null}
         <span className={`game-timer ${timeLeft <= 5 && !answered ? "is-urgent" : ""}`}>
+          <Clock size={12.5} strokeWidth={2.4} />
           {answered ? "已作答" : `${timeLeft}s`}
         </span>
-      </div>
-
-      <div className="game-progress">
-        <i style={{ width: `${(step / total) * 100}%` }} />
       </div>
 
       <p className="game-stem">

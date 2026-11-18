@@ -97,13 +97,20 @@ export function TwentyFourCard({
     return (
       <div className="game-body">
         <div className="game-result">
-          <div className="game-result-score">
-            <strong>{solved}</strong>
-            <span>/ {total} 组</span>
+          <div className="game-score-ring" style={{ ["--rate" as string]: `${rate}%` }}>
+            <div className="game-score-inner">
+              <strong>{solved}</strong>
+              <span>/{total}</span>
+            </div>
           </div>
           <div className="game-result-meta">
-            <span>通过率 {rate}%</span>
-            <span>{rate === 100 ? "全通了" : rate >= 50 ? "过半数" : "再来几次会更快"}</span>
+            <p className="game-result-head">
+              {rate === 100 ? "全通了" : rate >= 50 ? "过半数，手感上来了" : "再来几次会更快"}
+            </p>
+            <div className="game-chips">
+              <span className="game-chip">通过 {solved} 组</span>
+              <span className="game-chip">通过率 {rate}%</span>
+            </div>
           </div>
         </div>
         <div className="game-wrong-list">

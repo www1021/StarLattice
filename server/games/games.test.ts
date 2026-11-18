@@ -5,6 +5,8 @@ import { createTwentyFour, solveTwentyFour } from "./twentyFour.js";
 import { createSudoku } from "./sudoku.js";
 import { FALLBACK, FLYING_CHARS, normalizeLine, toClauses } from "./poetry.js";
 import { resolveType } from "./index.js";
+import { ensureMathDelimiters } from "../../src/features/games/mathSource.js";
+import { renderInlineMarkdown, setMathRenderer } from "../../src/features/chat/markdown.js";
 import { isGamePayload } from "./types.js";
 import { evaluateExpression, verifyTwentyFour } from "../../src/features/games/expr.js";
 
@@ -176,4 +178,19 @@ test("24 点算式：只认四则运算，用错数字或算出别的数都要�
   const divideByZero = verifyTwentyFour("8/(3-3)", [3, 3, 8, 4]);
   assert.equal(divideByZero.ok, false);
   assert.match(divideByZero.error ?? "", /除以 0/);
+});
+
+test("选项是裸 LaTeX 时要补上 $，纯数字选项不补", () => {
+  // 出题器给的是 \frac{4}{2}，不带 $ 就原样显示成一串反斜杠（截图里那个 bug）。
+  assert.equal(ensureMathDelimiters("\\frac{4}{2}"), "$\\frac{4}{2}$");
+  assert.equal(ensureMathDelimiters("\\sqrt{9}"), "$\\sqrt{9}$");
+  assert.equal(ensureMathDelimiters("2"), "2");
+  assert.equal(ensureMathDelimiters("3.5"), "3.5");
+  // 已经带 $ 或题干里夹中文的不重复包。
+  assert.equal(ensureMathDelimiters("$\\frac{1}{3}$"), "$\\frac{1}{3}$");
+
+  // 补完之后要真能走到公式渲染器（这里用假的渲染器替 KaTeX）。
+  setMathRenderer((tex, displayMode) => `<x-math data-display="${displayMode}">${tex}</x-math>`);
+  const html = renderInlineMarkdown(ensureMathDelimiters("\\frac{4}{2}"));
+  assert.match(html, /<x-math data-display="false">\\frac\{4\}\{2\}<\/x-math>/);
 });

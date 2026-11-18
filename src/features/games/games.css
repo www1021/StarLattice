@@ -1,35 +1,69 @@
 /*
  * 学科小游戏卡片。
  *
- * 跟消息气泡同一套质感：浅底、细边、圆角，不另起一套视觉语言。
- * 所有颜色走主题变量，深浅模式都不用单独写。
+ * 比消息气泡多一层「界面感」：顶部按玩法上一抹色调、图标方块、分段进度条，
+ * 结算给一个环形分数。颜色仍走主题变量，只有玩法色调是自己定义的四个色相，
+ * 深浅模式都靠 color-mix 跟当前底色混合，不单独写一套暗色。
  */
 
 .game-card {
+  /* 四个玩法各一个色相；下面的取色都从 --game-tone 派生。 */
+  --game-tone: hsl(214 88% 54%);
+  --game-good: hsl(152 58% 40%);
+  --game-bad: hsl(2 68% 52%);
+  position: relative;
   margin-top: 12px;
   padding: 14px 16px 16px;
-  border-radius: 16px;
-  background: rgba(var(--rgb-surface), 0.62);
-  box-shadow: inset 0 0 0 1px var(--line-92);
+  border-radius: 18px;
+  background:
+    radial-gradient(
+      120% 90% at 0% 0%,
+      color-mix(in srgb, var(--game-tone) 9%, transparent),
+      transparent 62%
+    ),
+    rgba(var(--rgb-surface), 0.74);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 14%, var(--line-92)),
+    0 14px 30px -24px rgba(var(--rgb-shadow), 0.55);
+  overflow: hidden;
 }
+
+.game-card[data-game="twenty_four"] {
+  --game-tone: hsl(28 88% 52%);
+}
+
+.game-card[data-game="sudoku"] {
+  --game-tone: hsl(262 70% 60%);
+}
+
+.game-card[data-game="flying_flower"] {
+  --game-tone: hsl(172 62% 38%);
+}
+
+/* ── 卡片头 ─────────────────────────────────── */
 
 .game-card-head {
   display: flex;
+  align-items: center;
   gap: 10px;
-  align-items: flex-start;
   margin-bottom: 12px;
 }
 
-.game-card-badge {
+.game-card-icon {
   flex: none;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--surf-99);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--game-tone) 14%, transparent);
+  color: var(--game-tone);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 22%, transparent);
+}
+
+.game-card-title {
+  flex: 1;
+  min-width: 0;
 }
 
 .game-card-title h4 {
@@ -37,14 +71,29 @@
   font-size: 14.5px;
   font-weight: 650;
   color: var(--ink);
-  line-height: 1.5;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
 }
 
 .game-card-title p {
-  margin: 3px 0 0;
-  font-size: 12.5px;
-  line-height: 1.6;
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
   color: var(--muted);
+}
+
+.game-card-badge {
+  flex: none;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--game-tone) 11%, transparent);
+  color: var(--game-tone);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 20%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 .game-body {
@@ -53,19 +102,21 @@
   gap: 12px;
 }
 
-/* ── 顶部状态条 ─────────────────────────────────── */
+/* ── 顶部状态条：题号 / 分段进度 / 连击 / 计时 ────────── */
 
 .game-sprint-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   font-size: 12.5px;
   color: var(--muted);
 }
 
 .game-step {
-  font-weight: 600;
+  flex: none;
+  font-weight: 650;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .game-step i {
@@ -74,40 +125,66 @@
   color: var(--muted);
 }
 
+.game-segments {
+  flex: 1;
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.game-segment {
+  flex: 1 1 0;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(var(--rgb-shadow), 0.1);
+  transition: background 0.2s ease;
+}
+
+.game-segment.is-current {
+  background: color-mix(in srgb, var(--game-tone) 55%, transparent);
+}
+
+.game-segment.is-right {
+  background: color-mix(in srgb, var(--game-good) 72%, transparent);
+}
+
+.game-segment.is-wrong {
+  background: color-mix(in srgb, var(--game-bad) 62%, transparent);
+}
+
 .game-combo {
-  margin-left: auto;
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--game-tone) 12%, transparent);
+  color: var(--game-tone);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .game-timer {
-  min-width: 46px;
-  text-align: right;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 52px;
+  justify-content: flex-end;
   font-variant-numeric: tabular-nums;
 }
 
 .game-timer.is-urgent {
-  color: #c2410c;
-  font-weight: 600;
+  color: var(--game-bad);
+  font-weight: 650;
 }
 
-.game-progress {
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(var(--rgb-shadow), 0.08);
-  overflow: hidden;
-}
-
-.game-progress i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.3s ease;
-}
-
-/* ── 题干与选项 ─────────────────────────────────── */
+/* ── 题干与选项 ─────────────────────────────── */
 
 .game-stem {
   margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(var(--rgb-shadow), 0.035);
   font-size: 16px;
   line-height: 1.9;
   color: var(--ink);
@@ -129,18 +206,24 @@
   gap: 9px;
   padding: 10px 12px;
   border: 0;
-  border-radius: 11px;
-  background: rgba(var(--rgb-surface), 0.9);
-  box-shadow: inset 0 0 0 1px var(--line-92);
+  border-radius: 12px;
+  background: rgba(var(--rgb-surface), 0.92);
+  box-shadow:
+    inset 0 0 0 1px var(--line-92),
+    0 1px 0 rgba(var(--rgb-surface), 0.6);
   color: var(--ink);
   font-size: 14.5px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.16s ease, box-shadow 0.16s ease, transform 0.12s ease;
+  transition:
+    background 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.12s ease;
 }
 
 .game-option:hover:not(:disabled) {
-  background: rgba(var(--rgb-shadow), 0.05);
+  background: color-mix(in srgb, var(--game-tone) 6%, rgba(var(--rgb-surface), 0.92));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 30%, var(--line-92));
   transform: translateY(-1px);
 }
 
@@ -150,13 +233,14 @@
 
 .game-option-key {
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 21px;
+  height: 21px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: 7px;
   background: rgba(var(--rgb-shadow), 0.07);
   font-size: 11.5px;
+  font-weight: 600;
   color: var(--muted);
 }
 
@@ -165,39 +249,39 @@
 }
 
 .game-option.is-right {
-  background: rgba(22, 163, 74, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.45);
+  background: color-mix(in srgb, var(--game-good) 10%, rgba(var(--rgb-surface), 0.92));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-good) 45%, transparent);
 }
 
 .game-option.is-right .game-option-key {
-  background: rgba(22, 163, 74, 0.16);
-  color: #15803d;
+  background: color-mix(in srgb, var(--game-good) 18%, transparent);
+  color: var(--game-good);
 }
 
 .game-option.is-wrong {
-  background: rgba(220, 38, 38, 0.09);
-  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.4);
+  background: color-mix(in srgb, var(--game-bad) 9%, rgba(var(--rgb-surface), 0.92));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-bad) 40%, transparent);
 }
 
 .game-option.is-wrong .game-option-key {
-  background: rgba(220, 38, 38, 0.14);
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--game-bad) 15%, transparent);
+  color: var(--game-bad);
 }
 
 /* ── 反馈 ─────────────────────────────────────── */
 
 .game-feedback {
   padding: 10px 12px;
-  border-radius: 11px;
-  background: rgba(var(--rgb-shadow), 0.045);
+  border-radius: 12px;
+  background: rgba(var(--rgb-shadow), 0.04);
 }
 
 .game-feedback.is-ok {
-  background: rgba(22, 163, 74, 0.08);
+  background: color-mix(in srgb, var(--game-good) 8%, transparent);
 }
 
 .game-feedback.is-bad {
-  background: rgba(220, 38, 38, 0.06);
+  background: color-mix(in srgb, var(--game-bad) 7%, transparent);
 }
 
 .game-feedback-head {
@@ -205,6 +289,14 @@
   font-size: 13px;
   font-weight: 650;
   color: var(--ink);
+}
+
+.game-feedback.is-ok .game-feedback-head {
+  color: var(--game-good);
+}
+
+.game-feedback.is-bad .game-feedback-head {
+  color: var(--game-bad);
 }
 
 .game-feedback-text {
@@ -227,31 +319,97 @@
 
 .game-result {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 14px;
-  flex-wrap: wrap;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: 14px;
   background: rgba(var(--rgb-surface), 0.9);
   box-shadow: inset 0 0 0 1px var(--line-92);
 }
 
+/* 环形分数：--rate 由组件按正确率传进来，缺口部分是底环。 */
+.game-score-ring {
+  flex: none;
+  width: 66px;
+  height: 66px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--game-tone) var(--rate, 0%),
+    rgba(var(--rgb-shadow), 0.09) 0
+  );
+}
+
+.game-score-inner {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  grid-auto-flow: column;
+  border-radius: 50%;
+  background: rgba(var(--rgb-surface), 0.98);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+}
+
+.game-score-inner strong {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.game-score-inner span {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 1px;
+}
+
+.game-result-meta {
+  min-width: 0;
+}
+
+.game-result-head {
+  margin: 0 0 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.game-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.game-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(var(--rgb-shadow), 0.05);
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 数独、飞花令的结算不是分数，用文字版。 */
 .game-result-score strong {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 
 .game-result-score span {
-  margin-left: 5px;
-  font-size: 13px;
+  margin-left: 6px;
+  font-size: 12.5px;
   color: var(--muted);
 }
 
-.game-result-meta {
+.game-result-score + .game-result-meta {
   display: flex;
-  gap: 14px;
+  gap: 10px;
   flex-wrap: wrap;
   font-size: 12.5px;
   color: var(--muted);
@@ -265,15 +423,17 @@
 
 .game-wrong-title {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+  letter-spacing: 0.02em;
 }
 
 .game-wrong-item {
-  padding: 9px 11px;
-  border-radius: 10px;
-  background: rgba(var(--rgb-shadow), 0.04);
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: rgba(var(--rgb-shadow), 0.035);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--game-bad) 45%, transparent);
 }
 
 .game-wrong-stem {
@@ -324,17 +484,26 @@
   background: rgba(var(--rgb-shadow), 0.07);
   color: var(--ink);
   font-size: 12.5px;
+  font-weight: 550;
   cursor: pointer;
-  transition: opacity 0.16s ease, background 0.16s ease;
+  transition:
+    opacity 0.16s ease,
+    background 0.16s ease,
+    transform 0.12s ease;
 }
 
 .game-action.primary {
-  background: var(--accent);
-  color: var(--surf-99);
+  background: var(--game-tone);
+  color: #fff;
+  box-shadow: 0 6px 16px -10px color-mix(in srgb, var(--game-tone) 90%, transparent);
 }
 
 .game-action:hover {
-  opacity: 0.86;
+  transform: translateY(-1px);
+}
+
+.game-action:active {
+  transform: translateY(0);
 }
 
 .game-link {
@@ -348,7 +517,7 @@
   cursor: pointer;
 }
 
-/* ── 24 点 ─────────────────────────────────────── */
+/* ── 24 点：牌面 ─────────────────────────────── */
 
 .twenty-cards {
   display: grid;
@@ -357,40 +526,76 @@
 }
 
 .twenty-card {
-  padding: 14px 0;
+  position: relative;
+  padding: 18px 0 14px;
   border: 0;
-  border-radius: 12px;
-  background: rgba(var(--rgb-surface), 0.95);
-  box-shadow: inset 0 0 0 1px var(--line-92);
+  border-radius: 13px;
+  background:
+    linear-gradient(160deg, rgba(var(--rgb-surface), 1), rgba(var(--rgb-shadow), 0.035));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 18%, var(--line-92)),
+    inset 0 1px 0 rgba(var(--rgb-surface), 0.9),
+    0 6px 14px -12px rgba(var(--rgb-shadow), 0.6);
   color: var(--ink);
   font-size: 22px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: transform 0.12s ease, background 0.16s ease;
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.16s ease;
+}
+
+.twenty-card::before,
+.twenty-card::after {
+  content: "";
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--game-tone) 45%, transparent);
+}
+
+.twenty-card::before {
+  top: 6px;
+  left: 7px;
+}
+
+.twenty-card::after {
+  bottom: 6px;
+  right: 7px;
 }
 
 .twenty-card:hover {
-  transform: translateY(-2px);
-  background: rgba(var(--rgb-shadow), 0.05);
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 40%, var(--line-92)),
+    0 10px 20px -14px rgba(var(--rgb-shadow), 0.7);
 }
 
 .twenty-input {
   width: 100%;
-  padding: 10px 12px;
+  padding: 11px 13px;
   border: 0;
-  border-radius: 10px;
-  background: rgba(var(--rgb-surface), 0.95);
+  border-radius: 11px;
+  background: rgba(var(--rgb-shadow), 0.04);
   box-shadow: inset 0 0 0 1px var(--line-92);
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 14.5px;
+  letter-spacing: 0.02em;
+}
+
+.twenty-input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-tone) 55%, var(--line-92));
 }
 
 .twenty-input::placeholder {
   color: var(--muted);
   font-family: var(--font-ui);
   font-size: 12.5px;
+  letter-spacing: 0;
 }
 
 .twenty-keys {
@@ -408,28 +613,40 @@
   color: var(--ink);
   font-size: 14px;
   cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.twenty-keys button:hover {
+  background: rgba(var(--rgb-shadow), 0.11);
 }
 
 .twenty-keys button.is-submit {
   margin-left: auto;
-  background: var(--accent);
-  color: var(--surf-99);
+  padding-inline: 18px;
+  background: var(--game-tone);
+  color: #fff;
   font-size: 13px;
+  font-weight: 550;
 }
 
 .twenty-message {
   margin: 0;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: rgba(var(--rgb-shadow), 0.04);
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--muted);
 }
 
 .twenty-message.is-ok {
-  color: #15803d;
+  background: color-mix(in srgb, var(--game-good) 10%, transparent);
+  color: var(--game-good);
 }
 
 .twenty-message.is-bad {
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--game-bad) 8%, transparent);
+  color: var(--game-bad);
 }
 
 .twenty-foot {
@@ -451,10 +668,17 @@
   display: grid;
   grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 1px;
-  padding: 6px;
-  border-radius: 12px;
-  background: var(--line-92);
+  padding: 7px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--game-tone) 16%, var(--line-92));
   outline: none;
+  box-shadow: 0 6px 16px -14px rgba(var(--rgb-shadow), 0.6);
+}
+
+.sudoku-grid:focus-visible {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--game-tone) 40%, transparent),
+    0 6px 16px -14px rgba(var(--rgb-shadow), 0.6);
 }
 
 .sudoku-cell {
@@ -462,9 +686,11 @@
   display: grid;
   place-items: center;
   border: 0;
+  border-radius: 3px;
   background: rgba(var(--rgb-surface), 0.97);
-  color: var(--accent);
+  color: var(--game-tone);
   font-size: 15px;
+  font-weight: 550;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background 0.12s ease;
@@ -473,30 +699,30 @@
 .sudoku-cell.is-fixed {
   color: var(--ink);
   font-weight: 650;
-  background: rgba(var(--rgb-shadow), 0.045);
+  background: rgba(var(--rgb-shadow), 0.055);
   cursor: default;
 }
 
 .sudoku-cell.is-peer {
-  background: rgba(59, 130, 246, 0.07);
+  background: rgba(var(--rgb-shadow), 0.085);
 }
 
 .sudoku-cell.is-same {
-  background: rgba(59, 130, 246, 0.13);
+  background: color-mix(in srgb, var(--game-tone) 13%, rgba(var(--rgb-surface), 0.97));
 }
 
 .sudoku-cell.is-selected {
-  background: rgba(59, 130, 246, 0.24);
-  box-shadow: inset 0 0 0 2px var(--accent);
+  background: color-mix(in srgb, var(--game-tone) 22%, rgba(var(--rgb-surface), 0.97));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--game-tone) 70%, transparent);
 }
 
 .sudoku-cell.is-hint {
-  color: #7c3aed;
+  color: hsl(262 66% 56%);
 }
 
 .sudoku-cell.is-conflict {
-  background: rgba(220, 38, 38, 0.14);
-  color: #b91c1c;
+  background: color-mix(in srgb, var(--game-bad) 14%, rgba(var(--rgb-surface), 0.97));
+  color: var(--game-bad);
 }
 
 .sudoku-cell.edge-right {
@@ -522,11 +748,14 @@
   background: rgba(var(--rgb-shadow), 0.06);
   color: var(--ink);
   font-size: 14px;
+  font-weight: 550;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .sudoku-keys button:hover {
-  background: rgba(var(--rgb-shadow), 0.1);
+  background: color-mix(in srgb, var(--game-tone) 14%, transparent);
+  color: var(--game-tone);
 }
 
 /* ── 飞花令 ─────────────────────────────────────── */
@@ -543,7 +772,7 @@
 .flower-line {
   max-width: 84%;
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: 13px;
   font-size: 14px;
   line-height: 1.7;
 }
@@ -562,19 +791,23 @@
 
 .flower-line.is-ai {
   align-self: flex-start;
-  background: rgba(var(--rgb-surface), 0.95);
-  box-shadow: inset 0 0 0 1px var(--line-92);
+  background: rgba(var(--rgb-surface), 0.96);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--game-tone) 18%, var(--line-92));
   border-bottom-left-radius: 4px;
 }
 
 .flower-line.is-me {
   align-self: flex-end;
-  background: var(--accent);
+  background: var(--game-tone);
   border-bottom-right-radius: 4px;
 }
 
 .flower-line.is-me p {
-  color: var(--surf-99);
+  color: #fff;
+}
+
+.flower-line.is-me span {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .flower-input {
@@ -585,23 +818,29 @@
 .flower-input input {
   flex: 1;
   min-width: 0;
-  padding: 9px 12px;
+  padding: 10px 13px;
   border: 0;
-  border-radius: 10px;
-  background: rgba(var(--rgb-surface), 0.95);
+  border-radius: 11px;
+  background: rgba(var(--rgb-shadow), 0.04);
   box-shadow: inset 0 0 0 1px var(--line-92);
   color: var(--ink);
   font-size: 13.5px;
 }
 
+.flower-input input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--game-tone) 55%, var(--line-92));
+}
+
 .flower-input button {
   flex: none;
-  padding: 0 16px;
+  padding: 0 18px;
   border: 0;
-  border-radius: 10px;
-  background: var(--accent);
-  color: var(--surf-99);
+  border-radius: 11px;
+  background: var(--game-tone);
+  color: #fff;
   font-size: 13px;
+  font-weight: 550;
   cursor: pointer;
 }
 
@@ -616,4 +855,129 @@
   flex-direction: column;
   gap: 10px;
   margin-top: 4px;
+}
+
+/* ── 入口：聊天里提示「可以玩一局」 ───────────────── */
+
+.game-rail {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(var(--rgb-surface), 0.6);
+  box-shadow: inset 0 0 0 1px var(--line-92);
+}
+
+.game-rail-label {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.game-rail-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.game-rail-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--rgb-shadow), 0.05);
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.game-rail-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rail-tone, var(--game-tone)) 14%, transparent);
+  color: var(--rail-tone, var(--game-tone));
+  transform: translateY(-1px);
+}
+
+.game-rail-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.game-rail-item[data-game="math_sprint"] {
+  --rail-tone: hsl(214 88% 54%);
+}
+
+.game-rail-item[data-game="twenty_four"] {
+  --rail-tone: hsl(28 88% 52%);
+}
+
+.game-rail-item[data-game="sudoku"] {
+  --rail-tone: hsl(262 70% 60%);
+}
+
+.game-rail-item[data-game="flying_flower"] {
+  --rail-tone: hsl(172 62% 38%);
+}
+
+/* 输入框「更多工具」菜单里的那一格：图标按玩法上色，按钮本身跟其他工具一致。 */
+.composer-tool-item[data-game="math_sprint"] svg {
+  color: hsl(214 88% 54%);
+}
+
+.composer-tool-item[data-game="twenty_four"] svg {
+  color: hsl(28 88% 52%);
+}
+
+.composer-tool-item[data-game="sudoku"] svg {
+  color: hsl(262 70% 60%);
+}
+
+.composer-tool-item[data-game="flying_flower"] svg {
+  color: hsl(172 62% 38%);
+}
+
+/* 会话顶部的「玩一局」：只在会玩游戏的智能体下出现。 */
+.agent-chat-bar-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, hsl(214 88% 54%) 26%, var(--liquid-line));
+  border-radius: 999px;
+  background: color-mix(in srgb, hsl(214 88% 54%) 8%, transparent);
+  color: hsl(214 80% 50%);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.agent-chat-bar-play:hover:not(:disabled),
+.agent-chat-bar-play.is-open {
+  background: color-mix(in srgb, hsl(214 88% 54%) 15%, transparent);
+  color: hsl(214 84% 46%);
+}
+
+.agent-chat-bar-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 两个按钮都在右侧时，让「换回默认助手」贴着它，而不是各自顶着边。 */
+.agent-chat-bar-play + .agent-chat-bar-switch {
+  margin-left: 0;
 }

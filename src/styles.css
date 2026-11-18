@@ -7156,6 +7156,17 @@ button {
   background: var(--line-90);
 }
 
+.composer-tools-games-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 8px;
+  color: var(--n-48);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .composer-tools-row {
   display: flex;
   align-items: center;

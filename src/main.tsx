@@ -20,6 +20,7 @@ import {
   Download,
   FilePenLine,
   FileText,
+  Gamepad2,
   Gauge,
   GitCompareArrows,
   Layers3,
@@ -66,6 +67,8 @@ import type { AgentRecord } from "./features/platform/types";
 import { AgentAvatar } from "./features/agents/AgentAvatar";
 import { MessageMarkdown } from "./features/chat/MessageMarkdown";
 import { GameCard } from "./features/games/GameCard";
+import { GameRail } from "./features/games/GameRail";
+import { GAME_ENTRIES, GAME_ICONS, supportsGames, type GameEntry } from "./features/games/meta";
 import { isGameCardData, type GameCardData } from "./features/games/types";
 import {
   buildWorkflowChatInput,
@@ -6932,6 +6935,8 @@ type ComposerProps = {
   onSkipKnowledgeSelection: () => void;
   onToggleKnowledgeBase: (id: string) => void;
   onUploadKnowledgeDocument: (baseId: string, file: File) => void;
+  /** + 菜单里的学科小游戏：点一下直接开局（必要时先切到会玩游戏的智能体）。 */
+  onStartGame: (entry: GameEntry) => void;
 };
 
 function Composer({
@@ -6967,7 +6972,8 @@ function Composer({
   onOpenVoice,
   onSkipKnowledgeSelection,
   onToggleKnowledgeBase,
-  onUploadKnowledgeDocument
+  onUploadKnowledgeDocument,
+  onStartGame
 }: ComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const knowledgeFileInputRef = useRef<HTMLInputElement>(null);
@@ -7213,6 +7219,36 @@ function Composer({
                         <AtSign size={18} strokeWidth={2.1} />
                         <span>知识库</span>
                       </button>
+                    </div>
+
+                    <div className="composer-tools-sep" />
+
+                    {/* 学生不知道有这些玩法，把它摆进「更多工具」最直接。 */}
+                    <div className="composer-tools-games">
+                      <span className="composer-tools-games-title">
+                        <Gamepad2 size={13} strokeWidth={2.2} />
+                        学科小游戏
+                      </span>
+                      <div className="composer-tools-grid">
+                        {GAME_ENTRIES.map((entry) => {
+                          const Icon = GAME_ICONS[entry.type];
+                          return (
+                            <button
+                              className="composer-tool-item"
+                              data-game={entry.type}
+                              key={entry.type}
+                              type="button"
+                              onClick={() => {
+                                setIsToolsOpen(false);
+                                onStartGame(entry);
+                              }}
+                            >
+                              <Icon size={18} strokeWidth={2.1} />
+                              <span>{entry.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     <div className="composer-tools-sep" />
@@ -9365,6 +9401,13 @@ function App() {
   // 当前选中的自建智能体；被删掉或还没加载出来时按默认助手处理。
   const activeAgent = chatAgents.find((agent) => agent.id === activeAgentId);
   const agentVariableDefs = activeAgent?.chatConfig?.variables ?? [];
+  /** 正在聊的智能体能不能开游戏：不能就在入口处先切到学伴小星。 */
+  const activeAgentPlaysGames = supportsGames(activeAgent?.tools);
+  /** 共享智能体里默认带游戏工具的那个（学伴小星），点游戏入口时切到它。 */
+  const studyBuddyId = chatAgents.find((agent) => supportsGames(agent.tools))?.id ?? "";
+  const [gameRailOpen, setGameRailOpen] = useState(false);
+  /** 点了游戏入口、但智能体还没切过来时，把这句话先存住，切完再发。 */
+  const pendingGamePromptRef = useRef<string | null>(null);
 
   // 工作流会话：列表加载一次，选中项变化时再取该工作流的输入声明。
   useEffect(() => {
@@ -12134,6 +12177,39 @@ function App() {
     setAgentVariableValues(defaults);
   }
 
+  /**
+   * 从聊天里的入口开一局。当前智能体挂了游戏工具就直接发；没挂就先切到学伴小星
+   * （共享智能体里默认带 game.play 的那个）。切换要等下一轮渲染才生效，
+   * 所以这句话先存进 ref，交给下面的 effect 发出去。
+   */
+  function startGame(entry: GameEntry) {
+    setGameRailOpen(false);
+    if (isGenerating) {
+      return;
+    }
+    if (activeAgentPlaysGames || activeAgentId === studyBuddyId) {
+      void sendMessage(entry.prompt);
+      return;
+    }
+    if (!studyBuddyId) {
+      // 找不到学伴小星就退一步：填进输入框，用户自己发。
+      setInputValue(entry.prompt);
+      return;
+    }
+    pendingGamePromptRef.current = entry.prompt;
+    handlePickAgent(studyBuddyId);
+  }
+
+  // 切到会玩游戏的智能体之后，把刚才那句发出去。
+  useEffect(() => {
+    const pending = pendingGamePromptRef.current;
+    if (!pending || !activeAgentPlaysGames) {
+      return;
+    }
+    pendingGamePromptRef.current = null;
+    void sendMessage(pending);
+  }, [activeAgentId, activeAgentPlaysGames]);
+
   /** 空状态页上的开关：这一轮对话要不要绑定智能体。开=出现下拉选择；关=回到默认助手。 */
   function handleToggleAgentPicker() {
     if (isGenerating) {
@@ -12606,21 +12682,39 @@ function App() {
             </div>
           ) : null}
           {hasMessages && activeAgent ? (
-            <div className="agent-chat-bar">
-              <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={22} />
-              <span className="agent-chat-bar-name">{activeAgent.name}</span>
-              <span className="agent-chat-bar-hint">
-                {activeAgent.description || activeAgent.role || "按自定义提示词回答"}
-              </span>
-              <button
-                type="button"
-                className="agent-chat-bar-switch"
-                disabled={isGenerating}
-                onClick={() => handlePickAgent("")}
-              >
-                换回默认助手
-              </button>
-            </div>
+            <>
+              <div className="agent-chat-bar">
+                <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={22} />
+                <span className="agent-chat-bar-name">{activeAgent.name}</span>
+                <span className="agent-chat-bar-hint">
+                  {activeAgent.description || activeAgent.role || "按自定义提示词回答"}
+                </span>
+                {activeAgentPlaysGames ? (
+                  <button
+                    type="button"
+                    className={`agent-chat-bar-play${gameRailOpen ? " is-open" : ""}`}
+                    aria-expanded={gameRailOpen}
+                    disabled={isGenerating}
+                    onClick={() => setGameRailOpen((open) => !open)}
+                  >
+                    <Gamepad2 size={14} strokeWidth={2.2} />
+                    玩一局
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="agent-chat-bar-switch"
+                  disabled={isGenerating}
+                  onClick={() => handlePickAgent("")}
+                >
+                  换回默认助手
+                </button>
+              </div>
+              {/* 正在聊的时候也能随时开局：不用回到空状态页找入口。 */}
+              {activeAgentPlaysGames && gameRailOpen ? (
+                <GameRail disabled={isGenerating} onPick={startGame} />
+              ) : null}
+            </>
           ) : null}
           {!hasMessages ? (
             <>
@@ -12716,6 +12810,10 @@ function App() {
                 })}
               </div>
               )}
+              {/* 学生不知道有这些玩法，空状态里先露出四个入口，点一下直接开局。 */}
+              {chatMode === "education" ? (
+                <GameRail disabled={isGenerating} onPick={startGame} />
+              ) : null}
             </>
           ) : null}
           <Conversation
@@ -12832,6 +12930,7 @@ function App() {
                 tags: []
               });
             }}
+            onStartGame={startGame}
           />
           </div>
         )}
