@@ -116,6 +116,31 @@ test("目录只来自设置里加的模型，默认模型由用户选择决定",
   });
 });
 
+test("编辑模型时密钥留空不覆盖，填了才换", () => {
+  withTempSettings(() => {
+    addModel("keep-key");
+    // 只改显示名称、不传密钥：原密钥必须原样留着，否则用户改个名字就把密钥弄丢了。
+    saveUserModel({
+      id: "keep-key",
+      label: "改过名字",
+      model: "keep-key",
+      baseUrl: "https://api.example.com/v1"
+    });
+    const kept = getModelProfile("keep-key");
+    assert.equal(kept?.label, "改过名字");
+    assert.equal(kept?.apiKey, "sk-keep-key");
+
+    // 真传了新密钥就换掉。
+    saveUserModel({
+      id: "keep-key",
+      model: "keep-key",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-brand-new"
+    });
+    assert.equal(getModelProfile("keep-key")?.apiKey, "sk-brand-new");
+  });
+});
+
 test("角色 id 跟随默认模型，不再自带一套写死的档案", () => {
   withTempSettings(() => {
     addModel("deepseek-chat", { model: "deepseek-chat" });
