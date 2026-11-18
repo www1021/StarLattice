@@ -305,17 +305,24 @@ test("model list only shows models the user configured, never key material", asy
       total: number;
       defaultModelId: string;
     };
-    // 列表里只有用户配的这一条：内置档案与隐藏兜底都不出现
-    assert.equal(payload.total, 1);
+    // 列表里是预置的三条骨架 + 用户刚配的这一条：骨架没有密钥，只有配过的才算可用。
+    assert.equal(payload.total, 4);
     assert.equal(payload.defaultModelId, "deepseek-chat");
 
-    const item = payload.models[0];
+    const item = payload.models.find((model) => model.id === "deepseek-chat") ?? {};
     assert.equal(item.id, "deepseek-chat");
     assert.equal(item.label, "DeepSeek 对话");
     assert.equal(item.configured, true);
     assert.equal(item.isDefault, true);
     assert.equal(item.keySource, "stored");
     assert.equal("apiKey" in item, false);
+    // 预置骨架只带地址和模型名，密钥留白等本人填。
+    const seeded = payload.models.filter((model) => model.id !== "deepseek-chat");
+    assert.equal(seeded.length, 3);
+    assert.equal(
+      seeded.every((model) => model.configured === false && model.keySource === "none"),
+      true
+    );
     const serialized = JSON.stringify(payload);
     assert.equal(serialized.includes("sk-should-never-leave-the-server"), false);
 

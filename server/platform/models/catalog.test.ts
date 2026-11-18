@@ -75,9 +75,15 @@ function addModel(id: string, options: { label?: string; costTier?: "low" | "med
   });
 }
 
-test("一个模型都没配时，解析直接报出可操作的提示", () => {
+test("预置模型还没有密钥时，解析直接报出可操作的提示", () => {
   withTempSettings(() => {
-    assert.equal(getModelCatalog().length, 0);
+    const catalog = getModelCatalog();
+    // 首次使用只有三条预置骨架：地址、模型名给好，密钥空着。
+    assert.deepEqual(
+      catalog.map((item) => item.id),
+      ["dashscope-qwen-plus", "dashscope-qwen-flash", "deepseek-deepseek-flash"]
+    );
+    assert.equal(catalog.every((item) => item.apiKey === ""), true);
     assert.equal(isAnyModelConfigured(), false);
     assert.throws(
       () => resolveModel(undefined),
@@ -94,7 +100,11 @@ test("目录只来自设置里加的模型，默认模型由用户选择决定",
     setDefaultModelId("strong");
 
     const catalog = getModelCatalog();
-    assert.deepEqual(catalog.map((item) => item.id).sort(), ["deepseek-chat", "strong"]);
+    const ids = catalog.map((item) => item.id);
+    // 预置骨架也在目录里，用户自己加的两条同样在。
+    assert.equal(ids.includes("deepseek-chat"), true);
+    assert.equal(ids.includes("strong"), true);
+    assert.equal(ids.includes("dashscope-qwen-plus"), true);
 
     const byDefault = resolveModel(undefined);
     assert.equal(byDefault.id, "strong");
@@ -169,10 +179,11 @@ test("环境变量里留着密钥也不算配了模型", () => {
     });
     try {
       // 密钥只有一个来源：设置面板。环境变量里的那把不再参与组装。
-      assert.equal(getModelCatalog().length, 0);
-      assert.equal(getModelProfile("platform-default"), undefined);
+      // 目录里只剩三条没有密钥的预置骨架。
+      assert.equal(getModelCatalog().length, 3);
+      assert.equal(getModelProfile("platform-default")?.id, "dashscope-qwen-plus");
       assert.equal(isAnyModelConfigured(), false);
-      assert.throws(() => resolveModel("platform-default"), /还没有配置任何模型/);
+      assert.throws(() => resolveModel("platform-default"), /还没有填写 API Key/);
     } finally {
       restore();
     }
@@ -197,10 +208,10 @@ test("环境变量里的模型目录不再生效，只认设置里加的", () =>
       ])
     });
     try {
-      assert.deepEqual(
-        getModelCatalog().map((item) => item.id),
-        ["local-base"]
-      );
+      const ids = getModelCatalog().map((item) => item.id);
+      assert.equal(ids.includes("local-base"), true);
+      // 环境变量里那份目录不再被读进来。
+      assert.equal(ids.includes("local-strong"), false);
       // 未登记的 id 不会凭空冒出一条带密钥的档案：只能按上游模型名直连默认接口，并打 fallback 标记。
       const resolution = resolveModel("local-strong");
       assert.equal(resolution.model, "local-strong");

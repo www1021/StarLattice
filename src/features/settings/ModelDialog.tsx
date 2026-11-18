@@ -224,7 +224,16 @@ type Draft = {
   baseUrl: string;
   label: string;
   costTier: "low" | "medium" | "high";
+  /** 密钥框里的内容是不是用户真改过；没改过就沿用服务端已存的那把。 */
+  keyDirty: boolean;
 };
+
+/**
+ * 编辑时密钥框里显示的东西。
+ * 真实密钥只在服务端加密保存，前端拿不到任何片段，这里就是一段占位符：
+ * 让人一眼看出「已经存过密钥」，同时一个字符也读不出来。
+ */
+const SAVED_KEY_MASK = "••••••••••••••••";
 
 function draftFromModel(model: ModelProfileView | undefined): Draft {
   if (!model) {
@@ -235,17 +244,20 @@ function draftFromModel(model: ModelProfileView | undefined): Draft {
       model: first.models[0]?.id ?? "",
       baseUrl: first.baseUrl,
       label: "",
-      costTier: "medium"
+      costTier: "medium",
+      keyDirty: false
     };
   }
   const provider = findProvider(model.provider);
   return {
     providerId: provider?.id ?? CUSTOM_PROVIDER_ID,
-    apiKey: "",
+    // 已经存过密钥就摆一段掩码，而不是留个空框让人以为密钥丢了。
+    apiKey: model.keySource === "stored" ? SAVED_KEY_MASK : "",
     model: model.model,
     baseUrl: model.baseUrl ?? provider?.baseUrl ?? "",
     label: model.label,
-    costTier: model.costTier
+    costTier: model.costTier,
+    keyDirty: false
   };
 }
 
@@ -270,6 +282,7 @@ export function ModelDialog({
     return !preset || preset.models.length === 0 || !preset.models.some((item) => item.id === model.model);
   });
   const [showKey, setShowKey] = useState(false);
+  const keyInputRef = useRef<HTMLInputElement>(null);
   const [advanced, setAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -347,7 +360,10 @@ export function ModelDialog({
       model: next.models[0]?.id ?? "",
       baseUrl: next.baseUrl,
       // 显示名称跟着旧供应商走就没意义了，留给占位提示自动填
-      label: ""
+      label: "",
+      // 换了家供应商，旧密钥多半用不了；掩码也一起清掉，免得看着像还能用。
+      apiKey: "",
+      keyDirty: false
     }));
     setManualModel(next.models.length === 0);
   };
@@ -355,6 +371,9 @@ export function ModelDialog({
   const modelName = draft.model.trim();
   const displayName =
     draft.label.trim() || modelName || provider.label;
+
+  /** 只有用户真的动过密钥框才把密钥发给服务端；否则留空，由服务端沿用已存的那把。 */
+  const apiKeyForRequest = draft.keyDirty ? draft.apiKey.trim() || undefined : undefined;
 
   const fetchRemote = async () => {
     if (!baseUrl) {
@@ -368,7 +387,7 @@ export function ModelDialog({
       const result = await platformApi.listRemoteModels({
         id: editing ? model?.id : undefined,
         baseUrl,
-        apiKey: draft.apiKey.trim() || undefined
+        apiKey: apiKeyForRequest
       });
       setRemote(result);
       // 手头这个模型名不在服务方列表里，多半就是它导致 Model not exist：
@@ -406,7 +425,7 @@ export function ModelDialog({
         id: editing ? model?.id : undefined,
         baseUrl,
         model: modelName,
-        apiKey: draft.apiKey.trim() || undefined
+        apiKey: apiKeyForRequest
       });
       setProbe(result);
     } catch (reason) {
@@ -442,7 +461,7 @@ export function ModelDialog({
         provider: provider.id,
         model: modelName,
         baseUrl,
-        apiKey: draft.apiKey.trim() || undefined,
+        apiKey: apiKeyForRequest,
         costTier: draft.costTier,
         description: `${provider.label} · 在设置里添加`
       };
@@ -527,17 +546,32 @@ export function ModelDialog({
           <label className="md-field">
             <span>
               API Key
-              {editing ? <em>留空表示不修改已保存的密钥</em> : null}
+              {editing ? <em>密钥加密存本机，这里只显示掩码</em> : null}
             </span>
             <div className="md-key-row">
               <div className="md-key-input">
                 <input
+                  ref={keyInputRef}
                   type={showKey ? "text" : "password"}
                   value={draft.apiKey}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder={editing ? "已保存，留空不修改" : (provider.keyPlaceholder ?? "输入你的 API Key")}
-                  onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })}
+                  placeholder={
+                    editing
+                      ? model?.keySource === "env"
+                        ? "当前用的是服务端环境变量里的密钥"
+                        : "还没配密钥，填一个才能用"
+                      : (provider.keyPlaceholder ?? "输入你的 API Key")
+                  }
+                  // 一进来就全选掩码：直接敲字就是覆盖，不改的话保持原样提交。
+                  onFocus={() => {
+                    if (editing && !draft.keyDirty) {
+                      keyInputRef.current?.select();
+                    }
+                  }}
+                  onChange={(event) =>
+                    setDraft({ ...draft, apiKey: event.target.value, keyDirty: true })
+                  }
                 />
                 <button
                   type="button"

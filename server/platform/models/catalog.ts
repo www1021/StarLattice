@@ -1,5 +1,6 @@
 import { PlatformError } from "../types.js";
-import { getDefaultModelId, listUserModels, resolveUserApiKey } from "./userModels.js";
+import { isLocalEndpoint } from "./baseUrl.js";
+import { getExplicitDefaultModelId, listUserModels, resolveUserApiKey } from "./userModels.js";
 
 export type ModelCostTier = "low" | "medium" | "high";
 
@@ -156,9 +157,13 @@ export function getModelCatalog(): ModelProfile[] {
 
 /** 设置里选的那个默认模型；它被删了就取第一个能用的，都没有才是 undefined。 */
 function defaultProfileOf(catalog: ModelProfile[]): ModelProfile | undefined {
-  const stored = getDefaultModelId().trim();
+  // 用「用户显式选过」的那条，而不是带兜底的 getDefaultModelId：
+  // 预置骨架排在列表第一，兜底会把一条还没填密钥的模型误当成默认。
+  const stored = getExplicitDefaultModelId();
   if (stored && stored !== FOLLOW_DEFAULT_ID) {
     const hit = catalog.find((profile) => profile.id === stored);
+    // 用户显式选过就照他的意思来，哪怕这条还没填密钥——由解析层把「缺密钥」说清楚，
+    // 不要偷偷换成另一条有密钥的模型。
     if (hit) {
       return hit;
     }
@@ -410,6 +415,15 @@ export function resolveModel(
       profile = cheaper;
       source = "budget-downgrade";
     }
+  }
+
+  // 预置档案是「地址填好、密钥留空」的骨架：直接拿去请求上游只会换回一个 401。
+  // 在这里拦住，把「去设置里补密钥」说清楚；本机推理服务不校验密钥，放行。
+  if (!profile.apiKey && !isLocalEndpoint(profile.baseUrl)) {
+    throw new PlatformError(
+      `模型「${profile.label}」还没有填写 API Key。打开「设置 → 模型与密钥」，在这条模型后面补上自己的密钥就能用。`,
+      422
+    );
   }
 
   return {

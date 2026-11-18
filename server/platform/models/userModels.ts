@@ -13,6 +13,7 @@ import path from "node:path";
 import { PlatformError } from "../types.js";
 import { normalizeBaseUrl } from "./baseUrl.js";
 import { currentOwnerId } from "../../auth/context.js";
+import { SEED_MODELS } from "./seedModels.js";
 
 /**
  * 用户自定义模型档案（设置面板里「模型与密钥」写进去的那些）。
@@ -154,6 +155,25 @@ function emptySettings(): SettingsFile {
   return { version: 1, defaultModelId: "", models: [] };
 }
 
+/**
+ * 首次使用的账号：把预置的三条模型摆出来，密钥留空。
+ * 落库时机交给用户第一次保存，不在这里写盘——没配密钥的空档案没必要先占一份配置。
+ */
+function seedSettings(): SettingsFile {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    defaultModelId: "",
+    models: SEED_MODELS.map((seed) => ({
+      ...seed,
+      apiKeyEnc: "",
+      createdAt: now,
+      updatedAt: now,
+      tags: [...seed.tags]
+    }))
+  };
+}
+
 function normalizeStored(value: unknown): StoredModel | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
@@ -198,7 +218,7 @@ export function readSettings(): SettingsFile {
   if (!existsSync(file)) {
     // 文件不在了（删掉最后一条模型后目录被清空）时缓存也要跟着失效。
     settingsCache.delete(file);
-    return emptySettings();
+    return seedSettings();
   }
   const stamp = `${file}:${cacheStamp(file)}`;
   const cached = settingsCache.get(file);
@@ -312,11 +332,22 @@ export function getUserModel(id: string): StoredModel | undefined {
 export function getDefaultModelId(): string {
   const settings = readSettings();
   const stored = settings.defaultModelId;
-  // 指到一个已经被删掉的 id 时，直接把第一个模型当作默认，避免界面显示一个不存在的名字。
+  // 指到一个已经被删掉的 id 时，直接把第一条可用模型当作默认，避免界面显示一个不存在的名字。
   if (stored && settings.models.some((item) => item.id === stored)) {
     return stored;
   }
-  return settings.models[0]?.id ?? "";
+  // 没显式选过：优先挑已经填了密钥的那条。预置骨架只是占位，别让界面默认指向一条用不了的模型。
+  const usable = settings.models.find((item) => Boolean(item.apiKeyEnc && item.baseUrl));
+  return (usable ?? settings.models[0])?.id ?? "";
+}
+
+/**
+ * 只取用户真正选过的那条默认 id，不做兜底。
+ * 预置骨架不算「选过」：否则执行层会把一条还没填密钥的模型当成默认，
+ * 而用户明明已经配好并指向了另一条。
+ */
+export function getExplicitDefaultModelId(): string {
+  return readSettings().defaultModelId.trim();
 }
 
 /** 只能把真实存在的模型设为默认；删掉默认模型时由 getDefaultModelId 自动顺延。 */
