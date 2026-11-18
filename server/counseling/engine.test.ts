@@ -22,6 +22,29 @@ test("normalizes a virtual safety exercise and preserves its urgent risk setting
   assert.equal(session.events[0]?.severity, "critical");
 });
 
+test("accepts a Chinese description from a chat agent and infers the case", () => {
+  const session = createSession("班上有学生因为成绩问题，情绪有点异常");
+  assert.equal(session.student.id, "academic");
+  assert.equal(session.config.mode, "guided");
+  assert.equal(session.config.intensity, 4);
+});
+
+test("fills missing fields from case defaults and maps Chinese enums", () => {
+  const session = createSession({ caseId: "relationship", emotion: "难过", risk: "重点关注", intensity: "3" });
+  assert.equal(session.config.emotion, "低落");
+  assert.equal(session.config.risk, "screening");
+  assert.equal(session.config.intensity, 3);
+  assert.equal(session.config.trust, 35);
+  assert.equal(session.config.openness, 25);
+});
+
+test("never downgrades a safety scenario described in free text", () => {
+  const session = createSession({ note: "学生说想消失就好了", risk: "普通" });
+  assert.equal(session.student.id, "safety");
+  assert.equal(session.config.risk, "urgent");
+  assert.equal(session.events[0]?.severity, "critical");
+});
+
 test("recognizes empathy, direct safety confirmation, boundary language, and a support plan", () => {
   const session = createSession({
     caseId: "safety",

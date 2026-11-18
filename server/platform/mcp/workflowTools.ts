@@ -119,7 +119,16 @@ export async function runWorkflowTool(
       status,
       output
     };
-    const text = status === "succeeded" ? describeOutput(output) : `工作流「${stored.definition.name}」运行状态：${status}。`;
+    const failedStep = status === "failed"
+      ? [...result.steps].reverse().find((step) => step.status === "failed")
+      : undefined;
+    const failedTitle = failedStep ? nodeTitleOf(stored.definition.nodes, failedStep.nodeId) : "";
+    const failure = failedStep
+      ? `，失败节点「${failedTitle}」：${String(failedStep.error ?? "无错误信息").replace(/[。.]+$/, "")}`
+      : "";
+    const text = status === "succeeded"
+      ? describeOutput(output)
+      : `工作流「${stored.definition.name}」运行状态：${status}${failure}。`;
     return {
       serverId: WORKFLOW_TOOL_SERVER_ID,
       serverName: WORKFLOW_TOOL_SERVER_NAME,
@@ -128,12 +137,27 @@ export async function runWorkflowTool(
       isError: status !== "succeeded",
       content: [{ type: "text", text }],
       text,
-      structuredContent: payload
+      structuredContent: {
+        ...payload,
+        ...(failedStep ? { failedNodeId: failedStep.nodeId, failedNodeTitle: failedTitle, error: failedStep.error } : {})
+      }
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail(`工作流「${stored.definition.name}」调用失败：${message}`);
   }
+}
+
+function nodeTitleOf(nodes: unknown, nodeId: string): string {
+  if (!Array.isArray(nodes)) return nodeId;
+  for (const node of nodes as Array<Record<string, unknown>>) {
+    if (node.id === nodeId && typeof node.title === "string" && node.title.trim()) return node.title.trim();
+    for (const key of ["body", "then", "else", "branches"]) {
+      const found = nodeTitleOf(node[key], nodeId);
+      if (found !== nodeId) return found;
+    }
+  }
+  return nodeId;
 }
 
 function workflowIdFromTool(tool: ToolRecord) {

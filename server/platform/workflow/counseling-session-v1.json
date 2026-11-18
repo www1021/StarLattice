@@ -4,7 +4,7 @@
   "version": 1,
   "description": "把谈心谈话训练变成可追踪的平台运行：创建虚拟个案 → 每轮辅导员发言暂停等待人工输入 → 学生 Agent 回应 → 督导提示 → 循环 → 结束复盘。",
   "inputs": [
-    { "name": "config", "type": "object", "required": true, "description": "个案 id、训练方式、情绪、风险与初始状态" }
+    { "name": "config", "type": "object", "required": true, "description": "个案配置：caseId 可填 academic（成绩压力）/dormitory（宿舍冲突）/relationship（关系结束）/financial（经济困难）/conflict（处分对抗）/safety（安全演练）；mode、risk、emotion、intensity、trust、openness 可省略，自动按个案预设补齐；也可直接给一段中文情况描述自动匹配个案。" }
   ],
   "nodes": [
     {

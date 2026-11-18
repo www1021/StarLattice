@@ -131,7 +131,38 @@ export const BUILTIN_TOOLS: ToolWrite[] = [
     type: "builtin",
     endpoint: "builtin://counseling/create",
     description: "按虚拟个案与情绪状态创建谈心谈话会话，返回学生、状态与事件时间线。",
-    schema: jsonSchema({ config: { type: "object" } }, ["config"]),
+    schema: jsonSchema({
+      config: {
+        type: "object",
+        description: "个案配置。最少只给 caseId 即可，其余字段自动按个案预设补齐；也可给一段中文描述自动匹配个案。",
+        properties: {
+          caseId: {
+            type: "string",
+            enum: ["academic", "dormitory", "relationship", "financial", "conflict", "safety"],
+            description: "academic 成绩压力、dormitory 宿舍冲突、relationship 关系结束、financial 经济困难、conflict 处分对抗、safety 安全演练"
+          },
+          mode: {
+            type: "string",
+            enum: ["guided", "assessment"],
+            description: "guided 引导训练 / assessment 评估训练，默认 guided"
+          },
+          risk: {
+            type: "string",
+            enum: ["ordinary", "screening", "urgent"],
+            description: "风险演练级别，缺省按个案预设"
+          },
+          emotion: {
+            type: "string",
+            enum: ["焦虑", "低落", "愤怒", "委屈", "麻木"],
+            description: "初始情绪，缺省按个案预设"
+          },
+          intensity: { type: "number", minimum: 1, maximum: 5, description: "情绪强度 1 至 5" },
+          trust: { type: "number", minimum: 0, maximum: 100, description: "初始信任 0 至 100" },
+          openness: { type: "number", minimum: 0, maximum: 100, description: "初始开放度 0 至 100" },
+          note: { type: "string", description: "中文情况描述，caseId 缺省时按关键词匹配个案" }
+        }
+      }
+    }, ["config"]),
     enabled: true
   },
   {

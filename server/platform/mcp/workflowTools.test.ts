@@ -72,6 +72,46 @@ test("syncWorkflowTools registers each workflow as an internal MCP tool", () => 
   }
 });
 
+test("workflow tool surfaces the failed node title and error in chat", async () => {
+  const context = makeContext();
+  try {
+    syncWorkflowTools(context.store);
+    const tool = context.store.getTool(workflowToolId(WORKFLOW_ID))!;
+    const executor = {
+      run: async () => ({
+        run: { id: "run_fake", status: "failed" },
+        steps: [
+          {
+            id: "step_fake",
+            runId: "run_fake",
+            sequence: 1,
+            path: "",
+            nodeId: "draft",
+            nodeKind: "template",
+            status: "failed",
+            error: "请选择有效的虚拟个案。"
+          }
+        ]
+      })
+    } as unknown as WorkflowExecutor;
+
+    const result = await runWorkflowTool(context.store, executor, tool, { topic: "测试" });
+    assert.equal(result.isError, true);
+    assert.match(result.text, /失败节点「草稿」/);
+    assert.match(result.text, /请选择有效的虚拟个案。$/);
+    const structured = result.structuredContent as {
+      failedNodeId: string;
+      failedNodeTitle: string;
+      error: string;
+    };
+    assert.equal(structured.failedNodeId, "draft");
+    assert.equal(structured.failedNodeTitle, "草稿");
+    assert.equal(structured.error, "请选择有效的虚拟个案。");
+  } finally {
+    context.close();
+  }
+});
+
 test("workflow tools execute through McpManager and return end-node output", async () => {
   const context = makeContext();
   try {

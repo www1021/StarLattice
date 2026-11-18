@@ -8,19 +8,81 @@ export class CounselingError extends Error {
 }
 const clamp = (value: number) => Math.max(0, Math.min(100, value));
 
+const MODES = ["guided", "assessment"];
+const RISKS = ["ordinary", "screening", "urgent"];
+const EMOTIONS = ["焦虑", "低落", "愤怒", "委屈", "麻木"];
+
+const MODE_ALIASES: Record<string, string> = {
+  "引导": "guided", "指导": "guided", "训练": "guided", "陪伴": "guided",
+  "评估": "assessment", "考核": "assessment", "测评": "assessment"
+};
+const RISK_ALIASES: Record<string, string> = {
+  "普通": "ordinary", "一般": "ordinary", "常规": "ordinary",
+  "筛查": "screening", "重点关注": "screening", "观察": "screening",
+  "紧急": "urgent", "危机": "urgent", "高危": "urgent"
+};
+const EMOTION_ALIASES: Record<string, string> = {
+  "生气": "愤怒", "恼火": "愤怒", "恼怒": "愤怒", "气愤": "愤怒",
+  "难过": "低落", "伤心": "低落", "沮丧": "低落", "消沉": "低落", "闷闷不乐": "低落",
+  "担心": "焦虑", "紧张": "焦虑", "不安": "焦虑", "压力大": "焦虑", "焦虑": "焦虑",
+  "憋屈": "委屈", "不平": "委屈",
+  "冷漠": "麻木", "呆滞": "麻木"
+};
+
+function asEnum(value: unknown, allowed: string[], aliases: Record<string, string>, fallback: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (allowed.includes(text)) return text;
+  return aliases[text] ?? fallback;
+}
+
+function asNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
+/**
+ * 对话里直接调用工作流时，模型给的配置经常是中文描述或缺字段。
+ * 这里按关键词落到现有虚拟个案，再用个案默认值补齐，避免整条工作流因参数格式失败。
+ */
+export function inferCaseId(text: string): string {
+  if (/自伤|自杀|伤害自己|不想活|消失就好|结束生命|活不下去/.test(text)) return "safety";
+  if (/宿舍|室友|同寝|作息冲突/.test(text)) return "dormitory";
+  if (/分手|失恋|恋爱|亲密关系|对象分开/.test(text)) return "relationship";
+  if (/生活费|家庭经济|经济困难|兼职|欠费|资助/.test(text)) return "financial";
+  if (/处分|顶撞|被记名字|课堂冲突|不公平/.test(text)) return "conflict";
+  if (/成绩|考试|挂科|补考|学业|学习压力|学不进去/.test(text)) return "academic";
+  return "academic";
+}
+
 export function normalizeConfig(input: unknown): CounselingConfig {
-  if (!input || typeof input !== "object") throw new CounselingError("请填写虚拟个案配置。");
-  const value = input as Record<string, unknown>;
-  const student = counselingCases.find(item => item.id === value.caseId);
-  if (!student) throw new CounselingError("请选择有效的虚拟个案。");
-  if (!["guided", "assessment"].includes(String(value.mode))) throw new CounselingError("训练模式无效。");
-  if (!["ordinary", "screening", "urgent"].includes(String(value.risk))) throw new CounselingError("风险演练级别无效。");
-  if (!["焦虑", "低落", "愤怒", "委屈", "麻木"].includes(String(value.emotion))) throw new CounselingError("情绪设置无效。");
-  for (const [key, min, max] of [["intensity", 1, 5], ["trust", 0, 100], ["openness", 0, 100]] as const) {
-    if (typeof value[key] !== "number" || !Number.isInteger(value[key]) || Number(value[key]) < min || Number(value[key]) > max) throw new CounselingError("状态数值超出范围。");
-  }
-  // A scenario with explicit safety cues cannot be relabeled as an ordinary case.
-  return { caseId: student.id, mode: value.mode, emotion: value.emotion, intensity: value.intensity, trust: value.trust, openness: value.openness, risk: student.id === "safety" ? "urgent" : value.risk } as CounselingConfig;
+  // 模型偶发把整个 config 传成描述字符串，也按个案意图接住。
+  const value: Record<string, unknown> =
+    typeof input === "string" ? { note: input } :
+    input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> :
+    {};
+
+  const hints = [
+    "note", "description", "background", "scenario", "situation", "student",
+    "text", "query", "summary", "context", "case", "学生情况", "情况", "描述", "背景"
+  ].map((key) => value[key]).filter((item): item is string => typeof item === "string" && item.trim().length > 0).join(" ");
+
+  const rawCase = typeof value.caseId === "string" ? value.caseId.trim() : "";
+  const student =
+    counselingCases.find((item) => item.id === rawCase) ??
+    counselingCases.find((item) => hints.includes(item.name) || hints.includes(item.title)) ??
+    counselingCases.find((item) => rawCase && (rawCase.includes(item.name) || rawCase.includes(item.title))) ??
+    counselingCases.find((item) => inferCaseId(hints) === item.id) ??
+    counselingCases[0];
+
+  return {
+    caseId: student.id,
+    mode: asEnum(value.mode, MODES, MODE_ALIASES, "guided"),
+    emotion: asEnum(value.emotion, EMOTIONS, EMOTION_ALIASES, student.defaults.emotion),
+    intensity: asNumber(value.intensity, 1, 5, student.defaults.intensity),
+    trust: asNumber(value.trust, 0, 100, student.defaults.trust),
+    openness: asNumber(value.openness, 0, 100, student.defaults.openness),
+    // A scenario with explicit safety cues cannot be relabeled as an ordinary case.
+    risk: student.id === "safety" ? "urgent" : asEnum(value.risk, RISKS, RISK_ALIASES, student.defaults.risk)
+  } as CounselingConfig;
 }
 
 export function createSession(input: unknown): InternalSession {
