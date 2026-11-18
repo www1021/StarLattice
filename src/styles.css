@@ -5025,6 +5025,12 @@ button {
   transform: none;
 }
 
+/* 对话页：右侧面板打开时正文要顶到面板左沿，所以这一段 gutter 不留。 */
+.app-shell.chat-view.insight-open .workspace {
+  margin-right: var(--insight-panel-width);
+  padding-right: 0;
+}
+
 .workspace-inner {
   width: 100%;
   max-width: 965px;
@@ -14006,6 +14012,25 @@ img.user-avatar {
     --pet-gutter: 0px;
     max-width: 100%;
   }
+}
+
+/* 右侧面板打开时，正文列的右边界直接贴住面板：
+   面板那边不再留 gutter，这里也去掉「对称留白」的右宠物位，
+   内容列整体上限放到 1200（行宽别撑得太离谱），靠右对齐。 */
+.app-shell.insight-open .workspace-inner.chat-workspace {
+  width: 100%;
+  max-width: calc(1200px + var(--pet-gutter));
+  margin-left: auto;
+  margin-right: 0;
+  padding-right: 0;
+}
+
+.app-shell.insight-open .workspace-inner.chat-workspace .conversation-shell,
+.app-shell.insight-open .workspace-inner.chat-workspace .workflow-chat-bar {
+  width: 100%;
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 /* 侧栏底部：外观设置入口跟账号行排成一列 */

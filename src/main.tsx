@@ -12194,8 +12194,10 @@ function App() {
       <div className="app-photo" aria-hidden="true" />
       <main
         className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          isChatView && dockOpen ? "insight-open" : ""
-        } ${resizing ? "pane-resizing" : ""}`}
+          isChatView ? "chat-view" : ""
+        } ${isChatView && dockOpen ? "insight-open" : ""} ${
+          resizing ? "pane-resizing" : ""
+        }`}
         style={shellStyle}
       >
       {!compact ? (

@@ -314,6 +314,13 @@ test("头像只收图片 data URL，超长直接拒绝", () => {
   assert.throws(() => parseAvatar(`data:image/png;base64,${"A".repeat(200_001)}`), /太大/);
 });
 
+test("欢迎语能放下内置智能体那种长开场白，改别的字段不会被它拦住", () => {
+  // 师者工作台的开场白本来就两百字上下，卡在 200 会让「只改知识库」的保存直接 400。
+  const longWelcome = "把课堂实录发我，我按五个维度看一遍。".repeat(20);
+  assert.equal(parseChatConfig({ welcome: longWelcome }).welcome, longWelcome);
+  assert.throws(() => parseChatConfig({ welcome: "字".repeat(1001) }), /欢迎语/);
+});
+
 test("智能体可以挂知识库：去重、去掉空值、最多 8 个", () => {
   assert.deepEqual(
     parseChatConfig({ knowledgeBaseIds: ["kb_a", " kb_b ", "kb_a", ""] }).knowledgeBaseIds,

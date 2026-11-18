@@ -28,6 +28,7 @@ import { PlatformStateStore } from "./runtime/stateStore.js";
 import { WorkflowExecutor } from "./runtime/executor.js";
 import { subscribeRunTokens } from "./runtime/runStreamBus.js";
 import { BUILTIN_AGENTS, parseAgentWrite } from "./registry/agents.js";
+import { isDelegationToolId, delegationTargetId } from "./chat/agentDelegation.js";
 import { SHARED_CHAT_AGENTS } from "./registry/sharedChatAgents.js";
 import {
   describeAgentModel,
@@ -401,6 +402,24 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
       // 存下一个查不到 id，用户只会在聊天里等来「模型没调用」，不如保存时就拦下。
       if (!existing || existing.source === "custom") {
         for (const toolId of agent.tools) {
+          // agent:// 不是注册中心里的工具，它指向另一个智能体：校验对象得换成对方。
+          if (isDelegationToolId(toolId)) {
+            const targetId = delegationTargetId(toolId);
+            const target = store.getAgent(targetId);
+            if (!target || target.id === agent.id) {
+              throw new PlatformError(
+                `要转交的智能体「${targetId}」不存在，请重新选一个，或把这条转交移除。`,
+                400
+              );
+            }
+            if (!target.enabled) {
+              throw new PlatformError(
+                `要转交的智能体「${target.name}」已停用，请先启用，或把这条转交移除。`,
+                400
+              );
+            }
+            continue;
+          }
           const tool = store.getTool(toolId);
           if (!tool) {
             throw new PlatformError(

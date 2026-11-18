@@ -504,3 +504,57 @@ test("保存工作流按账号归属拦截：member 不能覆盖共享/他人版
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("转交工具 agent:// 按智能体校验，不再被当成找不到的 MCP 工具", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "yiban-routes-"));
+  const store = new PlatformStateStore(path.join(directory, "platform.db"));
+  const app = express();
+  app.use(express.json());
+  registerPlatform(app, { store });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(0, () => resolve(listening));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/platform`;
+
+  const save = async (body: Record<string, unknown>) => {
+    const response = await fetch(`${base}/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    return {
+      status: response.status,
+      payload: (await response.json()) as {
+        agent?: { tools: string[] };
+        message?: string;
+      }
+    };
+  };
+
+  try {
+    const target = await save({ id: "deleg-target", name: "备课专项", prompt: "负责备课。" });
+    assert.equal(target.status, 201);
+
+    const host = await save({
+      id: "deleg-host",
+      name: "师者工作台",
+      prompt: "把专项问题转交给对应专项。",
+      tools: ["agent://deleg-target"]
+    });
+    assert.equal(host.status, 201);
+    assert.deepEqual(host.payload.agent?.tools, ["agent://deleg-target"]);
+
+    const ghost = await save({
+      id: "deleg-ghost",
+      name: "空指向",
+      prompt: "转交给一个不存在的智能体。",
+      tools: ["agent://nowhere"]
+    });
+    assert.equal(ghost.status, 400);
+    assert.match(ghost.payload.message ?? "", /要转交的智能体「nowhere」不存在/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

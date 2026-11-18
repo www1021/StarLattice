@@ -9,6 +9,11 @@ import { PlatformError, type AgentChatConfig, type AgentRecord } from "../types.
 const MAX_DESCRIPTION = 400;
 const MAX_NAME = 40;
 const MAX_PROMPT = 20000;
+/**
+ * 欢迎语上限放宽到 1000：内置智能体（如师者工作台）的开场白本来就有一两百字，
+ * 卡在 200 会让「只改知识库」的保存也被这条校验拦下来。
+ */
+const MAX_WELCOME = 1000;
 const MAX_AVATAR_CHARS = 200_000;
 const MAX_QUICK_PROMPTS = 8;
 const MAX_VARIABLES = 12;
@@ -114,7 +119,7 @@ export function parseChatConfig(
   const input = value as Record<string, unknown>;
   const config: AgentChatConfig = {};
 
-  const welcome = readText(input.welcome, "welcome", 200);
+  const welcome = readText(input.welcome, "欢迎语", MAX_WELCOME);
   if (welcome) {
     config.welcome = welcome;
   }

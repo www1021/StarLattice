@@ -38,6 +38,8 @@ type AgentEditorProps = {
 const MAX_NAME = 30;
 const MAX_DESCRIPTION = 200;
 const MAX_PROMPT = 20000;
+/** 跟后端 parseChatConfig 的 MAX_WELCOME 对齐；内置智能体开场白本来就长。 */
+const MAX_WELCOME = 1000;
 const DEFAULT_CONTEXT_TURNS = 6;
 
 /** 提示词模板：只给骨架，具体内容留给用户填。 */
@@ -102,8 +104,11 @@ function toolLabel(id: string) {
   return segments[segments.length - 1] || id;
 }
 
-/** 工具选择列表的分组标签：0=平台插件，1=自定义插件，2=平台工作流，3=外部 MCP。 */
-const TOOL_GROUP_LABELS = ["平台插件", "自定义插件", "平台工作流", "MCP 工具"] as const;
+/** 工具选择列表的分组标签：0=平台插件，1=自定义插件，2=平台工作流，3=外部 MCP，4=智能体转交。 */
+const TOOL_GROUP_LABELS = ["平台插件", "自定义插件", "平台工作流", "MCP 工具", "智能体转交"] as const;
+
+/** 委派工具的写法：agent://<智能体 id>。 */
+const DELEGATION_PREFIX = "agent://";
 
 /** 字数计数：和截图一样贴着输入框右下角。 */
 function FieldCounter({ value, max }: { value: number; max: number }) {
@@ -124,6 +129,7 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
   const [config, setConfig] = useState<AgentChatConfig>(agent?.chatConfig ?? {});
   const [models, setModels] = useState<ModelProfileView[]>([]);
   const [toolOptions, setToolOptions] = useState<ToolRecord[]>([]);
+  const [agentOptions, setAgentOptions] = useState<AgentRecord[]>([]);
   const [knowledgeOptions, setKnowledgeOptions] = useState<KnowledgeBaseRef[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -172,6 +178,26 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
       })
       .catch(() => {
         // 工具列表拿不到时仍然可以保存，只是选不了新工具
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    platformApi
+      .listAgents("chat")
+      .then((result) => {
+        if (!cancelled) {
+          // 转交工具在配置里只存 agent://<id>，面板上要显示成对方的名字，
+          // 所以这里把「能对话的智能体」也拉一份，纯粹用来做 id → 名字的翻译。
+          // scope=chat 是为了排除内置的工作流零件（评分器、虚拟学生那些）。
+          setAgentOptions(result.agents ?? []);
+        }
+      })
+      .catch(() => {
+        // 拿不到列表时委派仍能保存，只是面板上会退回显示 id
       });
     return () => {
       cancelled = true;
@@ -330,22 +356,49 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
     }
   }
 
+  /**
+   * 委派工具也要能显示成人话：配置里只存 agent://teacher-prep，
+   * 面板上要显示「转交给备课专项」。顺手把它们也放进选择列表，
+   * 否则删掉一个就再也加不回来。
+   */
+  const delegationOptions: ToolRecord[] = agentOptions
+    .filter((item) => item.id !== agent?.id && item.enabled)
+    .map((item) => ({
+      id: `${DELEGATION_PREFIX}${item.id}`,
+      name: `转交给${item.name}`,
+      type: "builtin" as const,
+      schema: { type: "object" },
+      endpoint: DELEGATION_PREFIX,
+      description: ["把问题交给「" + item.name + "」处理", item.description || item.role]
+        .filter(Boolean)
+        .join("："),
+      enabled: true,
+      createdAt: "",
+      updatedAt: "",
+      source: "builtin" as const
+    }));
+  const allToolOptions = [...toolOptions, ...delegationOptions];
+
   const keyword = toolQuery.trim().toLowerCase();
-  const visibleTools = toolOptions.filter((item) => {
+  const visibleTools = allToolOptions.filter((item) => {
     if (!keyword) {
       return true;
     }
     return `${item.name} ${item.description} ${item.id}`.toLowerCase().includes(keyword);
   });
-  // 平台插件排最前，其次自定义插件、平台工作流、外部 MCP，组内按名称排，方便扫读。
-  const toolGroupOf = (item: ToolRecord) =>
-    item.type === "builtin"
+  // 平台插件排最前，其次自定义插件、平台工作流、外部 MCP、智能体转交，组内按名称排，方便扫读。
+  const toolGroupOf = (item: ToolRecord) => {
+    if ((item.endpoint ?? "").startsWith(DELEGATION_PREFIX)) {
+      return 4;
+    }
+    return item.type === "builtin"
       ? (item.endpoint ?? "").startsWith("plugin://")
         ? 1
         : 0
       : (item.endpoint ?? "").startsWith("workflow://")
         ? 2
         : 3;
+  };
   const groupedTools = [...visibleTools].sort(
     (left, right) => toolGroupOf(left) - toolGroupOf(right) || left.name.localeCompare(right.name, "zh-Hans-CN")
   );
@@ -517,18 +570,23 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
               </button>
             </div>
             {tools.length === 0 && !pickerOpen ? (
-              <p className="agent-hint">还没有工具。点「添加工具」从平台插件和 MCP 接入里挑。</p>
+              <p className="agent-hint">
+                还没有工具。点「添加工具」从平台插件、MCP 接入，或直接转交给平台里别的智能体。
+              </p>
             ) : null}
 
             {tools.length > 0 && (
               <div className="agent-tool-list">
                 {tools.map((toolId) => {
-                  const tool = toolOptions.find((item) => item.id === toolId);
+                  const tool = allToolOptions.find((item) => item.id === toolId);
+                  const missingHint = toolId.startsWith(DELEGATION_PREFIX)
+                    ? "要转交的智能体已停用或不存在，这条转交暂时用不了"
+                    : "这个工具当前不可用（已停用或没发现了）";
                   return (
                     <span
                       className={`agent-tool-chip ${tool ? "" : "is-missing"}`}
                       key={toolId}
-                      title={tool?.description ?? "这个工具当前不可用（已停用或没发现了）"}
+                      title={tool?.description ?? missingHint}
                     >
                       <Wrench size={12} />
                       <span>{tool?.name ?? toolLabel(toolId)}</span>
@@ -567,7 +625,7 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
                 <div className="agent-tool-picker-list">
                   {groupedTools.length === 0 ? (
                     <p className="agent-hint">
-                      {toolOptions.length === 0
+                      {allToolOptions.length === 0
                         ? "还没有可用工具。平台插件（知识库检索、课堂训练等）默认就有；也可以去「MCP 接入」连服务器同步更多工具。"
                         : "没有匹配的工具。"}
                     </p>
@@ -772,11 +830,18 @@ export function AgentEditor({ agent, onClose, onSaved }: AgentEditorProps) {
                 逐字回复（挂了工具时，工具执行完才会一次性给出结论）
               </label>
               <label className="agent-field">
-                <span className="agent-label">欢迎语</span>
-                <input
+                <span className="agent-label">
+                  <span>欢迎语</span>
+                  <FieldCounter
+                    value={(config.welcome ?? "").length}
+                    max={MAX_WELCOME}
+                  />
+                </span>
+                <textarea
+                  rows={3}
+                  maxLength={MAX_WELCOME}
                   value={config.welcome ?? ""}
-                  maxLength={200}
-                  placeholder="空对话时显示的一句话"
+                  placeholder="空对话时显示的一段话，可以换行"
                   onChange={(event) => patchConfig({ welcome: event.target.value })}
                 />
               </label>
