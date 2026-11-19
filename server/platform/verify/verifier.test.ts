@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test, { after, before } from "node:test";
 import type { AgentRecord } from "../types.js";
 import { LayeredVerifier } from "./verifier.js";
 import { configureTestModels } from "../../testing/modelFixtures.js";
+import { saveUserModel, setDefaultModelId } from "../models/userModels.js";
 
 // 模型密钥只能来自账号设置（环境变量不再兜底），整份用例统一备好两条模型：
 // 一条中等成本作默认，一条低成本供预算降级时挑。
@@ -583,6 +587,60 @@ test("verifier falls back to PLATFORM_VERIFY_MODEL when the agent keeps the defa
     assert.equal(report.layers.crossCheck.verifiers[0].modelSource, "verifier");
   } finally {
     restore();
+  }
+});
+
+test("verify still completes when the default model has no API key (no retry wait)", () => {
+  // 复现演练/未配密钥场景：账号里有一条模型但没填 Key。
+  // verifierModelInfo 若因此抛 422，verify 节点会被执行器重试三次才失败、
+  // 白等一大段时间。这里要求它降级成占位模型信息，让规则打分照常完成。
+  const dir = mkdtempSync(path.join(tmpdir(), "starlattice-verify-nokey-"));
+  const previousDir = process.env.MODEL_SETTINGS_DIR;
+  const previousLive = process.env.PLATFORM_LIVE_MODEL;
+  const previousFast = process.env.PLATFORM_MODEL_FAST;
+  process.env.MODEL_SETTINGS_DIR = dir;
+  delete process.env.PLATFORM_LIVE_MODEL;
+  delete process.env.PLATFORM_MODEL_FAST;
+  try {
+    saveUserModel({
+      id: "keyless-model",
+      label: "keyless-model",
+      model: "keyless-model",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "",
+      tags: [],
+      costTier: "medium"
+    });
+    setDefaultModelId("keyless-model");
+
+    const report = new LayeredVerifier(() => 0.86).evaluate({
+      node: {
+        id: "check",
+        kind: "verify",
+        verifier: "observer-verifier",
+        rubric: ["目标达成"],
+        threshold: 0.8
+      },
+      artifact: GOOD_ARTIFACT,
+      attempt: 1,
+      agents: [agentWithModel("observer-verifier", "课堂交叉验证器", "keyless-model")]
+    });
+
+    const score = report.layers.crossCheck.verifiers[0];
+    assert.equal(score.model, "unavailable");
+    assert.equal(score.modelSource, "unavailable");
+    assert.ok(Number.isFinite(score.score), "验证分数仍应正常产出");
+  } finally {
+    if (previousDir === undefined) {
+      delete process.env.MODEL_SETTINGS_DIR;
+    } else {
+      process.env.MODEL_SETTINGS_DIR = previousDir;
+    }
+    if (previousLive === undefined) delete process.env.PLATFORM_LIVE_MODEL;
+    else process.env.PLATFORM_LIVE_MODEL = previousLive;
+    if (previousFast === undefined) delete process.env.PLATFORM_MODEL_FAST;
+    else process.env.PLATFORM_MODEL_FAST = previousFast;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

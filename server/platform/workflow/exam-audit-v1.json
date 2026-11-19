@@ -8,18 +8,21 @@
       "name": "stage",
       "type": "string",
       "required": true,
+      "defaultValue": "初中",
       "description": "学段"
     },
     {
       "name": "subject",
       "type": "string",
       "required": true,
+      "defaultValue": "数学",
       "description": "学科"
     },
     {
       "name": "scope",
       "type": "string",
       "required": false,
+      "defaultValue": "一元二次方程",
       "description": "考试范围，用于超纲判定"
     },
     {

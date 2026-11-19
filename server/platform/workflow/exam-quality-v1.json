@@ -8,42 +8,49 @@
       "name": "stage",
       "type": "string",
       "required": true,
+      "defaultValue": "初中",
       "description": "学段：小学 / 初中 / 高中 / 中职 / 高校"
     },
     {
       "name": "subject",
       "type": "string",
       "required": true,
+      "defaultValue": "数学",
       "description": "学科"
     },
     {
       "name": "textbook",
       "type": "string",
       "required": false,
+      "defaultValue": "人教版",
       "description": "教材版本"
     },
     {
       "name": "scope",
       "type": "string",
       "required": true,
+      "defaultValue": "一元二次方程",
       "description": "考试范围，如一元二次方程"
     },
     {
       "name": "duration",
       "type": "number",
       "required": true,
+      "defaultValue": 45,
       "description": "考试时长（分钟）"
     },
     {
       "name": "totalScore",
       "type": "number",
       "required": true,
+      "defaultValue": 100,
       "description": "试卷总分"
     },
     {
       "name": "targetDifficulty",
       "type": "string",
       "required": false,
+      "defaultValue": "中等",
       "description": "期望难度取向：偏易 / 中等 / 偏难"
     },
     {

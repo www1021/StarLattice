@@ -319,11 +319,20 @@ export class LayeredVerifier {
 }
 
 function verifierModelInfo(request: VerifyRequest, agent: AgentRecord) {
-  const resolution = resolveVerificationModel({
-    nodeModel: request.node?.verifierModels?.[agent.id] ?? request.node?.model,
-    agentModel: agent.model,
-    budgetExceeded: request.budgetExceeded
-  });
+  // 模型信息只用于独立性判定和报告展示，不是验证能否进行的前提。
+  // 演练/未配密钥场景下 resolveModel 会因缺 Key 抛 422；这里若跟着抛，
+  // 会让本可纯规则打分的 verify 节点重试三次才失败、白等一大段时间。
+  // 因此解析失败就降级成占位信息，让验证继续，独立性会被判为未知（最保守）。
+  let resolution: ReturnType<typeof resolveVerificationModel>;
+  try {
+    resolution = resolveVerificationModel({
+      nodeModel: request.node?.verifierModels?.[agent.id] ?? request.node?.model,
+      agentModel: agent.model,
+      budgetExceeded: request.budgetExceeded
+    });
+  } catch {
+    return { model: "unavailable", modelSource: "unavailable" };
+  }
   return {
     model: resolution.id,
     resolvedModel: resolution.model,
