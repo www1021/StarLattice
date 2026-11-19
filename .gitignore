@@ -25,6 +25,7 @@ benchmarks/results/*
 !benchmarks/results/concurrency-latest.csv
 !benchmarks/results/concurrency-stub-latest.md
 !benchmarks/results/verify-sensitivity-latest.md
+!benchmarks/results/verify-rule-sensitivity-latest.md
 !benchmarks/results/audit-topic-2026-10-31T16-27-11-658Z.md
 !benchmarks/results/bench-merged-2026-10-31T15-50-58-263Z.md
 # README 直接引用的可复现实验报告

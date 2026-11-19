@@ -1,6 +1,6 @@
 # 三基线逐用例分析
 
-- 结果文件：/Users/wgx/Project/Yiban/YiJiaoXun/benchmarks/results/bench-2026-10-31T14-02-16-049Z.json
+- 结果文件：benchmarks/results/bench-2026-10-31T14-02-16-049Z.json
 - 用例数：8（配对用例 8）
 - 总运行：24 次
 
