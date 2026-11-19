@@ -5199,7 +5199,7 @@ button {
 
 .hero p {
   margin: 14px 0 0;
-  color: var(--n-46);
+  color: var(--n-36);
   font-size: clamp(15px, 1.08vw, 18px);
   font-weight: 500;
   line-height: 1.6;
@@ -5234,8 +5234,8 @@ button {
 .hero-capability-row li {
   padding: 2px 9px;
   border-radius: 6px;
-  background: var(--surf-96);
-  color: var(--n-48);
+  background: var(--surf-94);
+  color: var(--n-33);
   font-size: 12.5px;
   font-weight: 500;
   line-height: 1.6;
@@ -14056,7 +14056,7 @@ img.user-avatar {
 
 .workspace-inner.chat-workspace .hero p {
   margin-top: 8px;
-  color: var(--n-46);
+  color: var(--n-36);
   font-size: 13px;
   line-height: 1.6;
 }
