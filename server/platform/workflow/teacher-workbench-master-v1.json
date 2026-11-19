@@ -1,56 +1,66 @@
 {
   "id": "teacher-workbench-master-v1",
   "name": "师者工作台 · 六线协同总调度流",
-  "version": 3,
-  "description": "师者工作台的顶层总流：一次输入识别意图，按备课、答疑、命题、安全、心理、观课六线分流。五条线各自调用已有工作流子流程，心理线由引导节点承接（真正的谈心谈话在对话页的谈心聊天室走 counseling-session-v1），通用问题走兜底回答，最后汇总成一段回复。对应总控智能体 teacher-guide 的六路 agent:// 委派结构。",
+  "version": 5,
+  "description": "师者工作台的顶层总流：只看老师这一句话，先判走备课、答疑、命题、安全、心理、观课哪条线，再交给对应专项工作流。年级、学科、课题、题量这些参数不在这里填，各条专项线自己从原话里取，取不到才追问。每轮只跑命中的那一条线，正文由该线的回复节点直接流式打印。",
   "inputs": [
-    { "name": "question", "type": "string", "required": true, "description": "老师本轮要办的事；调试时聊天框输入的话会自动填进这里" },
-    { "name": "grade", "type": "string", "required": false, "description": "学段年级，如五年级；备课、答疑、安全线用" },
-    { "name": "subject", "type": "string", "required": false, "description": "学科，如数学；备课、答疑、命题、观课线用" },
-    { "name": "topic", "type": "string", "required": false, "description": "课题或考试范围，如分数的意义；备课、答疑、命题、观课线用" },
-    { "name": "studentAnswer", "type": "string", "required": false, "description": "学生的原始作答，答疑线用" },
-    { "name": "studentId", "type": "string", "required": false, "description": "相关学生标识，安全线用" },
-    { "name": "objectives", "type": "string", "required": false, "description": "教学目标，备课与观课线用" },
-    { "name": "plan", "type": "string", "required": false, "description": "教学设计，观课线用" },
-    { "name": "transcript", "type": "string", "required": false, "description": "课堂实录，观课线用" },
-    { "name": "stage", "type": "string", "required": false, "defaultValue": "初中", "description": "学段：小学 / 初中 / 高中 / 中职 / 高校；命题与观课线用" },
-    { "name": "textbook", "type": "string", "required": false, "defaultValue": "人教版", "description": "教材版本，命题线用" },
-    { "name": "scope", "type": "string", "required": false, "defaultValue": "一元二次方程", "description": "考试范围，命题线用" },
-    { "name": "duration", "type": "number", "required": false, "defaultValue": 45, "description": "考试时长（分钟），默认 45" },
-    { "name": "totalScore", "type": "number", "required": false, "defaultValue": 100, "description": "试卷总分，默认 100" },
-    { "name": "targetDifficulty", "type": "string", "required": false, "defaultValue": "中等", "description": "期望难度取向：偏易 / 中等 / 偏难" },
-    { "name": "itemCount", "type": "number", "required": false, "defaultValue": 15, "description": "命题线题目数量；需求里明确给了题量时以需求为准" },
-    { "name": "itemTypes", "type": "string", "required": false, "defaultValue": "选择题、填空题、判断题", "description": "命题线题型组合；需求里明确给了题型时以需求为准" },
-    { "name": "minutes", "type": "string", "required": false, "description": "课时长度，备课线用" },
-    { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "参与检索的知识库 id 列表" }
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "老师这一轮说的话；年级、学科、课题、题量、难度都从这句话里识别，不需要另外填参数"
+    }
   ],
   "nodes": [
-    { "id": "start", "kind": "start", "title": "开始", "description": "接收老师本轮要办的事，以及各线共用的年级、学科、课题等参数。" },
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始",
+      "description": "只收老师这一句话，其余参数由下游专项线自己识别。"
+    },
     {
       "id": "classify",
       "kind": "llm",
       "title": "六线意图识别",
       "description": "把老师的话归到备课、答疑、命题、安全、心理、观课六线之一，不是让模型直接作答。",
-      "temperature": 0.2,
-      "inputs": { "question": "${input.question}" },
-      "system": "你是师者工作台的任务路由助手。唯一职责：把老师的话分到六条工作线之一，只输出分类词，不回答具体内容。",
-      "prompt": "【老师本轮输入】\n${input.question}\n\n判断老师要办哪一类事，只能输出以下七个词之一：备课、答疑、命题、安全、心理、观课、通用。\n\n备课：写教案、设计教学活动、分层评价、说课稿、课件提纲。\n答疑：学生某道题不会、要提示不要答案、分析错因、讲解题思路。\n命题：出卷、组卷、审卷、细目表、难度区分度、仿真试做。\n安全：欺凌、伤害、自伤、走失、冲突、疑似虐待等需要按红线判定的事件。\n心理：学生情绪低落、家庭变故、厌学、谈心谈话、心理开导。\n观课：评课、诊断、磨课、看课堂实录、五维观察。\n通用：以上都不是，比如问平台怎么用、问概念、闲聊。\n\n判定原则：\n- 安全线优先，只要出现欺凌、伤害、自伤等红线词，一律判安全，不许放进心理或通用。\n- 一句话里同时提到备课和命题时，取句子开头最先提到的那条线；总控会在对话里把它们拆成多步依次转交，这里只选第一条。\n- 不要过度延伸，没有明确线索就判通用。\n\n只输出七词之一，不加解释、标点或换行。",
-      "stubOutput": { "output": "备课" }
+      "temperature": 0,
+      "maxTokens": 32,
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "system": "你是师者工作台的任务路由器。只看老师这句话要办哪件事，输出一个分类词，绝不回答内容，绝不解释。",
+      "prompt": "【老师本轮输入】\n${input.question}\n\n# 第一步：先按关键词表硬匹配，命中就立刻输出对应线，不要再分析。\n命题：出卷、组卷、出题、命题、小测、测验、试卷、练习卷、单元卷、期中卷、期末卷、模拟卷、几道题、N道题、选择题、填空题、判断题、细目表、难度、区分度、满分、总分。\n备课：备课、教案、教学设计、说课、课件、教学环节、导入、活动设计、分层作业、这节课怎么上。\n答疑：这道题、怎么做、不会做、讲讲、提示一下、错在哪、为什么错。\n安全：欺凌、打架、被打、自伤、自残、跳楼、走失、威胁、虐待、孤立、轻生。\n心理：情绪低落、不想上学、厌学、家庭变故、谈心、开导、哭。\n观课：观课、评课、听课、磨课、课堂实录、诊断这节课、五维观察、课堂观察。\n\n# 第二步：关键词一个都没命中，再按语义归类；仍然判断不出就输出 通用。\n\n# 判定优先级\n1. 出现安全红线词（打架、被打、自伤、轻生等）一律输出 安全，不管句子里还提到什么。\n2. 同时提到「备一节课」和「出份卷」，以句子开头先出现的动作为准。\n3. 提到「小测 / 试卷 / 出 N 道题 / 选择题」等出题词，一律输出 命题，不要判成备课。\n\n# 示例\n「帮我出一份初三数学的小测，15道题左右，包含选择填空判断」→ 命题\n「帮我备一节初三数学一元二次方程的课」→ 备课\n「这题学生写成 4/3，怎么提示」→ 答疑\n「班上有学生说被同学打了」→ 安全\n「有个孩子最近总说不想活了」→ 安全\n「小宇最近情绪很低落，不想上学」→ 心理\n「帮我看看这节数学课上的怎么样，实录如下」→ 观课\n「这个平台怎么新建知识库」→ 通用\n\n只输出以下七个词之一：备课、答疑、命题、安全、心理、观课、通用。不加引号、标点、解释或换行。",
+      "stubOutput": {
+        "output": "备课"
+      }
+    },
+    {
+      "id": "notice",
+      "kind": "template",
+      "title": "接单回执",
+      "description": "一秒内先给一句回执，让老师知道这句话被接住了、正在走哪条线；真正的正文由下游专项线流式输出。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "template": "已接单（${classify.output}线），正在处理，结果直接往下出。\n\n",
+      "stubOutput": {
+        "output": "已接单（备课线），正在处理，结果直接往下出。"
+      }
     },
     {
       "id": "prep-flow",
       "kind": "subworkflow",
       "title": "备课线 · 教学设计",
-      "description": "查班级档案做学情分层，目标、活动、评价三路并行，校验不过自动重写。",
+      "description": "从老师原话里取年级、学科、课题，查班级档案做分层，目标、活动、评价三路并行，校验不过自动重写。",
       "workflowId": "lesson-prep-v1",
       "inputs": {
-        "grade": "${input.grade}",
-        "subject": "${input.subject}",
-        "topic": "${input.topic}",
-        "minutes": "${input.minutes}",
-        "objectives": "${input.objectives}"
+        "question": "${input.question}"
       },
-      "stubOutput": { "output": "【备课线】已按学情分层生成教案，含教学目标、活动与分层评价。" }
+      "outputs": {
+        "output": "${end.text}"
+      },
+      "stubOutput": {
+        "output": "【备课线】已按学情分层生成教案，含教学目标、活动与分层评价。"
+      }
     },
     {
       "id": "qa-flow",
@@ -59,35 +69,31 @@
       "description": "先诊断错因再给三级提示，校验有没有泄题或超纲。",
       "workflowId": "qa-tutor-v1",
       "inputs": {
-        "question": "${input.question}",
-        "studentAnswer": "${input.studentAnswer}",
-        "grade": "${input.grade}",
-        "subject": "${input.subject}",
-        "topic": "${input.topic}"
+        "question": "${input.question}"
       },
-      "stubOutput": { "output": "【答疑线】已定位错因，给出三级启发提示，校验未泄题。" }
+      "outputs": {
+        "output": "${end.text}"
+      },
+      "stubOutput": {
+        "output": "【答疑线】已定位错因，给出三级启发提示，校验未泄题。"
+      }
     },
     {
       "id": "exam-flow",
       "kind": "subworkflow",
       "title": "命题线 · 质量工程",
-      "description": "细目表、三路并行命题、仿真施测、算难度区分度，不达标自动改题。",
+      "description": "从原话里取年级、范围、题量、题型、难度，出细目表与试卷，默认快速出卷。",
       "workflowId": "exam-quality-v1",
       "inputs": {
-        "question": "${input.question}",
-        "grade": "${input.grade}",
-        "itemCount": "${input.itemCount}",
-        "itemTypes": "${input.itemTypes}",
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "textbook": "${input.textbook}",
-        "scope": "${input.scope}",
-        "duration": "${input.duration}",
-        "totalScore": "${input.totalScore}",
-        "targetDifficulty": "${input.targetDifficulty}",
-        "knowledgeBaseIds": "${input.knowledgeBaseIds}"
+        "question": "${input.question}"
       },
-      "stubOutput": { "output": "【命题线】已生成试卷与质量分析报告，含难度与区分度。" }
+      "outputs": {
+        "output": "${end.text}",
+        "report": "${end.report}"
+      },
+      "stubOutput": {
+        "output": "【命题线】已生成试卷与质量分析报告，含难度与区分度。"
+      }
     },
     {
       "id": "safety-flow",
@@ -96,11 +102,14 @@
       "description": "按硬规则分级，命中红线出上报模板，不许拿安慰话糊弄过去。",
       "workflowId": "safety-health-v1",
       "inputs": {
-        "eventText": "${input.question}",
-        "grade": "${input.grade}",
-        "studentId": "${input.studentId}"
+        "eventText": "${input.question}"
       },
-      "stubOutput": { "output": "【安全线】已完成风险分级，按判定结果给出处置与上报建议。" }
+      "outputs": {
+        "output": "${end.text}"
+      },
+      "stubOutput": {
+        "output": "【安全线】已完成风险分级，按判定结果给出处置与上报建议。"
+      }
     },
     {
       "id": "observe-flow",
@@ -109,16 +118,14 @@
       "description": "观课总调度流，内部再分完整诊断、磨课迭代、单维观察和通用四路。",
       "workflowId": "cd-master-v1",
       "inputs": {
-        "question": "${input.question}",
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "topic": "${input.topic}",
-        "objectives": "${input.objectives}",
-        "plan": "${input.plan}",
-        "transcript": "${input.transcript}",
-        "knowledgeBaseIds": "${input.knowledgeBaseIds}"
+        "question": "${input.question}"
       },
-      "stubOutput": { "output": "【观课线】已完成五路并行观察与证据核验，给出诊断结论。" }
+      "outputs": {
+        "output": "${end.text}"
+      },
+      "stubOutput": {
+        "output": "【观课线】已完成五路并行观察与证据核验，给出诊断结论。"
+      }
     },
     {
       "id": "mind-guide",
@@ -129,12 +136,13 @@
       "emitOutput": true,
       "streamOutput": true,
       "inputs": {
-        "question": "${input.question}",
-        "grade": "${input.grade}"
+        "question": "${input.question}"
       },
       "system": "你是师者工作台心理线的引导助手。你只做三件事：接住老师的描述、点明要先了解学生的真实想法、引导进入谈心聊天室做多轮模拟。不要在这里写完整的开导话术，也不要替学生编造回应。语气平实，不说教。",
-      "prompt": "【老师描述】\n${input.question}\n\n【年级】\n${input.grade}\n\n用三到五句话回应：先说清这件事该先问什么，再说明为什么不能急着讲道理，最后请老师点回复下方的「模拟开导学生」进入谈心聊天室，与虚拟学生做一轮真实对话。",
-      "stubOutput": { "output": "【心理线】先弄清学生愿意说多少，别急着讲道理。点击回复下方的「模拟开导学生」，进谈心聊天室跟虚拟学生练一轮。" }
+      "prompt": "【老师描述】\n${input.question}\n\n用三到五句话回应：先说清这件事该先问什么，再说明为什么不能急着讲道理，最后请老师点回复下方的「模拟开导学生」进入谈心聊天室，与虚拟学生做一轮真实对话。",
+      "stubOutput": {
+        "output": "【心理线】先弄清学生愿意说多少，别急着讲道理。点击回复下方的「模拟开导学生」，进谈心聊天室跟虚拟学生练一轮。"
+      }
     },
     {
       "id": "general-llm",
@@ -144,37 +152,95 @@
       "temperature": 0.6,
       "emitOutput": true,
       "streamOutput": true,
-      "inputs": { "question": "${input.question}" },
+      "inputs": {
+        "question": "${input.question}"
+      },
       "system": "你是师者工作台的通用助手。简短回应用户，并说明可以从备课、答疑、命题、安全、心理、观课六条线里选一条继续，不替用户做决定。",
       "prompt": "${input.question}",
-      "stubOutput": { "output": "我能帮你办六类事：备课、答疑、命题、安全、心理、观课。说清是哪一类，我调对应专项给你做。" }
+      "stubOutput": {
+        "output": "我能帮你办六类事：备课、答疑、命题、安全、心理、观课。说清是哪一类，我调对应专项给你做。"
+      }
     },
     {
-      "id": "synthesize",
-      "kind": "template",
-      "title": "汇总回复",
-      "description": "只输出实际命中那条线的内容；其余分支的节点被跳过，这里是空串。",
-      "template": "${prep-flow.output}${qa-flow.output}${exam-flow.output}${safety-flow.output}${observe-flow.output}${mind-guide.output}${general-llm.output}",
-      "emitOutput": true
-    },
-    { "id": "end", "kind": "end", "title": "结束" }
+      "id": "end",
+      "kind": "end",
+      "title": "结束",
+      "inputs": {
+        "text": "${prep-flow.output}${qa-flow.output}${exam-flow.output}${safety-flow.output}${observe-flow.output}${mind-guide.output}${general-llm.output}",
+        "report": "${exam-flow.report}"
+      }
+    }
   ],
   "edges": [
-    { "from": "start", "to": "classify" },
-    { "from": "classify", "to": "prep-flow", "when": "${classify.output} == 备课" },
-    { "from": "classify", "to": "qa-flow", "when": "${classify.output} == 答疑" },
-    { "from": "classify", "to": "exam-flow", "when": "${classify.output} == 命题" },
-    { "from": "classify", "to": "safety-flow", "when": "${classify.output} == 安全" },
-    { "from": "classify", "to": "observe-flow", "when": "${classify.output} == 观课" },
-    { "from": "classify", "to": "mind-guide", "when": "${classify.output} == 心理" },
-    { "from": "classify", "to": "general-llm" },
-    { "from": "prep-flow", "to": "synthesize" },
-    { "from": "qa-flow", "to": "synthesize" },
-    { "from": "exam-flow", "to": "synthesize" },
-    { "from": "safety-flow", "to": "synthesize" },
-    { "from": "observe-flow", "to": "synthesize" },
-    { "from": "mind-guide", "to": "synthesize" },
-    { "from": "general-llm", "to": "synthesize" },
-    { "from": "synthesize", "to": "end" }
+    {
+      "from": "start",
+      "to": "classify"
+    },
+    {
+      "from": "classify",
+      "to": "notice"
+    },
+    {
+      "from": "notice",
+      "to": "prep-flow",
+      "when": "${classify.output} == 备课"
+    },
+    {
+      "from": "notice",
+      "to": "qa-flow",
+      "when": "${classify.output} == 答疑"
+    },
+    {
+      "from": "notice",
+      "to": "exam-flow",
+      "when": "${classify.output} == 命题"
+    },
+    {
+      "from": "notice",
+      "to": "safety-flow",
+      "when": "${classify.output} == 安全"
+    },
+    {
+      "from": "notice",
+      "to": "observe-flow",
+      "when": "${classify.output} == 观课"
+    },
+    {
+      "from": "notice",
+      "to": "mind-guide",
+      "when": "${classify.output} == 心理"
+    },
+    {
+      "from": "notice",
+      "to": "general-llm"
+    },
+    {
+      "from": "prep-flow",
+      "to": "end"
+    },
+    {
+      "from": "qa-flow",
+      "to": "end"
+    },
+    {
+      "from": "exam-flow",
+      "to": "end"
+    },
+    {
+      "from": "safety-flow",
+      "to": "end"
+    },
+    {
+      "from": "observe-flow",
+      "to": "end"
+    },
+    {
+      "from": "mind-guide",
+      "to": "end"
+    },
+    {
+      "from": "general-llm",
+      "to": "end"
+    }
   ]
 }

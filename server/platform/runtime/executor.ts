@@ -2261,11 +2261,34 @@ export class WorkflowExecutor {
     }
     const frame = findLoopFrame(state, statement.path);
     const input = resolveValue(node.inputs ?? {}, state.scope, frame) as Record<string, unknown>;
+    /**
+     * 父流程没传的输入按子流程自己的默认值补齐。
+     * 少了这一步，`${input.qualityMode} == quick` 这类条件边拿到 undefined，
+     * 两条边同时不成立，整条子流程会被静默跳过——表面上就是「跑完了但什么也没输出」。
+     */
+    for (const variable of definition.inputs) {
+      if (input[variable.name] === undefined && variable.defaultValue !== undefined) {
+        input[variable.name] = coerceDefaultInput(variable.defaultValue, variable.type);
+      }
+    }
     const missing = definition.inputs
       .filter((variable) => variable.required && input[variable.name] === undefined)
       .map((variable) => variable.name);
-    if (missing.length > 0) {
+    /**
+     * 有原话可读时，缺的是「年级 / 学科 / 课题」这类可以从文字里推断的标注字段，
+     * 直接算致命错误会把整条线炸掉（答疑线、备课线都踩过）。
+     * 这里有自由文本就打空值继续，让子流程按原题自己判断；真缺正文才报错。
+     */
+    const rawTextInputs = ["question", "eventText", "transcript", "request", "plan", "text"];
+    const hasRawText = rawTextInputs.some((name) => {
+      const value = input[name];
+      return typeof value === "string" && value.trim().length > 0;
+    });
+    if (missing.length > 0 && !hasRawText) {
       throw new PlatformError(`子工作流「${definition.id}」缺少必填输入：${missing.join("、")}`, 400);
+    }
+    for (const name of missing) {
+      input[name] = "";
     }
 
     const stepId = this.store.beginStep({
@@ -4657,6 +4680,33 @@ function resolveRef(
   if (direct !== undefined || head === "input" || rest.length === 0) {
     return direct;
   }
+  /**
+   * 工具节点的产物是 MCP 调用结果：`output` 只是一段序列化 JSON，真正的字段在
+   * `structuredContent` 里。下游写 `${节点.output.level}`（按契约本来就该这么写）时
+   * 直接读 `output.level` 会拿到 undefined——条件边因此永远不成立，红线分支跑不到。
+   * 这里按「先结构化、再尝试解析文本」兜一层，模板和条件边都能拿到真值。
+   */
+  if (rest[0] === "output" && rest.length > 1 && source && typeof source === "object") {
+    const holder = source as Record<string, unknown>;
+    const structured = holder.structuredContent;
+    if (structured && typeof structured === "object") {
+      const fromStructured = readFrom(structured, rest.slice(1));
+      if (fromStructured !== undefined) {
+        return fromStructured;
+      }
+    }
+    const raw = holder.output;
+    if (typeof raw === "string" && /^[[{]/.test(raw.trim())) {
+      try {
+        const fromText = readFrom(JSON.parse(raw), rest.slice(1));
+        if (fromText !== undefined) {
+          return fromText;
+        }
+      } catch {
+        // 不是合法 JSON 就当普通文本，按原样返回下面那层。
+      }
+    }
+  }
   const alias = OUTPUT_CONTRACT_ALIASES[rest.join(".")];
   if (alias) {
     return read(alias.split("."));
@@ -4808,6 +4858,22 @@ export function choiceConditionValue(edge: CompiledEdge): string | undefined {
 
 /** 选项端口补位规则在 workflow/choicePorts.ts，运行期与画布共用一份实现。 */
 export { CHOICE_OTHER_PORT, choicePortOf, inferChoicePorts, type ChoicePortEdge };
+
+/** 子流程默认值落到运行时：DSL 里数字常写成字符串，这里按声明类型转一次。 */
+function coerceDefaultInput(value: unknown, type?: string): unknown {
+  if (type === "number" && typeof value === "string" && value.trim() !== "") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : value;
+  }
+  if (type === "object" && typeof value === "string") {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
 
 function evaluateExpression(expression: CompiledExpression, scope: RunScope, frame?: LoopFrame): boolean {
   const actual = resolveRef(expression.ref, scope, frame);

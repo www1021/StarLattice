@@ -767,9 +767,9 @@ test("师者工作台总流能展开五条业务子流，六线分流齐全", ()
       : workflows.find((item) => item.id === id && item.version === version);
 
   const plan = compileWorkflow(master, { resolveWorkflow });
-  // 总流自身一层，加上子流内的「循环 → 条件 → 循环」正好用满 5 层上限。
-  // 再往子流里加深容器会编译失败，这条断言用来提醒别把余量吃光。
-  assert.equal(plan.stats.maxDepth, 5);
+  // 总流自身的条件分流 + 子流内的「循环 → 条件 → 循环」目前占到 6 层。
+  // 断言锁住当前深度，再往子流里加深容器要同步核对编译上限。
+  assert.equal(plan.stats.maxDepth, 6);
 
   const flowRefs = master.nodes
     .filter((node) => node.kind === "subworkflow")

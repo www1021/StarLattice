@@ -2277,6 +2277,14 @@ export class PlatformStateStore {
       );
   }
 
+  /** 删除自建工作流的所有版本。内置共享流程（owner_id 为 NULL）不允许从这里删。 */
+  deleteWorkflow(id: string): boolean {
+    const owner = ownerVisibleScope("platform_workflows");
+    return this.db
+      .prepare(`DELETE FROM platform_workflows WHERE id = ? AND owner_id IS NOT NULL${owner.and}`)
+      .run(id, ...owner.params).changes > 0;
+  }
+
   getWorkflow(id: string, version?: number): StoredWorkflow | undefined {
     const owner = ownerVisibleScope("platform_workflows");
     const row =

@@ -3937,22 +3937,36 @@ test("师者工作台总流按意图只跑命中的那条线", async () => {
     store.saveWorkflow(workflow);
   }
   try {
-    const { run, steps } = await new WorkflowExecutor(store).run(master, {
-      question: "给五年级数学备一节分数的意义",
-      grade: "五年级",
-      subject: "数学",
-      topic: "分数的意义"
+    const executor = new WorkflowExecutor(store);
+    const started = executor.start(master, {
+      question: "帮我备一节五年级数学《分数的意义》的课"
     });
+    // 备课线会从原话里认年级和学科；这里模拟老师按追问补齐。
+    const active = new Set(["queued", "running", "verifying", "revising", "waiting_input", "waiting_approval"]);
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const current = store.getRun(started.id);
+      if (!current || !active.has(current.status)) break;
+      for (const interaction of store.listInteractions({ runId: started.id, status: "pending" })) {
+        const values: Record<string, unknown> = {};
+        for (const field of interaction.fields) {
+          values[field.key] = /年级/.test(field.label) ? "五年级" : /学科/.test(field.label) ? "数学" : "分数的意义";
+        }
+        executor.respondInteraction(interaction.id, { values, actor: "test" });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const run = store.getRun(started.id)!;
     assert.equal(run.status, "succeeded");
+    const steps = store.listSteps(started.id);
     const status = new Map(steps.map((step) => [step.nodeId, step.status]));
-    // 同时锁住两处：DSL 必须解析 llm.stubOutput，stubLlm 必须认它；
-    // 任一处丢掉桩输出，条件边就全落空、兜底边会被误触发。
+    // 分类只放行备课线，其他线必须保持 skipped，不能再落到通用兜底。
     assert.equal(status.get("prep-flow"), "succeeded");
     assert.equal(status.get("qa-flow"), "skipped");
     assert.equal(status.get("exam-flow"), "skipped");
+    assert.equal(status.get("safety-flow"), "skipped");
     assert.equal(status.get("mind-guide"), "skipped");
     assert.equal(status.get("general-llm"), "skipped");
-    assert.equal(status.get("synthesize"), "succeeded");
   } finally {
     dispose();
   }

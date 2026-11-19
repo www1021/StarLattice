@@ -1,26 +1,32 @@
 {
   "id": "lesson-prep-v1",
   "name": "备课主流程",
-  "version": 1,
-  "description": "师者工作台的备课线：先跑学情档案子流拿分层与易错点，目标、活动、评价三路并行产出，交付校验员检查目标覆盖与课时守恒，不合格回环重写最多两轮，通过后出完整教案。",
+  "version": 6,
+  "description": "师者工作台的备课线：先从老师原话里取年级、学科、课题（取不到才追问），再跑学情档案子流拿分层与易错点，目标、活动、评价三路并行产出，交付校验员检查目标覆盖与课时守恒，不合格回环重写最多两轮，通过后由教案节点流式写成可读教案。",
   "inputs": [
+    {
+      "name": "question",
+      "type": "string",
+      "required": false,
+      "description": "老师这一轮的原话；年级、学科、课题、课时都从这里识别"
+    },
     {
       "name": "grade",
       "type": "string",
-      "required": true,
-      "description": "学段年级"
+      "required": false,
+      "description": "学段年级，显式传入时以它为准"
     },
     {
       "name": "subject",
       "type": "string",
-      "required": true,
-      "description": "学科"
+      "required": false,
+      "description": "学科，显式传入时以它为准"
     },
     {
       "name": "topic",
       "type": "string",
-      "required": true,
-      "description": "课题"
+      "required": false,
+      "description": "课题，显式传入时以它为准"
     },
     {
       "name": "minutes",
@@ -42,14 +48,74 @@
       "title": "开始"
     },
     {
+      "id": "intake",
+      "kind": "extract",
+      "title": "备课要素提取",
+      "description": "从老师原话里取年级、学科、课题和课时；显式传进来的同名输入优先，真取不到的才挂卡片追问一次。",
+      "inputs": {
+        "question": "${input.question}",
+        "grade": "${input.grade}",
+        "subject": "${input.subject}",
+        "topic": "${input.topic}"
+      },
+      "params": [
+        {
+          "name": "grade",
+          "label": "学段年级",
+          "description": "如 初三、五年级、高二；原话只写「初三数学」时取 初三",
+          "type": "string",
+          "required": true,
+          "question": "这节备课是哪个年级的？比如「初三」「五年级」。"
+        },
+        {
+          "name": "subject",
+          "label": "学科",
+          "description": "如 数学、语文、英语",
+          "type": "string",
+          "required": true,
+          "question": "这节备课是哪门学科？"
+        },
+        {
+          "name": "topic",
+          "label": "课题",
+          "description": "这一节课要讲的具体内容，如 一元二次方程的解法、分数的意义",
+          "type": "string",
+          "required": true,
+          "question": "这一节课要讲哪个课题？比如「一元二次方程的解法」。"
+        },
+        {
+          "name": "minutes",
+          "label": "课时长度",
+          "description": "如 40 分钟、45 分钟；没提就留空用默认",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "prompt": "从老师原话里提取备课要素。规则：\n1. 只提取原话中明确出现的值，不要替老师编造年级或课题。\n2. 「帮我备一节初三数学一元二次方程的课」→ grade=初三、subject=数学、topic=一元二次方程。\n3. 原话只给了学段（如「初中数学」）就填对应学段，不要补成具体年级。\n4. 课时没提就留空，不要猜。",
+      "maxRounds": 3,
+      "onMissing": "fail"
+    },
+    {
+      "id": "ready",
+      "kind": "template",
+      "title": "要点回执",
+      "description": "把从原话里认出来的关键要素回显一句，让老师确认没理解偏，同时说明接下来在做什么。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "template": "已确认：${intake.grade}${intake.subject}《${intake.topic}》\n正在做学情分层和活动设计，教案随后出全文。\n\n",
+      "stubOutput": {
+        "output": "已确认要素，正在处理。"
+      }
+    },
+    {
       "id": "profile",
       "kind": "subworkflow",
       "title": "学情档案分析",
       "workflowId": "td-class-profile-v1",
       "inputs": {
-        "grade": "${input.grade}",
-        "subject": "${input.subject}",
-        "topic": "${input.topic}"
+        "grade": "${intake.grade}",
+        "subject": "${intake.subject}",
+        "topic": "${intake.topic}"
       },
       "outputs": {
         "tiers": "${analyse.output.tiers}",
@@ -152,9 +218,9 @@
             ]
           },
           "inputs": {
-            "grade": "${input.grade}",
-            "subject": "${input.subject}",
-            "topic": "${input.topic}",
+            "grade": "${intake.grade}",
+            "subject": "${intake.subject}",
+            "topic": "${intake.topic}",
             "givenObjectives": "${input.objectives}",
             "misconceptions": "${profile.misconceptions}"
           },
@@ -188,8 +254,8 @@
             ]
           },
           "inputs": {
-            "topic": "${input.topic}",
-            "minutes": "${input.minutes}",
+            "topic": "${intake.topic}",
+            "minutes": "${intake.minutes}",
             "tiers": "${profile.tiers}",
             "misconceptions": "${profile.misconceptions}"
           },
@@ -251,7 +317,7 @@
             ]
           },
           "inputs": {
-            "topic": "${input.topic}",
+            "topic": "${intake.topic}",
             "misconceptions": "${profile.misconceptions}",
             "tiers": "${profile.tiers}"
           },
@@ -303,7 +369,7 @@
         "objectives": "${goal.output.objectives}",
         "activities": "${activity.output.activities}",
         "items": "${assessment.output.items}",
-        "minutes": "${input.minutes}"
+        "minutes": "${intake.minutes}"
       },
       "stubOutput": {
         "passed": false,
@@ -349,7 +415,7 @@
               "inputs": {
                 "issues": "${review.output.issues}",
                 "activities": "${activity.output.activities}",
-                "minutes": "${input.minutes}"
+                "minutes": "${intake.minutes}"
               },
               "stubOutput": {
                 "activities": [
@@ -426,22 +492,48 @@
     },
     {
       "id": "finalize",
-      "kind": "template",
+      "kind": "llm",
       "title": "教案定稿",
-      "template": "【课题】${input.grade}${input.subject}《${input.topic}》\n【学情】${profile.tiers}\n【易错点】${profile.misconceptions}\n【教学目标】${goal.output.objectives}\n【教学环节】${activity.output.activities}\n【分层评价】${assessment.output.items}\n【校验结论】${recheck.output}",
+      "description": "把学情、目标、活动、评价整理成老师能直接照着上的教案正文，流式打印到会话。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "temperature": 0.4,
+      "maxTokens": 4096,
+      "inputs": {
+        "grade": "${intake.grade}",
+        "subject": "${intake.subject}",
+        "topic": "${intake.topic}",
+        "minutes": "${intake.minutes}",
+        "tiers": "${profile.tiers}",
+        "misconceptions": "${profile.misconceptions}",
+        "objectives": "${goal.output.objectives}",
+        "activities": "${activity.output.activities}",
+        "items": "${assessment.output.items}",
+        "recheck": "${recheck.output}",
+        "question": "${input.question}"
+      },
+      "system": "你是带过多届毕业班的教研员。把给定的学情、目标、活动、评价写成一份老师能直接照着上课的教案。只写教案本身，不解释你的写法，不输出 JSON。",
+      "prompt": "【老师原话】\n${input.question}\n\n【年级】${intake.grade}【学科】${intake.subject}【课题】${intake.topic}【课时】${intake.minutes}\n\n【学情分层】${profile.tiers}\n【易错点】${profile.misconceptions}\n【教学目标】${goal.output.objectives}\n【教学环节】${activity.output.activities}\n【分层评价】${assessment.output.items}\n\n把上面这些整理成教案正文，用 Markdown，按这个顺序写：\n1. 课题与课时（一行说清年级、学科、课题、时长）\n2. 学情起点（两三句，点出分层和易错点，不要罗列人名清单）\n3. 教学目标（分条，动词开头，可观察可检测）\n4. 教学过程（用表格：环节｜时长｜教师动作｜学生活动｜对应目标；总时长要和课时对得上）\n5. 分层作业（基础/提高/挑战各一道，写清题目与判定标准）\n6. 板书与提醒（板书结构 + 两个最容易翻车的点）\n\n写的时候直接引用易错点的原话，让老师一眼看出这堂课在防哪个坑。篇幅控制在 900–1300 字，不要客套开场白。\n\n直接输出正文：不要用 ``` 或 ```markdown 把整段回答包进代码块，第一行就写正文。",
       "stubOutput": {
-        "output": "【课题】五年级数学《分数的意义》\n【学情】扎实 1 人、波动 1 人、薄弱 2 人\n【教学目标】能举例说明分数含义；能确定单位「1」\n【教学环节】导入 5 分钟 → 探究 15 分钟 → 对比 10 分钟 → 巩固 6 分钟 → 小结 4 分钟\n【分层评价】基础 1 题、提高 1 题、挑战 1 题\n【校验结论】易错点全部覆盖，课时 40 分钟守恒"
+        "output": "【课题】五年级数学《分数的意义》，40 分钟\n\n## 学情起点\n班里分三档……"
       }
     },
     {
       "id": "end",
       "kind": "end",
-      "title": "结束"
+      "title": "结束",
+      "inputs": {
+        "text": "${finalize.output}"
+      }
     }
   ],
   "edges": [
     {
       "from": "start",
+      "to": "intake"
+    },
+    {
+      "from": "ready",
       "to": "profile"
     },
     {
@@ -463,6 +555,10 @@
     {
       "from": "finalize",
       "to": "end"
+    },
+    {
+      "from": "intake",
+      "to": "ready"
     }
   ]
 }

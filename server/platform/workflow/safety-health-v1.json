@@ -1,8 +1,8 @@
 {
   "id": "safety-health-v1",
   "name": "学生安全健康主流程",
-  "version": 1,
-  "description": "师者工作台的安全线：内嵌风险分级子流做硬规则判定，按等级分支处置。红线只出上报模板并禁止单独处理，橙线安排约谈与心理介入，黄线记录观察。全程不调用模型自由生成处置意见。",
+  "version": 3,
+  "description": "师者工作台的安全线：内嵌风险分级子流做硬规则判定，按等级分支处置。红线只出上报模板并禁止单独处理，橙线安排约谈与心理介入，黄线记录观察。处置结论由模板拼装后直接流式输出，等级和动作都来自规则，不交给模型自由发挥。",
   "inputs": [
     {
       "name": "eventText",
@@ -39,7 +39,8 @@
         "grade": "${input.grade}"
       },
       "outputs": {
-        "classification": "${grade.output}",
+        "level": "${grade.output.level}",
+        "hitText": "${grade.output.hitText}",
         "facts": "${facts.output}",
         "review": "${review.output}",
         "notice": "${notice.output}",
@@ -100,15 +101,15 @@
       "id": "decision",
       "kind": "condition",
       "title": "等级处置分支",
-      "when": "${triage.classification.level} == 红线",
+      "when": "${triage.level} == 红线",
       "then": [
         {
           "id": "red-path",
           "kind": "template",
           "title": "红线上报路径",
-          "template": "【判定】红线，一票否决，模型不得改写等级。\n【事实】${triage.facts}\n【禁止动作】${triage.classification.forbiddenActions}\n【上报模板】${triage.notice}\n【复核】${triage.review}",
+          "template": "立即上报德育处与校安全办，同步家长并记录通知时间，一小时内形成书面事件记录。\n禁止：单独处理或承诺保密、用「先观察」降级、等家长主动联系。\n上报话术：学生报告「${triage.hitText}」，初判红线，请德育处与校安全办介入。",
           "stubOutput": {
-            "output": "【判定】红线，一票否决，模型不得改写等级。\n【事实】2026-11-12 课间，操场，原话「他说要打我」。\n【禁止动作】不得单独处理或承诺保密；不得用「先观察」降低等级。\n【上报模板】初判等级红线；上报对象德育处、校安全办；家长通知时间待补。\n【复核】等级未被改写，原话保留。"
+            "output": "立即上报德育处与校安全办，同步家长并记录通知时间，一小时内形成书面事件记录。"
           }
         }
       ],
@@ -117,7 +118,7 @@
           "id": "non-red",
           "kind": "condition",
           "title": "橙黄线分支",
-          "when": "${triage.classification.level} == 橙线",
+          "when": "${triage.level} == 橙线",
           "then": [
             {
               "id": "orange-path",
@@ -126,7 +127,7 @@
               "agent": "td-followup-planner",
               "outputFormat": "json",
               "inputs": {
-                "classification": "${triage.classification}",
+                "classification": "${triage.facts}",
                 "facts": "${triage.facts}"
               },
               "stubOutput": {
@@ -148,9 +149,9 @@
               "id": "yellow-path",
               "kind": "template",
               "title": "黄线观察记录",
-              "template": "【判定】${triage.classification.level}\n【事实】${triage.facts}\n【处置】当次沟通并记录，一周内留意是否复现。\n【禁止】不得上报为红线。",
+              "template": "当次沟通并记录，一周内留意是否复现；若再次出现同类描述，直接按橙线处置。",
               "stubOutput": {
-                "output": "【判定】黄线\n【事实】课间与同学争执，无身体伤害。\n【处置】当次沟通并记录，一周内留意是否复现。\n【禁止】不得上报为红线。"
+                "output": "当次沟通并记录，一周内留意是否复现。"
               }
             }
           ]
@@ -161,15 +162,21 @@
       "id": "record",
       "kind": "template",
       "title": "处置结论",
-      "template": "【学生】${input.studentId}\n【等级】${triage.classification.level}\n【判定依据】${triage.classification.hits}\n【处置路径】${red-path.output}\n【橙线安排】${orange-path.output}\n【黄线记录】${yellow-path.output}\n【复核】${triage.review}",
+      "description": "按判定结果拼出最终处置结论，命中哪条分支就输出哪段，其余分支为空。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "template": "【判定】${triage.level}\n【命中信号】${triage.hitText}\n【事件】时间：${triage.facts.time}｜地点：${triage.facts.place}｜在场：${triage.facts.people}\n原话：${triage.facts.quotes}\n待补：${triage.facts.unknowns}\n【处置】\n${red-path.output}${orange-path.output}${yellow-path.output}\n【复核】passed=${triage.review.passed}；问题=${triage.review.violations}",
       "stubOutput": {
-        "output": "【学生】zhouyt\n【等级】红线\n【判定依据】命中「打我」，人身伤害\n【处置路径】上报德育处与校安全办，禁止单独处理\n【复核】等级未被改写，原话逐字保留"
+        "output": "【判定】红线\n【命中信号】打我（人身伤害）\n【事件】时间：2026-11-12 课间｜地点：操场\n【处置】立即上报德育处与校安全办\n【复核】passed=true"
       }
     },
     {
       "id": "end",
       "kind": "end",
-      "title": "结束"
+      "title": "结束",
+      "inputs": {
+        "text": "${record.output}"
+      }
     }
   ],
   "edges": [

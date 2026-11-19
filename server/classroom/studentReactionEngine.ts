@@ -531,14 +531,14 @@ function formatStudentAnswerGenerationError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
 
   if (/abort|timeout|timed out|The operation was aborted/i.test(message)) {
-    return "模型生成超时，已回退规则答案。";
+    return "生成超时，已回退规则答案。";
   }
 
   if (/api key|invalid_key|401|unauthorized/i.test(message)) {
-    return "模型配置不可用，已回退规则答案。";
+    return "配置不可用，已回退规则答案。";
   }
 
-  return "模型生成不可用，已回退规则答案。";
+  return "生成暂不可用，已回退规则答案。";
 }
 
 function capReactions(

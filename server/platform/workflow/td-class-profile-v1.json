@@ -1,26 +1,29 @@
 {
   "id": "td-class-profile-v1",
   "name": "班级学情档案分析子流",
-  "version": 1,
+  "version": 3,
   "description": "师者工作台的学情子流：从班级档案知识库召回学生画像与易错点，结构化成档案数组后交给内置工具做分层筛选，学情分析师据此输出三档分层、易错点清单与跟进建议。数字由工具算，分析师只解释不改写。",
   "inputs": [
     {
       "name": "grade",
       "type": "string",
-      "required": true,
-      "description": "学段年级"
+      "required": false,
+      "description": "学段年级；父流程没传就按原题推断",
+      "defaultValue": "未注明年级"
     },
     {
       "name": "subject",
       "type": "string",
-      "required": true,
-      "description": "学科"
+      "required": false,
+      "description": "学科；父流程没传就按原题推断",
+      "defaultValue": "未注明学科"
     },
     {
       "name": "topic",
       "type": "string",
-      "required": true,
-      "description": "当前课题"
+      "required": false,
+      "description": "当前课题；父流程没传就按原题推断",
+      "defaultValue": "未注明课题"
     }
   ],
   "nodes": [

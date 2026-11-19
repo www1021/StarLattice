@@ -10411,9 +10411,16 @@
   font-weight: 600;
 }
 
-.platform-flow-menu-list button {
+.platform-flow-menu-list .platform-flow-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.platform-flow-menu-list .platform-flow-select {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 7px 8px;
   overflow: hidden;
   border: 0;
@@ -10427,11 +10434,37 @@
   cursor: pointer;
 }
 
-.platform-flow-menu-list button:hover {
+.platform-flow-menu-list .platform-flow-item-name {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platform-flow-menu-list .platform-flow-delete {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--n-60);
+  cursor: pointer;
+}
+
+.platform-flow-menu-list .platform-flow-select:hover {
   background: var(--surf-97);
 }
 
-.platform-flow-menu-list button.is-current {
+.platform-flow-menu-list .platform-flow-delete:hover {
+  background: var(--danger-soft, rgba(220, 53, 69, 0.12));
+  color: var(--danger, #d64545);
+}
+
+.platform-flow-menu-list .platform-flow-select.is-current {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;

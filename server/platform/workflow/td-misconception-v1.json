@@ -1,7 +1,7 @@
 {
   "id": "td-misconception-v1",
   "name": "错因诊断子流",
-  "version": 1,
+  "version": 2,
   "description": "答疑线的错因子流：先解析题意与缺失条件，再诊断错因，验证器核对诊断是否落到具体环节，不合格则由诊断师重做，最多两轮。只定位错因，不给答案。",
   "inputs": [
     {
@@ -19,8 +19,9 @@
     {
       "name": "grade",
       "type": "string",
-      "required": true,
-      "description": "学段年级"
+      "required": false,
+      "description": "学段年级；父流程没传就按原题推断",
+      "defaultValue": "未注明年级"
     },
     {
       "name": "topic",

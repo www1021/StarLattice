@@ -54,7 +54,7 @@ import { DATA_ANALYSIS_MCP_SERVER, DEMO_MCP_SERVER, McpManager } from "./mcp/mcp
 import { PluginService } from "./plugins/pluginService.js";
 import { SHARED_PLUGINS } from "./plugins/sharedPlugins.js";
 import { syncPluginTools } from "./plugins/pluginTools.js";
-import { isWorkflowToolEndpoint, syncWorkflowTools } from "./mcp/workflowTools.js";
+import { isWorkflowToolEndpoint, syncWorkflowTools, workflowToolId } from "./mcp/workflowTools.js";
 import {
   bindTeamKnowledge,
   bindWorkflowKnowledge,
@@ -1113,6 +1113,33 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
         plan: plan.stats,
         versionBumped: version !== parsed.version
       });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /** 只删自建流程：内置共享流程没有 owner，永远不接受删除。 */
+  app.delete("/api/platform/workflows/:id", (request, response) => {
+    try {
+      const id = request.params.id;
+      const stored = store.getWorkflow(id);
+      if (!stored) {
+        throw new PlatformError("工作流不存在。", 404);
+      }
+      if (stored.ownerId === null) {
+        throw new PlatformError("内置工作流不能删除。请先复制成自己的流程再删。", 403);
+      }
+      const auth = currentAuth();
+      if (auth && auth.role !== "owner" && stored.ownerId !== auth.userId) {
+        throw new PlatformError("这是其他账号的工作流，不能删除。", 403);
+      }
+      if (!store.deleteWorkflow(id)) {
+        throw new PlatformError("工作流删除失败，请刷新后重试。", 409);
+      }
+      // 内联 MCP 工具跟着流程走，流程删了工具也要撤掉，否则会留下调用即报错的死入口。
+      store.deleteTool(workflowToolId(id));
+      syncWorkflowTools(store);
+      response.json({ deleted: true, id });
     } catch (error) {
       fail(response, error);
     }

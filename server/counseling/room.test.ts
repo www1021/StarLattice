@@ -34,8 +34,8 @@ test("聊天室系统提示按角色区分，且都禁止跳出角色", () => {
   assert.ok(counselor.includes("1 到 3 句"));
   assert.ok(seeker.includes("2 到 4 句"));
   assert.ok(seeker.includes("12356"));
-  assert.ok(counselor.includes("绝不承认自己是 AI"));
-  assert.ok(seeker.includes("绝不承认自己是 AI"));
+  assert.ok(counselor.includes("始终留在角色里"));
+  assert.ok(seeker.includes("始终留在谈话角色里"));
 });
 
 test("聊天室只保留合法角色、压掉超长内容并截断历史", () => {

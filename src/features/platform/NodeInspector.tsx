@@ -448,7 +448,7 @@ export function NodeInspector({
           info={
             isReplyNode
               ? "这段文字会原样回复给用户；输入 / 可插入本节点「输入变量」里的名字，运行时按引用取值。"
-              : "用 ${节点.字段} 拼装确定性文本，不调用模型；输入 / 可插入本节点输入变量。"
+              : "用 ${节点.字段} 拼装确定性文本，不需要生成；输入 / 可插入本节点输入变量。"
           }
           field={templateField}
           value={(definition as Record<string, unknown>).template}
@@ -1894,7 +1894,7 @@ function ChoiceSection({
   return (
     <Section
       title="选项"
-      info="用户只能从这些选项里选一个；选完按下面的提示词调用模型生成回复。"
+      info="用户只能从这些选项里选一个；选完按下面的提示词继续生成回复。"
       actions={
         <span className="ni-choice-count">{dynamic ? "动态" : filled > 0 ? `${filled} 项` : "未设置"}</span>
       }

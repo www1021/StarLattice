@@ -1,26 +1,26 @@
 {
   "id": "cd-observe-v1",
   "name": "课堂多维观察诊断",
-  "version": 1,
+  "version": 2,
   "description": "观课磨课工坊的观察子流：先把课堂实录转成结构化发言，用工具统计话语证据，五路观察员并行按同一 JSON 契约打分，核验证据后做量表一致性检验，分歧大则仲裁重评，红线命中一票否决。",
   "inputs": [
     {
       "name": "stage",
       "type": "string",
-      "required": true,
-      "description": "学段"
+      "required": false,
+      "description": "学段；没传就按实录判断"
     },
     {
       "name": "subject",
       "type": "string",
-      "required": true,
-      "description": "学科"
+      "required": false,
+      "description": "学科；没传就按实录判断"
     },
     {
       "name": "topic",
       "type": "string",
-      "required": true,
-      "description": "课题"
+      "required": false,
+      "description": "课题；没传就按实录判断"
     },
     {
       "name": "objectives",
@@ -558,12 +558,18 @@
       },
       "stubOutput": {
         "output": "【总体判定】各维共识分 81.6，师生互动维度经仲裁后分歧已收敛。\n【目标达成】82 分，目标清晰但结尾未回扣。\n【师生互动】72 分，学生参与集中在两人，需扩大提问覆盖面。\n【内容讲解】88 分，对相对运动的纠偏到位。\n【下一步】一节课内把提问对象从两人扩到至少六人，追问链再补一层。"
-      }
+      },
+      "emitOutput": true,
+      "streamOutput": true
     },
     {
       "id": "end",
       "kind": "end",
-      "title": "结束"
+      "title": "结束",
+      "inputs": {
+        "text": "${diagnosis.output}",
+        "diagnosis": "${diagnosis.output}"
+      }
     }
   ],
   "edges": [

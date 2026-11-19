@@ -131,6 +131,8 @@ export type RiskResult = {
   level: "红线" | "橙线" | "黄线" | "无风险";
   code: string;
   hits: Array<{ keyword: string; category: string }>;
+  /** 命中信号的人话版本，模板里直接打印，免得把 JSON 数组糊到老师面前。 */
+  hitText: string;
   repeat: boolean;
   allowedActions: string[];
   forbiddenActions: string[];
@@ -138,7 +140,12 @@ export type RiskResult = {
   rationale: string;
 };
 
-type Rule = { keyword: string; category: string };
+/**
+ * 词表匹配分两类：纯关键词和句式。
+ * 「被同学打了」「打了他两下」这类原话里，关键词「被打」对不上——中间插了主语，
+ * 只靠 includes 会把明显的肢体伤害判成无风险。句式规则补的就是这一层。
+ */
+type Rule = { keyword?: string; pattern?: RegExp; category: string };
 
 const RED_RULES: Rule[] = [
   { keyword: "自伤", category: "自伤自残" },
@@ -153,7 +160,14 @@ const RED_RULES: Rule[] = [
   { keyword: "家庭暴力", category: "家庭暴力" },
   { keyword: "打我爸妈", category: "家庭暴力" },
   { keyword: "拐走", category: "走失风险" },
-  { keyword: "不回家", category: "走失风险" }
+  { keyword: "不回家", category: "走失风险" },
+  { pattern: /被[^，。；！？\s]{0,6}(打|踹|踢|扇|推倒|揍|掐|咬)/, category: "人身伤害" },
+  { pattern: /(打|踹|踢|扇|揍|掐)[了伤](我|他|她|同学|学生|人)/, category: "人身伤害" },
+  { pattern: /(打架|打群架|动手打人)/, category: "肢体冲突" },
+  { pattern: /(勒索|抢钱|收保护费|要保护费)/, category: "敲诈勒索" },
+  { pattern: /(轻生|跳楼|割腕|上吊|喝药)/, category: "自伤自残" },
+  { pattern: /(性侵|猥亵|摸我)/, category: "性侵害" },
+  { pattern: /(离家出走|走丢|失联)/, category: "走失风险" }
 ];
 
 const ORANGE_RULES: Rule[] = [
@@ -198,11 +212,26 @@ const ORANGE_ACTIONS = [
 const YELLOW_ACTIONS = ["当次沟通并记录", "一周内留意是否复现"];
 
 export function classifyRisk(input: RiskInput): RiskResult {
+  const result = gradeRisk(input);
+  return {
+    ...result,
+    hitText: result.hits.map((hit) => `${hit.keyword}（${hit.category}）`).join("；")
+  };
+}
+
+function gradeRisk(input: RiskInput): Omit<RiskResult, "hitText"> {
   const text = typeof input.text === "string" ? input.text : "";
   const history = Array.isArray(input.history) ? input.history : [];
 
   const collect = (rules: Rule[]): Array<{ keyword: string; category: string }> =>
-    rules.filter((rule) => text.includes(rule.keyword)).map((rule) => ({ keyword: rule.keyword, category: rule.category }));
+    rules.flatMap((rule) => {
+      if (rule.pattern) {
+        const hit = text.match(rule.pattern);
+        return hit ? [{ keyword: hit[0], category: rule.category }] : [];
+      }
+      const keyword = rule.keyword ?? "";
+      return keyword && text.includes(keyword) ? [{ keyword, category: rule.category }] : [];
+    });
 
   const red = collect(RED_RULES);
   const orange = collect(ORANGE_RULES);

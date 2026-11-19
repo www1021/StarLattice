@@ -505,6 +505,27 @@ test("保存工作流按账号归属拦截：member 不能覆盖共享/他人版
     const memberB = await save("member-b", collide);
     assert.equal(memberB.status, 409);
     assert.match(memberB.payload.message ?? "", /版本冲突|占用/);
+
+    // 删除：共享流程一律保护，私有流程只允许本人删，删完内联工具也要跟着撤掉。
+    const remove = async (user: string, id: string) => {
+      const response = await fetch(`${base}/workflows/${id}`, {
+        method: "DELETE",
+        headers: { "x-test-user": user }
+      });
+      return { status: response.status, payload: (await response.json()) as { message?: string } };
+    };
+    const builtinDelete = await remove("deployer", "scope-probe");
+    assert.equal(builtinDelete.status, 403);
+    assert.match(builtinDelete.payload.message ?? "", /内置/);
+    // 别的账号看不到这条私有流程，按 404 处理，不暴露它是否存在。
+    const otherDelete = await remove("member-b", "member-own");
+    assert.equal(otherDelete.status, 404);
+    assert.ok(store.getWorkflow("member-own"));
+    assert.ok(store.getTool("workflow.member-own"));
+    const ownDelete = await remove("member-a", "member-own");
+    assert.equal(ownDelete.status, 200);
+    assert.equal(store.getWorkflow("member-own"), undefined);
+    assert.equal(store.getTool("workflow.member-own"), undefined);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();

@@ -324,7 +324,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
         label: "补丁晋升目标",
         type: "text",
         placeholder: "analysis-planner",
-        help: "诊断 Agent 专用：验证得分提升后，把模型生成的 promptPatch 写入该 Agent 的新版本；未提升则不写入。"
+        help: "诊断 Agent 专用：验证得分提升后，把生成的 promptPatch 写入该 Agent 的新版本；未提升则不写入。"
       },
       {
         key: "capabilities",
@@ -339,7 +339,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
         type: "select",
         options: ["true"],
         optionLabels: { true: "开启" },
-        help: "留空为关闭；开启后 Agent 会在输出前自主调用其声明的知识库 / MCP 工具，最多 4 轮，工具参数由模型生成并记录到 trace。"
+        help: "留空为关闭；开启后 Agent 会在输出前自主调用其声明的知识库 / MCP 工具，最多 4 轮，工具参数自动生成并记录到 trace。"
       },
       { key: "inputs", label: "输入映射", type: "json", supportsRefs: true, help: "键值对，值支持 ${节点.字段} 引用。" }
     ],
@@ -367,7 +367,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
   {
     kind: "knowledge",
     label: "知识库检索节点",
-    description: "确定性知识库检索，不调用模型；可选范围留空时使用工作流默认知识库。",
+    description: "确定性知识库检索，不需要生成；可选范围留空时使用工作流默认知识库。",
     shape: "node",
     accent: "#a8552c",
     fields: [
@@ -451,7 +451,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
   {
     kind: "llm",
     label: "模型思考节点",
-    description: "直接调用模型完成一次思考/写作，不依赖注册中心 Agent；可打开思考摘要，产物写入节点 id。",
+    description: "直接完成一次思考/写作，不依赖注册中心 Agent；可打开思考摘要，产物写入节点 id。",
     shape: "node",
     accent: "#a8552c",
     fields: [
@@ -655,7 +655,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
   {
     kind: "template",
     label: "文本模板节点",
-    description: "用 ${节点.字段} 组装确定性文本，不调用模型；适合拼接报告、提示词或交付物。",
+    description: "用 ${节点.字段} 组装确定性文本，不需要生成；适合拼接报告、提示词或交付物。",
     shape: "node",
     accent: "#7a6a52",
     fields: [
@@ -876,7 +876,7 @@ const BASE_NODE_TYPE_SPECS: Omit<NodeTypeSpec, "ports">[] = [
   {
     kind: "human",
     label: "选项卡",
-    description: "运行在此暂停，把引导语与选项交给用户；选完可按提示词调用模型生成回复，选择结果同时传给下游。",
+    description: "运行在此暂停，把引导语与选项交给用户；选完可按提示词继续生成回复，选择结果同时传给下游。",
     shape: "node",
     accent: "#9a4030",
     fields: [

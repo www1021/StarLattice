@@ -1518,7 +1518,7 @@ function PlatformWorkspace({
       }
       const warnings = issues.length - errors.length;
       // startRun 只认已入库的 workflowId：未保存改动或新建草稿都要先落库。
-      const isStored = workflows.some((workflow) => workflow.id === definition.id);
+      const isStored = workflows.some((workflow) => workflow.id === definition?.id);
       const saved = dirty || !isStored ? await handleSave() : definition;
       if (!saved) {
         return;
@@ -1657,6 +1657,60 @@ function PlatformWorkspace({
     ? definition.nodes.find((node) => node.id === resultNodeId)?.title ?? resultNodeId
     : "";
 
+  async function handleDeleteWorkflow(workflow: WorkflowSummary) {
+    if (workflow.source !== "custom") {
+      return;
+    }
+    if (!window.confirm(`删除工作流「${workflow.name}」？该流程的所有版本都会被移除，运行记录会保留。`)) {
+      return;
+    }
+    try {
+      await platformApi.deleteWorkflow(workflow.id);
+      const remaining = workflows.filter((item) => item.id !== workflow.id);
+      setWorkflows(remaining);
+      setFlowMenuOpen(false);
+      setBanner({ tone: "success", text: `已删除工作流「${workflow.name}」。` });
+      if (workflow.id === definition?.id) {
+        const next = remaining[0];
+        if (next) handleSelectWorkflow(next.id);
+      }
+    } catch (error) {
+      setBanner({ tone: "error", text: describe(error) });
+    }
+  }
+
+  function renderFlowItem(workflow: WorkflowSummary) {
+    const isCustom = workflow.source === "custom";
+    return (
+      <div className="platform-flow-item" key={workflow.id}>
+        <button
+          type="button"
+          role="menuitem"
+          className={`platform-flow-select${workflow.id === definition?.id ? " is-current" : ""}`}
+          title={workflow.description || workflow.name}
+          onClick={() => {
+            setFlowMenuOpen(false);
+            handleSelectWorkflow(workflow.id);
+          }}
+        >
+          <span className="platform-flow-item-name">{workflow.name}</span>
+          {isCustom && <em className="platform-flow-own">我的</em>}
+        </button>
+        {isCustom && (
+          <button
+            type="button"
+            className="platform-flow-delete"
+            title="删除这条工作流"
+            aria-label={`删除 ${workflow.name}`}
+            onClick={() => void handleDeleteWorkflow(workflow)}
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="platform-page">
       <header className="platform-head">
@@ -1693,53 +1747,11 @@ function PlatformWorkspace({
                 </div>
                 <div className="platform-flow-menu-list">
                   {flagshipWorkflows.length > 0 && <h5>旗舰地图</h5>}
-                  {flagshipWorkflows.map((workflow) => (
-                    <button
-                      key={workflow.id}
-                      type="button"
-                      role="menuitem"
-                      className={workflow.id === definition.id ? "is-current" : ""}
-                      onClick={() => {
-                        setFlowMenuOpen(false);
-                        handleSelectWorkflow(workflow.id);
-                      }}
-                    >
-                      {workflow.name}
-                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
-                    </button>
-                  ))}
+                  {flagshipWorkflows.map(renderFlowItem)}
                   {coreWorkflows.length > 0 && <h5>通用模板</h5>}
-                  {coreWorkflows.map((workflow) => (
-                    <button
-                      key={workflow.id}
-                      type="button"
-                      role="menuitem"
-                      className={workflow.id === definition.id ? "is-current" : ""}
-                      onClick={() => {
-                        setFlowMenuOpen(false);
-                        handleSelectWorkflow(workflow.id);
-                      }}
-                    >
-                      {workflow.name}
-                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
-                    </button>
-                  ))}
+                  {coreWorkflows.map(renderFlowItem)}
                   {otherWorkflows.length > 0 && <h5>其他流程</h5>}
-                  {otherWorkflows.map((workflow) => (
-                    <button
-                      key={workflow.id}
-                      type="button"
-                      role="menuitem"
-                      className={workflow.id === definition.id ? "is-current" : ""}
-                      onClick={() => {
-                        setFlowMenuOpen(false);
-                        handleSelectWorkflow(workflow.id);
-                      }}
-                    >
-                      {workflow.name}
-                      {workflow.source === "custom" && <em className="platform-flow-own">我的</em>}
-                    </button>
-                  ))}
+                  {otherWorkflows.map(renderFlowItem)}
                 </div>
               </div>
             )}

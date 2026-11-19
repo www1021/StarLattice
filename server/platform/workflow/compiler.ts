@@ -18,8 +18,9 @@ import {
 
 // 容器嵌套上限。子流程展开时会带上父流的层级（baseDepth: depth + 1），
 // 顶层总流再挂一层子流后，子流内部原有的「循环 → 条件 → 循环」会多占一层。
-// 留到 5 才能容纳总流 + 四层业务容器；再深仍有 MAX_SUBWORKFLOW_DEPTH 兜底。
-const MAX_DEPTH = 5;
+// 总流（1）→ 六线子流（2）→ 模式/意图闸门（3）→ 质量门禁（4）→ 改题循环（5）→ 循环体（6）
+// 是真实存在的结构，留到 8 才能容纳两层子流嵌套；再深仍有 MAX_SUBWORKFLOW_DEPTH 兜底。
+const MAX_DEPTH = 8;
 const MAX_SUBWORKFLOW_DEPTH = 5;
 const MAX_ROOT_NODES = 64;
 const MAX_LOOP_ITERATIONS = 20;

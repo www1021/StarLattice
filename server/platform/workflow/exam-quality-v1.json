@@ -1,8 +1,8 @@
 {
   "id": "exam-quality-v1",
   "name": "命题与考试质量工程全链路",
-  "version": 8,
-  "description": "从考试范围到成卷的质量闭环：细目表子流程定考什么 → 三路命题 Agent 并行出题 → 合卷编号 → 审题子流程与三档学力仿真作答两条支线并行 → 测量 Agent 调工具算难度与区分度 → 质量门禁 → 不达标进改题自愈循环并重新施测 → 组卷定稿与质量分析报告。",
+  "version": 15,
+  "description": "师者工作台的命题线：默认快速出卷——一句话识别学段、范围、题量、题型、难度，直接三路并行命题，合卷定稿流式输出；需要完整质量工程时才走细目表、审题、仿真施测与改题循环。",
   "inputs": [
     {
       "name": "question",
@@ -21,7 +21,7 @@
       "name": "grade",
       "type": "string",
       "required": false,
-      "description": "年级，如初三；不填时从需求里识别"
+      "description": "年级，如初三；留空则从原话识别"
     },
     {
       "name": "itemCount",
@@ -40,16 +40,16 @@
     {
       "name": "stage",
       "type": "string",
-      "required": true,
+      "required": false,
       "defaultValue": "初中",
-      "description": "学段：小学 / 初中 / 高中 / 中职 / 高校"
+      "description": "学段：小学 / 初中 / 高中 / 中职 / 高校；留空则从原话识别"
     },
     {
       "name": "subject",
       "type": "string",
-      "required": true,
+      "required": false,
       "defaultValue": "数学",
-      "description": "学科"
+      "description": "学科；留空则从原话识别"
     },
     {
       "name": "textbook",
@@ -61,21 +61,21 @@
     {
       "name": "scope",
       "type": "string",
-      "required": true,
-      "defaultValue": "一元二次方程",
-      "description": "考试范围，如一元二次方程"
+      "required": false,
+      "defaultValue": "",
+      "description": "考试范围，如一元二次方程；留空则以老师原话为准"
     },
     {
       "name": "duration",
       "type": "number",
-      "required": true,
+      "required": false,
       "defaultValue": 45,
       "description": "考试时长（分钟）"
     },
     {
       "name": "totalScore",
       "type": "number",
-      "required": true,
+      "required": false,
       "defaultValue": 100,
       "description": "试卷总分"
     },
@@ -100,50 +100,138 @@
       "title": "开始"
     },
     {
-      "id": "retrieve",
-      "kind": "tool",
-      "title": "课标检索",
-      "tool": "knowledge.search",
-      "args": {
-        "query": "${input.question} ${input.subject} ${input.scope} 课程标准 知识点 认知要求",
-        "knowledgeBaseIds": "${input.knowledgeBaseIds}",
-        "topK": 6
+      "id": "notice",
+      "kind": "template",
+      "title": "开卷回执",
+      "description": "一秒内先给一句回执，说明正在排考点、出题、合卷，避免长时间空白。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "template": "收到，正在出卷：先排考点，再出题，最后合卷出全文。\n\n",
+      "stubOutput": {
+        "output": "收到，正在出卷：先排考点，再出题，最后合卷出全文。"
       }
     },
     {
-      "id": "resources",
-      "kind": "tool",
-      "title": "教学资源检索",
-      "tool": "mcp.teaching-resources.teaching_resource_search",
-      "args": {
-        "query": "${input.question} ${input.scope} 例题 典型题",
-        "subject": "${input.subject}",
-        "limit": 3
-      }
-    },
-    {
-      "id": "blueprint-flow",
-      "kind": "subworkflow",
-      "title": "细目表子流程",
-      "workflowId": "exam-blueprint-v1",
+      "id": "intake",
+      "kind": "extract",
+      "title": "命题要素提取",
+      "description": "从老师原话里取学段年级、学科、考试范围、题量、题型；学科和范围取不到会追问一次，其余按原话或默认值走。",
       "inputs": {
-        "question": "${input.question}",
-        "qualityMode": "${input.qualityMode}",
-        "grade": "${input.grade}",
-        "itemCount": "${input.itemCount}",
-        "itemTypes": "${input.itemTypes}",
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "textbook": "${input.textbook}",
-        "scope": "${input.scope}",
-        "duration": "${input.duration}",
-        "totalScore": "${input.totalScore}",
-        "knowledgeBaseIds": "${input.knowledgeBaseIds}"
+        "question": "${input.question}"
       },
-      "outputs": {
-        "matrix": "${blueprint.output}",
-        "score": "${verify-blueprint.score}"
+      "params": [
+        {
+          "name": "stage",
+          "label": "学段年级",
+          "description": "如 初三、五年级、高一；原话只写「初中」就填 初中",
+          "type": "string",
+          "required": true,
+          "question": "这份卷子是哪个年级的？比如「初三」「五年级」。"
+        },
+        {
+          "name": "subject",
+          "label": "学科",
+          "description": "如 数学、物理、语文",
+          "type": "string",
+          "required": true,
+          "question": "这份卷子是哪个学科？"
+        },
+        {
+          "name": "scope",
+          "label": "考试范围",
+          "description": "这次考哪些内容，如 一元二次方程、二次函数、分数加减法",
+          "type": "string",
+          "required": true,
+          "question": "这次考哪个范围？比如「一元二次方程」「二次函数」。"
+        },
+        {
+          "name": "itemCount",
+          "label": "题量",
+          "description": "原话给的题数，如 10、15、20；没提就留空",
+          "type": "number",
+          "required": false,
+          "defaultValue": "15"
+        },
+        {
+          "name": "itemTypes",
+          "label": "题型",
+          "description": "原话给的题型组合，如 选择题、填空题、判断题；没提就留空",
+          "type": "string",
+          "required": false,
+          "defaultValue": "选择题、填空题、判断题"
+        }
+      ],
+      "prompt": "从老师原话里提取命题要素。规则：\n1. 只取原话明确出现的信息，不要替老师编造范围和题量。\n2. 「帮我出一份初三数学的小测，15 道题，包含选择填空判断」→ stage=初三、subject=数学、itemCount=15、itemTypes=选择题、填空题、判断题；范围原话没给就留空。\n3. 原话写「初中数学」时 stage 填 初中，不要补成具体年级。\n4. 题量写「15 道左右」「十五题」都归一成 15。",
+      "maxRounds": 3,
+      "onMissing": "fail"
+    },
+    {
+      "id": "ready",
+      "kind": "template",
+      "title": "要点回执",
+      "description": "把从原话里认出来的关键要素回显一句，让老师确认没理解偏，同时说明接下来在做什么。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "template": "已确认：${intake.stage}${intake.subject} · ${intake.scope}\n正在并行命题，卷子随后直接出全文。\n\n",
+      "stubOutput": {
+        "output": "已确认要素，正在处理。"
       }
+    },
+    {
+      "id": "mode-prep",
+      "kind": "condition",
+      "title": "出卷模式分流",
+      "description": "完整质量工程才先跑课标检索、资源检索与细目表；快速出卷直接进命题，省掉这一整段。",
+      "when": "${input.qualityMode} == full",
+      "then": [
+        {
+          "id": "retrieve",
+          "kind": "tool",
+          "title": "课标检索",
+          "tool": "knowledge.search",
+          "args": {
+            "query": "${input.question} ${intake.subject} ${intake.scope} 课程标准 知识点 认知要求",
+            "knowledgeBaseIds": "${input.knowledgeBaseIds}",
+            "topK": 6
+          }
+        },
+        {
+          "id": "resources",
+          "kind": "tool",
+          "title": "教学资源检索",
+          "tool": "mcp.teaching-resources.teaching_resource_search",
+          "args": {
+            "query": "${input.question} ${intake.scope} 例题 典型题",
+            "subject": "${intake.subject}",
+            "limit": 3
+          }
+        },
+        {
+          "id": "blueprint-flow",
+          "kind": "subworkflow",
+          "title": "细目表子流程",
+          "workflowId": "exam-blueprint-v1",
+          "inputs": {
+            "question": "${input.question}",
+            "qualityMode": "${input.qualityMode}",
+            "grade": "${input.grade}",
+            "itemCount": "${input.itemCount}",
+            "itemTypes": "${input.itemTypes}",
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "textbook": "${input.textbook}",
+            "scope": "${intake.scope}",
+            "duration": "${input.duration}",
+            "totalScore": "${input.totalScore}",
+            "knowledgeBaseIds": "${input.knowledgeBaseIds}"
+          },
+          "outputs": {
+            "matrix": "${blueprint.output}",
+            "score": "${verify-blueprint.score}"
+          }
+        }
+      ],
+      "else": []
     },
     {
       "id": "compose",
@@ -165,11 +253,11 @@
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
             "question": "${input.question}",
-            "itemCount": "${input.itemCount}",
-            "itemTypes": "${input.itemTypes}",
-            "stage": "${input.stage}",
-            "subject": "${input.subject}",
-            "scope": "${input.scope}"
+            "itemCount": "${intake.itemCount}",
+            "itemTypes": "${intake.itemTypes}",
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "scope": "${intake.scope}"
           },
           "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制基础层级（识记与理解）的题，不出应用与综合题。题型只用【题型要求】里那几种，不出解答题；细目表题型与要求冲突时以要求为准。\n【硬性约束】最多出 5 题，三路合计由总流程控制在 15 题左右，你这一路不要贪多。数学式子一律用普通文字（如 x^2、Δ、根号用 sqrt），禁止使用美元符号 $ 或反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"1\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":3}]}。填空题与判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等其它字段，不要解析。必须以 ]} 结尾，不要在 JSON 前后写任何其它文字或代码块标记。",
           "stubOutput": {
@@ -222,11 +310,11 @@
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
             "question": "${input.question}",
-            "itemCount": "${input.itemCount}",
-            "itemTypes": "${input.itemTypes}",
-            "stage": "${input.stage}",
-            "subject": "${input.subject}",
-            "scope": "${input.scope}"
+            "itemCount": "${intake.itemCount}",
+            "itemTypes": "${intake.itemTypes}",
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "scope": "${intake.scope}"
           },
           "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制应用层级的题：情境贴近该学段学生真实经验，但题型只用【题型要求】里那几种，即使是应用层级也不出解答题。\n【硬性约束】最多出 5 题，不要贪多。数学式子用普通文字（x^2、Δ、sqrt），禁止美元符号 $ 和反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"6\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":4}]}。填空/判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等字段，不要解析。必须以 ]} 结尾，JSON 前后不要写任何其它文字或代码块标记。",
           "stubOutput": {
@@ -264,11 +352,11 @@
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
             "question": "${input.question}",
-            "itemCount": "${input.itemCount}",
-            "itemTypes": "${input.itemTypes}",
-            "stage": "${input.stage}",
-            "subject": "${input.subject}",
-            "scope": "${input.scope}"
+            "itemCount": "${intake.itemCount}",
+            "itemTypes": "${intake.itemTypes}",
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "scope": "${intake.scope}"
           },
           "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制综合（压轴）层级的题：跨两个以上知识点、需多步推理，作为全卷最高区分点；题型只用【题型要求】里那几种，不出解答题。\n【硬性约束】最多出 5 题。数学式子用普通文字（x^2、Δ、sqrt），禁止美元符号 $ 和反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"11\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":5}]}。填空/判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等字段，不要解析。必须以 ]} 结尾，JSON 前后不要写任何其它文字或代码块标记。",
           "stubOutput": {
@@ -305,604 +393,614 @@
         "apply": "${items-apply.output}",
         "challenge": "${items-challenge.output}",
         "question": "${input.question}",
-        "itemCount": "${input.itemCount}",
-        "itemTypes": "${input.itemTypes}",
+        "itemCount": "${intake.itemCount}",
+        "itemTypes": "${intake.itemTypes}",
         "totalScore": "${input.totalScore}",
         "duration": "${input.duration}"
       },
       "system": "你是组卷编辑，负责把分路命制的试题合并成一份规范试卷。",
-      "prompt": "【命题需求，最高优先级】${input.question}\n第一行输出试卷标题：# ${input.stage}${input.subject} 小测；第二行输出：总分 ${input.totalScore} 分 · 时长 ${input.duration} 分钟 · 共 N 题；随后空一行写试卷正文，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号（从 1 连续编号）；每题照抄题干、选项与答案，答案统一写在题后；不要把题干里的数学式子渲染成图片链接。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种，不要新增解答题。三路分值合计若不等于 ${input.totalScore}，在保持题数不变的前提下微调末几题分值使其吻合，不要解释。",
+      "prompt": "【命题需求，最高优先级】${input.question}\n第一行输出试卷标题：# ${intake.stage}${intake.subject} 小测；第二行输出：总分 ${input.totalScore} 分 · 时长 ${input.duration} 分钟 · 共 N 题；随后空一行写试卷正文，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号（从 1 连续编号）；每题照抄题干、选项与答案，答案统一写在题后；不要把题干里的数学式子渲染成图片链接。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种，不要新增解答题。三路分值合计若不等于 ${input.totalScore}，在保持题数不变的前提下微调末几题分值使其吻合，不要解释。\n\n直接输出正文：不要用 ``` 或 ```markdown 把整段回答包进代码块，第一行就写正文。",
       "maxTokens": 8000,
       "errorPolicy": {
         "timeoutMs": 300000
       }
     },
     {
-      "id": "audit",
-      "kind": "subworkflow",
-      "title": "审题子流程",
-      "workflowId": "exam-audit-v1",
-      "inputs": {
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "scope": "${input.scope}",
-        "paperText": "${assemble.output}",
-        "knowledgeBaseIds": "${input.knowledgeBaseIds}"
-      },
-      "outputs": {
-        "report": "${deliver.output}",
-        "score": "${verify-audit.score}"
-      }
-    },
-    {
-      "id": "simulate",
-      "kind": "parallel",
-      "title": "三档学力并行施测",
-      "branches": [
-        {
-          "id": "mock-high",
-          "kind": "agent",
-          "title": "高学力作答",
-          "agent": "exam-mock-student",
-          "outputFormat": "json",
-          "outputContract": {
-            "required": [
-              "items",
-              "totalScore"
-            ]
-          },
-          "inputs": {
-            "paper": "${assemble.output}",
-            "strength": "high"
-          },
-          "prompt": "你是高学力学生。按 high 档真实作答：基础与应用题基本全对，压轴题最后一步可能失分。",
-          "stubOutput": {
-            "items": [
-              {
-                "id": "1",
-                "score": 3,
-                "wrongReason": ""
-              },
-              {
-                "id": "2",
-                "score": 3,
-                "wrongReason": ""
-              },
-              {
-                "id": "7",
-                "score": 12,
-                "wrongReason": ""
-              },
-              {
-                "id": "15",
-                "score": 12,
-                "wrongReason": "第二问漏了判别式检验"
-              }
-            ],
-            "totalScore": 88
-          },
-          "maxTokens": 6000,
-          "errorPolicy": {
-            "timeoutMs": 240000
-          }
-        },
-        {
-          "id": "mock-mid",
-          "kind": "agent",
-          "title": "中等学力作答",
-          "agent": "exam-mock-student",
-          "outputFormat": "json",
-          "outputContract": {
-            "required": [
-              "items",
-              "totalScore"
-            ]
-          },
-          "inputs": {
-            "paper": "${assemble.output}",
-            "strength": "mid"
-          },
-          "prompt": "你是中等学力学生。按 mid 档真实作答：基础题全对，应用题偶有计算或审题错误。",
-          "stubOutput": {
-            "items": [
-              {
-                "id": "1",
-                "score": 3,
-                "wrongReason": ""
-              },
-              {
-                "id": "2",
-                "score": 1.5,
-                "wrongReason": "一次项系数符号写错"
-              },
-              {
-                "id": "7",
-                "score": 8,
-                "wrongReason": "求根公式代入时把 b 的符号代错"
-              },
-              {
-                "id": "15",
-                "score": 5,
-                "wrongReason": "只会用韦达定理列式，后面没做出来"
-              }
-            ],
-            "totalScore": 58
-          },
-          "maxTokens": 6000,
-          "errorPolicy": {
-            "timeoutMs": 240000
-          }
-        },
-        {
-          "id": "mock-low",
-          "kind": "agent",
-          "title": "低学力作答",
-          "agent": "exam-mock-student",
-          "outputFormat": "json",
-          "outputContract": {
-            "required": [
-              "items",
-              "totalScore"
-            ]
-          },
-          "inputs": {
-            "paper": "${assemble.output}",
-            "strength": "low"
-          },
-          "prompt": "你是低学力学生。按 low 档真实作答：只完成基础题，应用题大面积失分甚至空白。",
-          "stubOutput": {
-            "items": [
-              {
-                "id": "1",
-                "score": 3,
-                "wrongReason": ""
-              },
-              {
-                "id": "2",
-                "score": 0,
-                "wrongReason": "不会化成一般形式"
-              },
-              {
-                "id": "7",
-                "score": 4,
-                "wrongReason": "只写出判别式，求根公式记错"
-              },
-              {
-                "id": "15",
-                "score": 0,
-                "wrongReason": "空着没写"
-              }
-            ],
-            "totalScore": 32
-          },
-          "maxTokens": 6000,
-          "errorPolicy": {
-            "timeoutMs": 240000
-          }
-        }
-      ]
-    },
-    {
-      "id": "measure",
-      "kind": "agent",
-      "title": "难度与区分度测量",
-      "agent": "exam-psychometric",
-      "toolCalling": true,
-      "outputFormat": "json",
-      "outputContract": {
-        "required": [
-          "paper",
-          "items",
-          "rework",
-          "summary"
-        ]
-      },
-      "inputs": {
-        "high": "${mock-high.output}",
-        "mid": "${mock-mid.output}",
-        "low": "${mock-low.output}",
-        "paper": "${assemble.output}",
-        "targetDifficulty": "${input.targetDifficulty}"
-      },
-      "prompt": "调用 exam.psychometrics 工具计算整卷与每题指标：highGroupAvg 取高学力该题得分，lowGroupAvg 取低学力该题得分，overallAvg 取三档平均，fullScore 取该题满分，level 取该题认知层级。难度区间与区分度下限按工具默认值。输出工具返回的完整指标与返工清单，不要自己心算。",
-      "stubOutput": {
-        "paper": {
-          "itemCount": 17,
-          "totalScore": 100,
-          "avgScore": 61.5,
-          "difficulty": 0.615,
-          "discrimination": 0.38,
-          "difficultyRange": [
-            0.55,
-            0.75
-          ],
-          "discriminationMin": 0.3,
-          "passed": false
-        },
-        "items": [
-          {
-            "id": "1",
-            "fullScore": 3,
-            "difficulty": 0.92,
-            "difficultyBand": "过易",
-            "discrimination": 0.12,
-            "level": "理解",
-            "verdict": "返工",
-            "reasons": [
-              "难度 0.92 高于上限 0.75，整题偏易",
-              "区分度 0.12 低于下限 0.3，无法有效区分学力"
-            ]
-          },
-          {
-            "id": "7",
-            "fullScore": 12,
-            "difficulty": 0.68,
-            "difficultyBand": "适中",
-            "discrimination": 0.42,
-            "level": "应用",
-            "verdict": "保留",
-            "reasons": []
-          },
-          {
-            "id": "15",
-            "fullScore": 15,
-            "difficulty": 0.41,
-            "difficultyBand": "偏难",
-            "discrimination": 0.36,
-            "level": "综合",
-            "verdict": "返工",
-            "reasons": [
-              "难度 0.41 低于下限 0.55，整题偏难"
-            ]
-          }
-        ],
-        "distribution": {
-          "过易": 2,
-          "适中": 11,
-          "偏难": 3,
-          "过难": 1
-        },
-        "levelCoverage": {
-          "理解": 6,
-          "应用": 7,
-          "综合": 4
-        },
-        "rework": [
-          "1",
-          "15"
-        ],
-        "summary": "整卷难度 0.615、平均区分度 0.38，需返工 2 题（1、15）。"
-      },
-      "maxTokens": 4000
-    },
-    {
-      "id": "verify-quality",
-      "kind": "verify",
-      "title": "质量门禁",
-      "verifier": "quality-verifier",
-      "verifiers": [
-        "quality-verifier",
-        "exam-auditor"
-      ],
-      "rubric": [
-        "难度落在目标区间",
-        "区分度达标",
-        "审题无阻塞问题",
-        "总分与细目表一致"
-      ],
-      "threshold": 0.82,
-      "expectedKeywords": [
-        "难度",
-        "区分度"
-      ],
-      "minChars": 150,
-      "inputs": {
-        "artifact": "${measure.output}",
-        "audit": "${audit.report}",
-        "reference": "${blueprint-flow.matrix}"
-      }
-    },
-    {
-      "id": "gate",
+      "id": "full-tail",
       "kind": "condition",
-      "title": "达标分流",
-      "when": "${verify-quality.score} < 0.82",
+      "title": "完整质量工程后段",
+      "description": "审题、三档仿真施测、难度区分度测量、质量门禁与改题循环只在完整模式执行；快速模式到合卷即结束。",
+      "when": "${input.qualityMode} == full",
       "then": [
         {
-          "id": "revise-loop",
-          "kind": "loop",
-          "title": "改题自愈循环",
-          "maxIterations": 2,
-          "while": "${verify-loop.score} < 0.82",
-          "patience": 2,
-          "budget": {
-            "maxDurationMs": 240000,
-            "maxTokens": 0
+          "id": "audit",
+          "kind": "subworkflow",
+          "title": "审题子流程",
+          "workflowId": "exam-audit-v1",
+          "inputs": {
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "scope": "${intake.scope}",
+            "paperText": "${assemble.output}",
+            "knowledgeBaseIds": "${input.knowledgeBaseIds}"
           },
-          "body": [
+          "outputs": {
+            "report": "${deliver.output}",
+            "score": "${verify-audit.score}"
+          }
+        },
+        {
+          "id": "simulate",
+          "kind": "parallel",
+          "title": "三档学力并行施测",
+          "branches": [
             {
-              "id": "revise",
+              "id": "mock-high",
               "kind": "agent",
-              "title": "定位病灶并改题",
-              "agent": "exam-reviser",
+              "title": "高学力作答",
+              "agent": "exam-mock-student",
               "outputFormat": "json",
               "outputContract": {
                 "required": [
-                  "patches"
+                  "items",
+                  "totalScore"
                 ]
               },
               "inputs": {
-                "items": "${assemble.output}",
-                "measure": "${measure.output}",
-                "issues": "${verify-quality.issues}",
-                "audit": "${audit.report}"
+                "paper": "${assemble.output}",
+                "strength": "high"
               },
-              "prompt": "按测量返工清单与审题问题定位病灶题，逐题判病因并改题。过难减少推理步数或补中间提示，过易增加干扰项或提升层级，区分度低就把模糊表述改精确。只改返工题，题号与总分不变。",
+              "prompt": "你是高学力学生。按 high 档真实作答：基础与应用题基本全对，压轴题最后一步可能失分。",
               "stubOutput": {
-                "patches": [
+                "items": [
                   {
                     "id": "1",
-                    "cause": "过易且区分度低",
-                    "change": "把干扰项换成学生真实易错形式，避免一眼排除",
-                    "revisedStem": "下列方程中一定是一元二次方程的是（　）",
-                    "revisedAnswer": "A",
-                    "revisedScoring": "选对得 3 分，错选不倒扣",
-                    "expectedDifficulty": 0.74
+                    "score": 3,
+                    "wrongReason": ""
+                  },
+                  {
+                    "id": "2",
+                    "score": 3,
+                    "wrongReason": ""
+                  },
+                  {
+                    "id": "7",
+                    "score": 12,
+                    "wrongReason": ""
                   },
                   {
                     "id": "15",
-                    "cause": "偏难",
-                    "change": "第一问补上提示，把三问改为两问递进",
-                    "revisedStem": "已知方程 x^2-(m+1)x+2m=0 的两根为 a、b。①用 m 表示 a+b 与 ab；②若 a+b=ab，求 m 并检验根的情况。",
-                    "revisedAnswer": "① a+b=m+1，ab=2m；② m=1，判别式为 0，有两等根",
-                    "revisedScoring": "① 6 分，② 9 分",
-                    "expectedDifficulty": 0.58
+                    "score": 12,
+                    "wrongReason": "第二问漏了判别式检验"
                   }
-                ]
+                ],
+                "totalScore": 88
               },
-              "maxTokens": 4000,
+              "maxTokens": 6000,
               "errorPolicy": {
                 "timeoutMs": 240000
               }
             },
             {
-              "id": "resimulate",
-              "kind": "parallel",
-              "title": "改题后重新施测",
-              "branches": [
-                {
-                  "id": "retest-high",
-                  "kind": "agent",
-                  "title": "高学力重测",
-                  "agent": "exam-mock-student",
-                  "outputFormat": "json",
-                  "outputContract": {
-                    "required": [
-                      "items",
-                      "totalScore"
-                    ]
-                  },
-                  "inputs": {
-                    "paper": "${assemble.output}",
-                    "patches": "${revise.output}",
-                    "strength": "high"
-                  },
-                  "prompt": "按 high 档对改后的题重新作答，未改动的题沿用上次得分。",
-                  "stubOutput": {
-                    "items": [
-                      {
-                        "id": "1",
-                        "score": 3,
-                        "wrongReason": ""
-                      },
-                      {
-                        "id": "15",
-                        "score": 15,
-                        "wrongReason": ""
-                      }
-                    ],
-                    "totalScore": 94
-                  },
-                  "maxTokens": 6000,
-                  "errorPolicy": {
-                    "timeoutMs": 240000
-                  }
-                },
-                {
-                  "id": "retest-mid",
-                  "kind": "agent",
-                  "title": "中等学力重测",
-                  "agent": "exam-mock-student",
-                  "outputFormat": "json",
-                  "outputContract": {
-                    "required": [
-                      "items",
-                      "totalScore"
-                    ]
-                  },
-                  "inputs": {
-                    "paper": "${assemble.output}",
-                    "patches": "${revise.output}",
-                    "strength": "mid"
-                  },
-                  "prompt": "按 mid 档对改后的题重新作答，未改动的题沿用上次得分。",
-                  "stubOutput": {
-                    "items": [
-                      {
-                        "id": "1",
-                        "score": 3,
-                        "wrongReason": ""
-                      },
-                      {
-                        "id": "15",
-                        "score": 8,
-                        "wrongReason": "第二问检验写错"
-                      }
-                    ],
-                    "totalScore": 65
-                  },
-                  "maxTokens": 6000,
-                  "errorPolicy": {
-                    "timeoutMs": 240000
-                  }
-                },
-                {
-                  "id": "retest-low",
-                  "kind": "agent",
-                  "title": "低学力重测",
-                  "agent": "exam-mock-student",
-                  "outputFormat": "json",
-                  "outputContract": {
-                    "required": [
-                      "items",
-                      "totalScore"
-                    ]
-                  },
-                  "inputs": {
-                    "paper": "${assemble.output}",
-                    "patches": "${revise.output}",
-                    "strength": "low"
-                  },
-                  "prompt": "按 low 档对改后的题重新作答，未改动的题沿用上次得分。",
-                  "stubOutput": {
-                    "items": [
-                      {
-                        "id": "1",
-                        "score": 3,
-                        "wrongReason": ""
-                      },
-                      {
-                        "id": "15",
-                        "score": 3,
-                        "wrongReason": "只会第一问"
-                      }
-                    ],
-                    "totalScore": 38
-                  },
-                  "maxTokens": 6000,
-                  "errorPolicy": {
-                    "timeoutMs": 240000
-                  }
-                }
-              ]
-            },
-            {
-              "id": "remeasure",
+              "id": "mock-mid",
               "kind": "agent",
-              "title": "改后复测指标",
-              "agent": "exam-psychometric",
-              "toolCalling": true,
+              "title": "中等学力作答",
+              "agent": "exam-mock-student",
               "outputFormat": "json",
               "outputContract": {
                 "required": [
-                  "paper",
                   "items",
-                  "rework",
-                  "summary"
+                  "totalScore"
                 ]
               },
               "inputs": {
-                "high": "${retest-high.output}",
-                "mid": "${retest-mid.output}",
-                "low": "${retest-low.output}",
                 "paper": "${assemble.output}",
-                "patches": "${revise.output}"
+                "strength": "mid"
               },
-              "prompt": "对改后的试卷重新调用 exam.psychometrics 计算指标，只报工具返回的数字，列出仍然需要返工的题号。",
+              "prompt": "你是中等学力学生。按 mid 档真实作答：基础题全对，应用题偶有计算或审题错误。",
               "stubOutput": {
-                "paper": {
-                  "itemCount": 17,
-                  "totalScore": 100,
-                  "avgScore": 66.4,
-                  "difficulty": 0.664,
-                  "discrimination": 0.44,
-                  "difficultyRange": [
-                    0.55,
-                    0.75
-                  ],
-                  "discriminationMin": 0.3,
-                  "passed": true
-                },
                 "items": [
                   {
                     "id": "1",
-                    "fullScore": 3,
-                    "difficulty": 0.74,
-                    "difficultyBand": "适中",
-                    "discrimination": 0.35,
-                    "level": "理解",
-                    "verdict": "保留",
-                    "reasons": []
+                    "score": 3,
+                    "wrongReason": ""
+                  },
+                  {
+                    "id": "2",
+                    "score": 1.5,
+                    "wrongReason": "一次项系数符号写错"
+                  },
+                  {
+                    "id": "7",
+                    "score": 8,
+                    "wrongReason": "求根公式代入时把 b 的符号代错"
                   },
                   {
                     "id": "15",
-                    "fullScore": 15,
-                    "difficulty": 0.58,
-                    "difficultyBand": "适中",
-                    "discrimination": 0.41,
-                    "level": "综合",
-                    "verdict": "保留",
-                    "reasons": []
+                    "score": 5,
+                    "wrongReason": "只会用韦达定理列式，后面没做出来"
                   }
                 ],
-                "distribution": {
-                  "适中": 12,
-                  "偏易": 3,
-                  "偏难": 2
-                },
-                "levelCoverage": {
-                  "理解": 6,
-                  "应用": 7,
-                  "综合": 4
-                },
-                "rework": [],
-                "summary": "整卷难度 0.664、平均区分度 0.44，17 题全部达标，可直接定稿。"
+                "totalScore": 58
               },
-              "maxTokens": 4000,
+              "maxTokens": 6000,
               "errorPolicy": {
-                "timeoutMs": 180000
+                "timeoutMs": 240000
               }
             },
             {
-              "id": "verify-loop",
-              "kind": "verify",
-              "title": "复测复核",
-              "verifier": "quality-verifier",
-              "rubric": [
-                "难度落在目标区间",
-                "区分度达标",
-                "返工清单清零"
-              ],
-              "threshold": 0.82,
+              "id": "mock-low",
+              "kind": "agent",
+              "title": "低学力作答",
+              "agent": "exam-mock-student",
+              "outputFormat": "json",
+              "outputContract": {
+                "required": [
+                  "items",
+                  "totalScore"
+                ]
+              },
               "inputs": {
-                "artifact": "${remeasure.output}"
+                "paper": "${assemble.output}",
+                "strength": "low"
+              },
+              "prompt": "你是低学力学生。按 low 档真实作答：只完成基础题，应用题大面积失分甚至空白。",
+              "stubOutput": {
+                "items": [
+                  {
+                    "id": "1",
+                    "score": 3,
+                    "wrongReason": ""
+                  },
+                  {
+                    "id": "2",
+                    "score": 0,
+                    "wrongReason": "不会化成一般形式"
+                  },
+                  {
+                    "id": "7",
+                    "score": 4,
+                    "wrongReason": "只写出判别式，求根公式记错"
+                  },
+                  {
+                    "id": "15",
+                    "score": 0,
+                    "wrongReason": "空着没写"
+                  }
+                ],
+                "totalScore": 32
+              },
+              "maxTokens": 6000,
+              "errorPolicy": {
+                "timeoutMs": 240000
               }
             }
           ]
+        },
+        {
+          "id": "measure",
+          "kind": "agent",
+          "title": "难度与区分度测量",
+          "agent": "exam-psychometric",
+          "toolCalling": true,
+          "outputFormat": "json",
+          "outputContract": {
+            "required": [
+              "paper",
+              "items",
+              "rework",
+              "summary"
+            ]
+          },
+          "inputs": {
+            "high": "${mock-high.output}",
+            "mid": "${mock-mid.output}",
+            "low": "${mock-low.output}",
+            "paper": "${assemble.output}",
+            "targetDifficulty": "${input.targetDifficulty}"
+          },
+          "prompt": "调用 exam.psychometrics 工具计算整卷与每题指标：highGroupAvg 取高学力该题得分，lowGroupAvg 取低学力该题得分，overallAvg 取三档平均，fullScore 取该题满分，level 取该题认知层级。难度区间与区分度下限按工具默认值。输出工具返回的完整指标与返工清单，不要自己心算。",
+          "stubOutput": {
+            "paper": {
+              "itemCount": 17,
+              "totalScore": 100,
+              "avgScore": 61.5,
+              "difficulty": 0.615,
+              "discrimination": 0.38,
+              "difficultyRange": [
+                0.55,
+                0.75
+              ],
+              "discriminationMin": 0.3,
+              "passed": false
+            },
+            "items": [
+              {
+                "id": "1",
+                "fullScore": 3,
+                "difficulty": 0.92,
+                "difficultyBand": "过易",
+                "discrimination": 0.12,
+                "level": "理解",
+                "verdict": "返工",
+                "reasons": [
+                  "难度 0.92 高于上限 0.75，整题偏易",
+                  "区分度 0.12 低于下限 0.3，无法有效区分学力"
+                ]
+              },
+              {
+                "id": "7",
+                "fullScore": 12,
+                "difficulty": 0.68,
+                "difficultyBand": "适中",
+                "discrimination": 0.42,
+                "level": "应用",
+                "verdict": "保留",
+                "reasons": []
+              },
+              {
+                "id": "15",
+                "fullScore": 15,
+                "difficulty": 0.41,
+                "difficultyBand": "偏难",
+                "discrimination": 0.36,
+                "level": "综合",
+                "verdict": "返工",
+                "reasons": [
+                  "难度 0.41 低于下限 0.55，整题偏难"
+                ]
+              }
+            ],
+            "distribution": {
+              "过易": 2,
+              "适中": 11,
+              "偏难": 3,
+              "过难": 1
+            },
+            "levelCoverage": {
+              "理解": 6,
+              "应用": 7,
+              "综合": 4
+            },
+            "rework": [
+              "1",
+              "15"
+            ],
+            "summary": "整卷难度 0.615、平均区分度 0.38，需返工 2 题（1、15）。"
+          },
+          "maxTokens": 4000
+        },
+        {
+          "id": "verify-quality",
+          "kind": "verify",
+          "title": "质量门禁",
+          "verifier": "quality-verifier",
+          "verifiers": [
+            "quality-verifier",
+            "exam-auditor"
+          ],
+          "rubric": [
+            "难度落在目标区间",
+            "区分度达标",
+            "审题无阻塞问题",
+            "总分与细目表一致"
+          ],
+          "threshold": 0.82,
+          "expectedKeywords": [
+            "难度",
+            "区分度"
+          ],
+          "minChars": 150,
+          "inputs": {
+            "artifact": "${measure.output}",
+            "audit": "${audit.report}",
+            "reference": "${blueprint-flow.matrix}"
+          }
+        },
+        {
+          "id": "gate",
+          "kind": "condition",
+          "title": "达标分流",
+          "when": "${verify-quality.score} < 0.82",
+          "then": [
+            {
+              "id": "revise-loop",
+              "kind": "loop",
+              "title": "改题自愈循环",
+              "maxIterations": 2,
+              "while": "${verify-loop.score} < 0.82",
+              "patience": 2,
+              "budget": {
+                "maxDurationMs": 240000,
+                "maxTokens": 0
+              },
+              "body": [
+                {
+                  "id": "revise",
+                  "kind": "agent",
+                  "title": "定位病灶并改题",
+                  "agent": "exam-reviser",
+                  "outputFormat": "json",
+                  "outputContract": {
+                    "required": [
+                      "patches"
+                    ]
+                  },
+                  "inputs": {
+                    "items": "${assemble.output}",
+                    "measure": "${measure.output}",
+                    "issues": "${verify-quality.issues}",
+                    "audit": "${audit.report}"
+                  },
+                  "prompt": "按测量返工清单与审题问题定位病灶题，逐题判病因并改题。过难减少推理步数或补中间提示，过易增加干扰项或提升层级，区分度低就把模糊表述改精确。只改返工题，题号与总分不变。",
+                  "stubOutput": {
+                    "patches": [
+                      {
+                        "id": "1",
+                        "cause": "过易且区分度低",
+                        "change": "把干扰项换成学生真实易错形式，避免一眼排除",
+                        "revisedStem": "下列方程中一定是一元二次方程的是（　）",
+                        "revisedAnswer": "A",
+                        "revisedScoring": "选对得 3 分，错选不倒扣",
+                        "expectedDifficulty": 0.74
+                      },
+                      {
+                        "id": "15",
+                        "cause": "偏难",
+                        "change": "第一问补上提示，把三问改为两问递进",
+                        "revisedStem": "已知方程 x^2-(m+1)x+2m=0 的两根为 a、b。①用 m 表示 a+b 与 ab；②若 a+b=ab，求 m 并检验根的情况。",
+                        "revisedAnswer": "① a+b=m+1，ab=2m；② m=1，判别式为 0，有两等根",
+                        "revisedScoring": "① 6 分，② 9 分",
+                        "expectedDifficulty": 0.58
+                      }
+                    ]
+                  },
+                  "maxTokens": 4000,
+                  "errorPolicy": {
+                    "timeoutMs": 240000
+                  }
+                },
+                {
+                  "id": "resimulate",
+                  "kind": "parallel",
+                  "title": "改题后重新施测",
+                  "branches": [
+                    {
+                      "id": "retest-high",
+                      "kind": "agent",
+                      "title": "高学力重测",
+                      "agent": "exam-mock-student",
+                      "outputFormat": "json",
+                      "outputContract": {
+                        "required": [
+                          "items",
+                          "totalScore"
+                        ]
+                      },
+                      "inputs": {
+                        "paper": "${assemble.output}",
+                        "patches": "${revise.output}",
+                        "strength": "high"
+                      },
+                      "prompt": "按 high 档对改后的题重新作答，未改动的题沿用上次得分。",
+                      "stubOutput": {
+                        "items": [
+                          {
+                            "id": "1",
+                            "score": 3,
+                            "wrongReason": ""
+                          },
+                          {
+                            "id": "15",
+                            "score": 15,
+                            "wrongReason": ""
+                          }
+                        ],
+                        "totalScore": 94
+                      },
+                      "maxTokens": 6000,
+                      "errorPolicy": {
+                        "timeoutMs": 240000
+                      }
+                    },
+                    {
+                      "id": "retest-mid",
+                      "kind": "agent",
+                      "title": "中等学力重测",
+                      "agent": "exam-mock-student",
+                      "outputFormat": "json",
+                      "outputContract": {
+                        "required": [
+                          "items",
+                          "totalScore"
+                        ]
+                      },
+                      "inputs": {
+                        "paper": "${assemble.output}",
+                        "patches": "${revise.output}",
+                        "strength": "mid"
+                      },
+                      "prompt": "按 mid 档对改后的题重新作答，未改动的题沿用上次得分。",
+                      "stubOutput": {
+                        "items": [
+                          {
+                            "id": "1",
+                            "score": 3,
+                            "wrongReason": ""
+                          },
+                          {
+                            "id": "15",
+                            "score": 8,
+                            "wrongReason": "第二问检验写错"
+                          }
+                        ],
+                        "totalScore": 65
+                      },
+                      "maxTokens": 6000,
+                      "errorPolicy": {
+                        "timeoutMs": 240000
+                      }
+                    },
+                    {
+                      "id": "retest-low",
+                      "kind": "agent",
+                      "title": "低学力重测",
+                      "agent": "exam-mock-student",
+                      "outputFormat": "json",
+                      "outputContract": {
+                        "required": [
+                          "items",
+                          "totalScore"
+                        ]
+                      },
+                      "inputs": {
+                        "paper": "${assemble.output}",
+                        "patches": "${revise.output}",
+                        "strength": "low"
+                      },
+                      "prompt": "按 low 档对改后的题重新作答，未改动的题沿用上次得分。",
+                      "stubOutput": {
+                        "items": [
+                          {
+                            "id": "1",
+                            "score": 3,
+                            "wrongReason": ""
+                          },
+                          {
+                            "id": "15",
+                            "score": 3,
+                            "wrongReason": "只会第一问"
+                          }
+                        ],
+                        "totalScore": 38
+                      },
+                      "maxTokens": 6000,
+                      "errorPolicy": {
+                        "timeoutMs": 240000
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "remeasure",
+                  "kind": "agent",
+                  "title": "改后复测指标",
+                  "agent": "exam-psychometric",
+                  "toolCalling": true,
+                  "outputFormat": "json",
+                  "outputContract": {
+                    "required": [
+                      "paper",
+                      "items",
+                      "rework",
+                      "summary"
+                    ]
+                  },
+                  "inputs": {
+                    "high": "${retest-high.output}",
+                    "mid": "${retest-mid.output}",
+                    "low": "${retest-low.output}",
+                    "paper": "${assemble.output}",
+                    "patches": "${revise.output}"
+                  },
+                  "prompt": "对改后的试卷重新调用 exam.psychometrics 计算指标，只报工具返回的数字，列出仍然需要返工的题号。",
+                  "stubOutput": {
+                    "paper": {
+                      "itemCount": 17,
+                      "totalScore": 100,
+                      "avgScore": 66.4,
+                      "difficulty": 0.664,
+                      "discrimination": 0.44,
+                      "difficultyRange": [
+                        0.55,
+                        0.75
+                      ],
+                      "discriminationMin": 0.3,
+                      "passed": true
+                    },
+                    "items": [
+                      {
+                        "id": "1",
+                        "fullScore": 3,
+                        "difficulty": 0.74,
+                        "difficultyBand": "适中",
+                        "discrimination": 0.35,
+                        "level": "理解",
+                        "verdict": "保留",
+                        "reasons": []
+                      },
+                      {
+                        "id": "15",
+                        "fullScore": 15,
+                        "difficulty": 0.58,
+                        "difficultyBand": "适中",
+                        "discrimination": 0.41,
+                        "level": "综合",
+                        "verdict": "保留",
+                        "reasons": []
+                      }
+                    ],
+                    "distribution": {
+                      "适中": 12,
+                      "偏易": 3,
+                      "偏难": 2
+                    },
+                    "levelCoverage": {
+                      "理解": 6,
+                      "应用": 7,
+                      "综合": 4
+                    },
+                    "rework": [],
+                    "summary": "整卷难度 0.664、平均区分度 0.44，17 题全部达标，可直接定稿。"
+                  },
+                  "maxTokens": 4000,
+                  "errorPolicy": {
+                    "timeoutMs": 180000
+                  }
+                },
+                {
+                  "id": "verify-loop",
+                  "kind": "verify",
+                  "title": "复测复核",
+                  "verifier": "quality-verifier",
+                  "rubric": [
+                    "难度落在目标区间",
+                    "区分度达标",
+                    "返工清单清零"
+                  ],
+                  "threshold": 0.82,
+                  "inputs": {
+                    "artifact": "${remeasure.output}"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "final",
+          "kind": "template",
+          "title": "组卷定稿",
+          "template": "# ${intake.stage}${intake.subject} 小测\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n\n## 试卷与评分标准\n${assemble.output}",
+          "inputs": {
+            "stage": "${intake.stage}",
+            "subject": "${intake.subject}",
+            "scope": "${intake.scope}",
+            "totalScore": "${input.totalScore}",
+            "duration": "${input.duration}"
+          }
+        },
+        {
+          "id": "report",
+          "kind": "template",
+          "title": "质量分析报告",
+          "emitOutput": true,
+          "streamOutput": true,
+          "template": "# 试卷质量分析报告\n\n## 测量结论\n${measure.output}\n\n## 审题结论\n${audit.report}\n\n## 说明\n难度 P 值为全体平均得分与满分之比，越大表示越容易；区分度 D 值为高分组得分率与低分组得分率之差，越大表示越能拉开学力差距。以上数值由 exam.psychometrics 工具按教育测量口径计算，非模型估计。",
+          "inputs": {}
         }
-      ]
-    },
-    {
-      "id": "final",
-      "kind": "template",
-      "title": "组卷定稿",
-      "template": "# ${input.stage}${input.subject} 小测\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n\n## 试卷与评分标准\n${assemble.output}",
-      "inputs": {
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "scope": "${input.scope}",
-        "totalScore": "${input.totalScore}",
-        "duration": "${input.duration}"
-      }
-    },
-    {
-      "id": "report",
-      "kind": "template",
-      "title": "质量分析报告",
-      "emitOutput": true,
-      "streamOutput": true,
-      "template": "# 试卷质量分析报告\n\n## 测量结论\n${measure.output}\n\n## 审题结论\n${audit.report}\n\n## 说明\n难度 P 值为全体平均得分与满分之比，越大表示越容易；区分度 D 值为高分组得分率与低分组得分率之差，越大表示越能拉开学力差距。以上数值由 exam.psychometrics 工具按教育测量口径计算，非模型估计。",
-      "inputs": {}
+      ],
+      "else": []
     },
     {
       "id": "end",
@@ -917,34 +1015,22 @@
   "edges": [
     {
       "from": "start",
-      "to": "retrieve"
+      "to": "notice"
     },
     {
-      "from": "start",
-      "to": "resources"
+      "from": "notice",
+      "to": "intake"
     },
     {
-      "from": "retrieve",
-      "to": "blueprint-flow",
-      "when": "${input.qualityMode} == full"
+      "from": "intake",
+      "to": "ready"
     },
     {
-      "from": "resources",
-      "to": "blueprint-flow",
-      "when": "${input.qualityMode} == full"
+      "from": "ready",
+      "to": "mode-prep"
     },
     {
-      "from": "retrieve",
-      "to": "compose",
-      "when": "${input.qualityMode} == quick"
-    },
-    {
-      "from": "resources",
-      "to": "compose",
-      "when": "${input.qualityMode} == quick"
-    },
-    {
-      "from": "blueprint-flow",
+      "from": "mode-prep",
       "to": "compose"
     },
     {
@@ -953,47 +1039,10 @@
     },
     {
       "from": "assemble",
-      "to": "audit",
-      "when": "${input.qualityMode} == full"
+      "to": "full-tail"
     },
     {
-      "from": "assemble",
-      "to": "simulate",
-      "when": "${input.qualityMode} == full"
-    },
-    {
-      "from": "assemble",
-      "to": "end",
-      "when": "${input.qualityMode} == quick"
-    },
-    {
-      "from": "audit",
-      "to": "verify-quality"
-    },
-    {
-      "from": "simulate",
-      "to": "measure"
-    },
-    {
-      "from": "measure",
-      "to": "verify-quality"
-    },
-    {
-      "from": "verify-quality",
-      "to": "gate"
-    },
-    {
-      "from": "gate",
-      "to": "final",
-      "when": "${input.qualityMode} == full"
-    },
-    {
-      "from": "final",
-      "to": "report",
-      "when": "${input.qualityMode} == full"
-    },
-    {
-      "from": "report",
+      "from": "full-tail",
       "to": "end"
     }
   ]

@@ -1,17 +1,46 @@
 {
   "id": "cd-report-v1",
   "name": "观课诊断报告合成",
-  "version": 1,
+  "version": 2,
   "description": "观课磨课工坊的报告子流：把观察诊断、改进前后对比与复核结论合成一份给教师看的报告，并检查报告里有没有编造的数字。",
   "inputs": [
-    { "name": "stage", "type": "string", "required": true, "description": "学段" },
-    { "name": "subject", "type": "string", "required": true, "description": "学科" },
-    { "name": "topic", "type": "string", "required": true, "description": "课题" },
-    { "name": "diagnosis", "type": "string", "required": false, "description": "观察诊断结论" },
-    { "name": "improvement", "type": "string", "required": false, "description": "改进前后对比" }
+    {
+      "name": "stage",
+      "type": "string",
+      "required": false,
+      "description": "学段；没传就按实录判断"
+    },
+    {
+      "name": "subject",
+      "type": "string",
+      "required": false,
+      "description": "学科；没传就按实录判断"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "required": false,
+      "description": "课题；没传就按实录判断"
+    },
+    {
+      "name": "diagnosis",
+      "type": "string",
+      "required": false,
+      "description": "观察诊断结论"
+    },
+    {
+      "name": "improvement",
+      "type": "string",
+      "required": false,
+      "description": "改进前后对比"
+    }
   ],
   "nodes": [
-    { "id": "start", "kind": "start", "title": "开始" },
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "开始"
+    },
     {
       "id": "draft",
       "kind": "agent",
@@ -29,17 +58,29 @@
         "output": "【总体判定】本次观课五维共识分 81.6，无红线，师生互动经仲裁后收敛。\n【优势】内容讲解准确，对概念偏差能即时纠正。\n【待改进】参与面集中在两人，目标未在结尾回扣。\n【改进结果】两轮磨课后，参与动作落到具体学生与追问，复核关闭率 100%。\n【下一节课】记录每节课的发言学生名单，确保一节课内至少六人被点名。"
       },
       "maxTokens": 4096,
-      "errorPolicy": { "timeoutMs": 240000 }
+      "errorPolicy": {
+        "timeoutMs": 240000
+      }
     },
     {
       "id": "verify-report",
       "kind": "verify",
       "title": "报告数字核查",
       "verifier": "observer-verifier",
-      "verifiers": ["observer-verifier", "quality-verifier"],
-      "rubric": ["报告中的分数都能在输入里找到", "没有编造的引用或数字", "红线结论与判定一致"],
+      "verifiers": [
+        "observer-verifier",
+        "quality-verifier"
+      ],
+      "rubric": [
+        "报告中的分数都能在输入里找到",
+        "没有编造的引用或数字",
+        "红线结论与判定一致"
+      ],
       "threshold": 0.8,
-      "expectedKeywords": ["分", "改进"],
+      "expectedKeywords": [
+        "分",
+        "改进"
+      ],
       "minChars": 100,
       "inputs": {
         "artifact": "${draft.output}",
@@ -59,7 +100,10 @@
           "maxIterations": 2,
           "while": "${reverify.score} < 0.8",
           "patience": 2,
-          "budget": { "maxDurationMs": 120000, "maxTokens": 0 },
+          "budget": {
+            "maxDurationMs": 120000,
+            "maxTokens": 0
+          },
           "body": [
             {
               "id": "rewrite",
@@ -81,9 +125,14 @@
               "kind": "verify",
               "title": "重写后再验",
               "verifier": "quality-verifier",
-              "rubric": ["分数都有出处", "无编造内容"],
+              "rubric": [
+                "分数都有出处",
+                "无编造内容"
+              ],
               "threshold": 0.8,
-              "inputs": { "artifact": "${rewrite.output}" }
+              "inputs": {
+                "artifact": "${rewrite.output}"
+              }
             }
           ]
         }
@@ -98,15 +147,39 @@
         "stage": "${input.stage}",
         "subject": "${input.subject}",
         "topic": "${input.topic}"
-      }
+      },
+      "emitOutput": true,
+      "streamOutput": true
     },
-    { "id": "end", "kind": "end", "title": "结束" }
+    {
+      "id": "end",
+      "kind": "end",
+      "title": "结束",
+      "inputs": {
+        "text": "${deliver.output}"
+      }
+    }
   ],
   "edges": [
-    { "from": "start", "to": "draft" },
-    { "from": "draft", "to": "verify-report" },
-    { "from": "verify-report", "to": "gate" },
-    { "from": "gate", "to": "deliver" },
-    { "from": "deliver", "to": "end" }
+    {
+      "from": "start",
+      "to": "draft"
+    },
+    {
+      "from": "draft",
+      "to": "verify-report"
+    },
+    {
+      "from": "verify-report",
+      "to": "gate"
+    },
+    {
+      "from": "gate",
+      "to": "deliver"
+    },
+    {
+      "from": "deliver",
+      "to": "end"
+    }
   ]
 }

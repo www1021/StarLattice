@@ -268,6 +268,11 @@ export const platformApi = {
   saveWorkflow: (dsl: WorkflowDefinition) =>
     request<SaveWorkflowResponse>("/workflows", { method: "POST", body: JSON.stringify({ dsl }) }),
 
+  deleteWorkflow: (id: string) =>
+    request<{ deleted: boolean; id: string }>(`/workflows/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    }),
+
   /** 调试前的静态门禁：不写库、不起 run，返回节点级可展示问题。 */
   diagnoseWorkflow: (dsl: WorkflowDefinition) =>
     request<DiagnoseWorkflowResponse>(`/workflows/${encodeURIComponent(dsl.id)}/diagnose`, {

@@ -1,7 +1,7 @@
 {
   "id": "exam-blueprint-v1",
   "name": "命题细目表生成",
-  "version": 3,
+  "version": 4,
   "description": "把考试范围拆成知识点与认知层级的双向细目表：检索课标 → 范围拆解 → 细目表 Agent 出矩阵 → 校验知识点覆盖、层级分布、分值合计与时长匹配 → 不达标自动重排。可单独运行，也被组卷主流程作为子流程复用。",
   "inputs": [
     {
@@ -104,23 +104,33 @@
       }
     },
     {
-      "id": "brief",
-      "kind": "llm",
-      "title": "考试范围拆解",
-      "temperature": 0.3,
-      "inputs": {
-        "question": "${input.question}",
-        "grade": "${input.grade}",
-        "itemCount": "${input.itemCount}",
-        "itemTypes": "${input.itemTypes}",
-        "stage": "${input.stage}",
-        "subject": "${input.subject}",
-        "textbook": "${input.textbook}",
-        "scope": "${input.scope}",
-        "citations": "${retrieve.citations}"
-      },
-      "system": "你是资深教研员，熟悉各学段课程标准、教材编排与认知层级要求。",
-      "prompt": "【命题需求，最高优先级】${input.question}\n把 ${input.stage}${input.subject}「${input.scope}」拆成可以直接命题的知识点清单。逐条给出：知识点名称、课标要求的认知层级（按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造）、在教材中的位置。只列属于本次范围的内容，不要延伸到后续章节。这份卷子共 ${input.itemCount} 题，题型只用 ${input.itemTypes}，总时长 ${input.duration} 分钟、总分 ${input.totalScore} 分；需求里给的题量、题型、难度若与这些默认值不同，一律以需求为准。【范围】若命题需求没有指定具体课题或范围，就按 ${input.grade}${input.subject} 的常见综合内容选题，不要被默认课题「${input.scope}」限制。"
+      "id": "brief-gate",
+      "kind": "condition",
+      "title": "细目表精排闸门",
+      "description": "完整质量工程才先做双向细目表精排；快速出卷直接让细目表节点一次成型。",
+      "when": "${input.qualityMode} == full",
+      "then": [
+        {
+          "id": "brief",
+          "kind": "llm",
+          "title": "考试范围拆解",
+          "temperature": 0.3,
+          "inputs": {
+            "question": "${input.question}",
+            "grade": "${input.grade}",
+            "itemCount": "${input.itemCount}",
+            "itemTypes": "${input.itemTypes}",
+            "stage": "${input.stage}",
+            "subject": "${input.subject}",
+            "textbook": "${input.textbook}",
+            "scope": "${input.scope}",
+            "citations": "${retrieve.citations}"
+          },
+          "system": "你是资深教研员，熟悉各学段课程标准、教材编排与认知层级要求。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n把 ${input.stage}${input.subject}「${input.scope}」拆成可以直接命题的知识点清单。逐条给出：知识点名称、课标要求的认知层级（按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造）、在教材中的位置。只列属于本次范围的内容，不要延伸到后续章节。这份卷子共 ${input.itemCount} 题，题型只用 ${input.itemTypes}，总时长 ${input.duration} 分钟、总分 ${input.totalScore} 分；需求里给的题量、题型、难度若与这些默认值不同，一律以需求为准。【范围】若命题需求没有指定具体课题或范围，就按 ${input.grade}${input.subject} 的常见综合内容选题，不要被默认课题「${input.scope}」限制。"
+        }
+      ],
+      "else": []
     },
     {
       "id": "blueprint",
@@ -354,18 +364,11 @@
     },
     {
       "from": "retrieve",
-      "to": "brief",
-      "when": "${input.qualityMode} == full"
+      "to": "brief-gate"
     },
     {
-      "from": "retrieve",
-      "to": "blueprint",
-      "when": "${input.qualityMode} == quick"
-    },
-    {
-      "from": "brief",
-      "to": "blueprint",
-      "when": "${input.qualityMode} == full"
+      "from": "brief-gate",
+      "to": "blueprint"
     },
     {
       "from": "blueprint",

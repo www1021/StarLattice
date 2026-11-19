@@ -1,8 +1,8 @@
 {
   "id": "qa-tutor-v1",
   "name": "答疑辅导主流程",
-  "version": 1,
-  "description": "师者工作台的答疑线：先跑错因诊断子流定位问题，再生成三级启发提示，校验器检查是否泄题或超纲，不合格重写提示最多两轮。全程不给完整答案，只给可复述的追问。",
+  "version": 6,
+  "description": "师者工作台的答疑线：先从老师原话里认出年级、学科和原题，缺关键信息追问一次；再跑错因诊断子流定位问题，生成三级启发提示，校验器检查是否泄题或超纲，不合格重写提示最多两轮。全程不给完整答案，只给可复述的追问。",
   "inputs": [
     {
       "name": "question",
@@ -19,14 +19,14 @@
     {
       "name": "grade",
       "type": "string",
-      "required": true,
-      "description": "学段年级"
+      "required": false,
+      "description": "学段年级；没给就按题目本身判断"
     },
     {
       "name": "subject",
       "type": "string",
-      "required": true,
-      "description": "学科"
+      "required": false,
+      "description": "学科；没给就按题目本身判断"
     },
     {
       "name": "topic",
@@ -42,15 +42,59 @@
       "title": "开始"
     },
     {
+      "id": "intake",
+      "kind": "extract",
+      "title": "答疑要素提取",
+      "description": "从老师原话里认出年级、学科、学生作答；年级学科没提到就在 extract 节点追问一次，不让老师先填表。",
+      "inputs": {
+        "question": "${input.question}"
+      },
+      "params": [
+        {
+          "name": "grade",
+          "label": "年级",
+          "description": "如 五年级、初三、高一；原话只写「初中」就填 初中",
+          "type": "string",
+          "required": true,
+          "question": "这道题是哪个年级的？比如「五年级」「初三」。"
+        },
+        {
+          "name": "subject",
+          "label": "学科",
+          "description": "如 数学、物理、语文",
+          "type": "string",
+          "required": true,
+          "question": "这道题是哪个学科？"
+        },
+        {
+          "name": "topic",
+          "label": "课题",
+          "description": "当前在学的内容，如 分数的意义；没提到就留空",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "studentAnswer",
+          "label": "学生作答",
+          "description": "学生写出来的答案或思路；没给就留空",
+          "type": "string",
+          "required": false
+        }
+      ],
+      "prompt": "从老师原话里提取答疑要素。规则：\n1. 只取原话明确出现的信息，不要替老师编题。\n2. 「五年级数学，12 个苹果平均分给 3 组，学生写成 4/3，怎么提示」→ grade=五年级、subject=数学、studentAnswer=4/3，topic 留空。\n3. 原话写「初中数学」时 grade 填 初中，不要补成具体年级。\n4. 学生答案里的分数、选项、算式原样保留。",
+      "maxRounds": 3,
+      "onMissing": "fail"
+    },
+    {
       "id": "diagnose",
       "kind": "subworkflow",
       "title": "错因诊断",
       "workflowId": "td-misconception-v1",
       "inputs": {
         "question": "${input.question}",
-        "studentAnswer": "${input.studentAnswer}",
-        "grade": "${input.grade}",
-        "topic": "${input.topic}"
+        "studentAnswer": "${intake.studentAnswer}",
+        "grade": "${intake.grade}",
+        "topic": "${intake.topic}"
       },
       "outputs": {
         "parsed": "${parse.output}",
@@ -89,8 +133,8 @@
         ]
       },
       "inputs": {
-        "grade": "${input.grade}",
-        "subject": "${input.subject}",
+        "grade": "${intake.grade}",
+        "subject": "${intake.subject}",
         "diagnosis": "${diagnose.diagnosis}",
         "parsed": "${diagnose.parsed}"
       },
@@ -115,10 +159,6 @@
         "结尾含学生复述追问"
       ],
       "threshold": 0.8,
-      "expectedKeywords": [
-        "分母",
-        "分子"
-      ],
       "minChars": 40,
       "inputs": {
         "artifact": "${hint.output}",
@@ -185,22 +225,46 @@
     },
     {
       "id": "deliver",
-      "kind": "template",
+      "kind": "llm",
       "title": "答复定稿",
-      "template": "【题意】${diagnose.parsed}\n【错因】${diagnose.diagnosis}\n【一级提示】${hint.output.hints.0}\n【二级提示】${hint.output.hints.1}\n【三级提示】${hint.output.hints.2}\n【追问】${hint.output.promptBack}\n【校验】${reverify}",
+      "description": "把题意、错因、三级提示和追问写成人话，流式打印到会话。",
+      "emitOutput": true,
+      "streamOutput": true,
+      "temperature": 0.4,
+      "maxTokens": 1600,
+      "inputs": {
+        "question": "${input.question}",
+        "studentAnswer": "${input.studentAnswer}",
+        "grade": "${intake.grade}",
+        "subject": "${intake.subject}",
+        "parsed": "${diagnose.parsed}",
+        "diagnosis": "${diagnose.diagnosis}",
+        "hints": "${hint.output.hints}",
+        "promptBack": "${hint.output.promptBack}",
+        "passed": "${verify.passed}"
+      },
+      "system": "你是在帮老师准备答疑的助教。把已经定好的诊断和三级提示写成老师能直接念给学生听的话。不许给出完整答案或最终结果，不许添加原文没有的结论。不输出 JSON。",
+      "prompt": "【学生原题】\n${input.question}\n\n【学生作答】\n${input.studentAnswer}\n\n【年级学科】${intake.grade} ${intake.subject}\n\n【题意拆解】${diagnose.parsed}\n【错因定位】${diagnose.diagnosis}\n【三级提示】${hint.output.hints}\n【结尾追问】${hint.output.promptBack}\n\n据此写一段可以直接发给老师看的答疑回复，用 Markdown，四块：\n1. 这题在问什么（两三句，把已知和所求说清楚，不写解法）\n2. 卡在哪（说清错因属于哪一类，引学生原作答说明）\n3. 三级提示（逐条列，一级只指方向，二级给动作，三级给检查方法；到第三级也不能把答案说出来）\n4. 追问学生的一句话\n\n字数 300–500 字，语气平实，别用「首先其次最后」这种套话。\n\n直接输出正文：不要用 ``` 或 ```markdown 把整段回答包进代码块，第一行就写正文。",
       "stubOutput": {
-        "output": "【题意】12 个苹果平均分成 3 组，求每组占总数的分数。\n【错因】表征缺失：未把 12 个苹果看作单位「1」，答成分母分子颠倒。\n【一级提示】先别急着写分数，看看题目里把什么当作一整份。\n【二级提示】把 12 个苹果圈成一圈，再数平均分成几份、取了几份。\n【三级提示】分母写份数，分子写取了几份，写完念一遍含义。\n【追问】你能说说分母和分子各表示什么吗？\n【校验】三级提示未泄题、未超纲，通过。"
+        "output": "## 这题在问什么\n12 个苹果平均分成 3 组，问每组占总数几分之几。\n\n## 卡在哪\n把 12 个苹果整体当成 3 份里的 1 份，分子分母写反了。\n\n## 三级提示\n1. 先看看题目把什么当作一整份。\n2. 把 12 个苹果圈成一圈，数分了几份、取了几份。\n3. 分母写份数、分子写取的份数，写完念一遍含义。\n\n## 追问\n你能说说分母和分子各表示什么吗？"
       }
     },
     {
       "id": "end",
       "kind": "end",
-      "title": "结束"
+      "title": "结束",
+      "inputs": {
+        "text": "${deliver.output}"
+      }
     }
   ],
   "edges": [
     {
       "from": "start",
+      "to": "intake"
+    },
+    {
+      "from": "intake",
       "to": "diagnose"
     },
     {
