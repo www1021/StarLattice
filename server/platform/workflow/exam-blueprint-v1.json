@@ -5,6 +5,32 @@
   "description": "把考试范围拆成知识点与认知层级的双向细目表：检索课标 → 范围拆解 → 细目表 Agent 出矩阵 → 校验知识点覆盖、层级分布、分值合计与时长匹配 → 不达标自动重排。可单独运行，也被组卷主流程作为子流程复用。",
   "inputs": [
     {
+      "name": "question",
+      "type": "string",
+      "required": false,
+      "description": "老师原始命题需求，决定题量、题型与难度；由命题主流程传入"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": false,
+      "description": "年级，如初三；不填时从需求里识别"
+    },
+    {
+      "name": "itemCount",
+      "type": "number",
+      "required": false,
+      "defaultValue": 15,
+      "description": "题目数量；以命题需求为准"
+    },
+    {
+      "name": "itemTypes",
+      "type": "string",
+      "required": false,
+      "defaultValue": "选择题、填空题、判断题",
+      "description": "题型组合；以命题需求为准"
+    },
+    {
       "name": "stage",
       "type": "string",
       "required": true,
@@ -74,9 +100,12 @@
       "id": "brief",
       "kind": "llm",
       "title": "考试范围拆解",
-      "thinking": true,
       "temperature": 0.3,
       "inputs": {
+        "question": "${input.question}",
+        "grade": "${input.grade}",
+        "itemCount": "${input.itemCount}",
+        "itemTypes": "${input.itemTypes}",
         "stage": "${input.stage}",
         "subject": "${input.subject}",
         "textbook": "${input.textbook}",
@@ -84,7 +113,7 @@
         "citations": "${retrieve.citations}"
       },
       "system": "你是资深教研员，熟悉各学段课程标准、教材编排与认知层级要求。",
-      "prompt": "把 ${input.stage}${input.subject}「${input.scope}」拆成可以直接命题的知识点清单。逐条给出：知识点名称、课标要求的认知层级（按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造）、在教材中的位置。只列属于本次范围的内容，不要延伸到后续章节。总时长 ${input.duration} 分钟、总分 ${input.totalScore} 分，据此估算题目数量上限。"
+      "prompt": "【命题需求，最高优先级】${input.question}\n把 ${input.stage}${input.subject}「${input.scope}」拆成可以直接命题的知识点清单。逐条给出：知识点名称、课标要求的认知层级（按学段选词，小学用识记/理解/简单应用，初中用识记/理解/应用/综合，高中用识记/理解/应用/分析/综合评价，高校与职教用记忆/理解/应用/分析/评价/创造）、在教材中的位置。只列属于本次范围的内容，不要延伸到后续章节。这份卷子共 ${input.itemCount} 题，题型只用 ${input.itemTypes}，总时长 ${input.duration} 分钟、总分 ${input.totalScore} 分；需求里给的题量、题型、难度若与这些默认值不同，一律以需求为准。【范围】若命题需求没有指定具体课题或范围，就按 ${input.grade}${input.subject} 的常见综合内容选题，不要被默认课题「${input.scope}」限制。"
     },
     {
       "id": "blueprint",
@@ -104,13 +133,17 @@
       "inputs": {
         "brief": "${brief.output}",
         "citations": "${retrieve.citations}",
+        "question": "${input.question}",
+        "grade": "${input.grade}",
+        "itemCount": "${input.itemCount}",
+        "itemTypes": "${input.itemTypes}",
         "stage": "${input.stage}",
         "subject": "${input.subject}",
         "scope": "${input.scope}",
         "duration": "${input.duration}",
         "totalScore": "${input.totalScore}"
       },
-      "prompt": "依据范围拆解与课标引用生成双向细目表。全卷固定 12 题：识记与理解层级 6 题、应用层级 3 题、综合层级 3 题，题号 1-12 连续。要求：每个知识点在矩阵里至少出现一次；低阶与高阶分值比接近 6:4；各题分值之和严格等于 ${input.totalScore}；按客观题 1.5 分钟一题、主观题每分 1.2 分钟估算的总时长不超过 ${input.duration} 分钟。",
+      "prompt": "【命题需求，最高优先级】${input.question}\n依据范围拆解与课标引用生成双向细目表。全卷题数严格等于 ${input.itemCount} 题（需求里另有题数就以需求为准），题号 1 到 ${input.itemCount} 连续；按识记与理解、应用、综合三个层级分配，低阶约占六成、高阶约占四成。题型只能从 ${input.itemTypes} 里选，不要出现需求没要的题型（例如需求只要选择/填空/判断，就不要出解答题）。要求：每个知识点在矩阵里至少出现一次；各题分值之和严格等于 ${input.totalScore}；总时长不超过 ${input.duration} 分钟。难度取向：${input.question} 里若写了难度就按它，没写就保持中等。",
       "stubOutput": {
         "blueprint": [
           {
@@ -215,11 +248,14 @@
               "inputs": {
                 "draft": "${loop.artifact}",
                 "issues": "${loop.issues}",
+                "question": "${input.question}",
+                "itemCount": "${input.itemCount}",
+                "itemTypes": "${input.itemTypes}",
                 "scope": "${input.scope}",
                 "totalScore": "${input.totalScore}",
                 "duration": "${input.duration}"
               },
-              "prompt": "按校验问题逐条修正细目表：补上遗漏的必考知识点、调整失衡的认知层级比例、把分值配平到 ${input.totalScore} 分以内且时长不超过 ${input.duration} 分钟。只改有问题的部分，其余保持原样。",
+              "prompt": "按校验问题逐条修正细目表：补上遗漏的必考知识点、调整失衡的认知层级比例、把分值配平到 ${input.totalScore} 分以内且时长不超过 ${input.duration} 分钟。题数与题型始终以【命题需求】${input.question} 为准（${input.itemCount} 题，只用 ${input.itemTypes}），重排时不能增加需求没要的题型。只改有问题的部分，其余保持原样。",
               "stubOutput": {
                 "blueprint": [
                   {

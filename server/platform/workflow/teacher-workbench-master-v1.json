@@ -19,6 +19,8 @@
     { "name": "duration", "type": "number", "required": false, "defaultValue": 45, "description": "考试时长（分钟），默认 45" },
     { "name": "totalScore", "type": "number", "required": false, "defaultValue": 100, "description": "试卷总分，默认 100" },
     { "name": "targetDifficulty", "type": "string", "required": false, "defaultValue": "中等", "description": "期望难度取向：偏易 / 中等 / 偏难" },
+    { "name": "itemCount", "type": "number", "required": false, "defaultValue": 15, "description": "命题线题目数量；需求里明确给了题量时以需求为准" },
+    { "name": "itemTypes", "type": "string", "required": false, "defaultValue": "选择题、填空题、判断题", "description": "命题线题型组合；需求里明确给了题型时以需求为准" },
     { "name": "minutes", "type": "string", "required": false, "description": "课时长度，备课线用" },
     { "name": "knowledgeBaseIds", "type": "object", "required": false, "description": "参与检索的知识库 id 列表" }
   ],
@@ -72,6 +74,10 @@
       "description": "细目表、三路并行命题、仿真施测、算难度区分度，不达标自动改题。",
       "workflowId": "exam-quality-v1",
       "inputs": {
+        "question": "${input.question}",
+        "grade": "${input.grade}",
+        "itemCount": "${input.itemCount}",
+        "itemTypes": "${input.itemTypes}",
         "stage": "${input.stage}",
         "subject": "${input.subject}",
         "textbook": "${input.textbook}",

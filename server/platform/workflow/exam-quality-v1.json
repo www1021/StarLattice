@@ -5,6 +5,32 @@
   "description": "从考试范围到成卷的质量闭环：细目表子流程定考什么 → 三路命题 Agent 并行出题 → 合卷编号 → 审题子流程与三档学力仿真作答两条支线并行 → 测量 Agent 调工具算难度与区分度 → 质量门禁 → 不达标进改题自愈循环并重新施测 → 组卷定稿与质量分析报告。",
   "inputs": [
     {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "老师完整需求；调试时聊天框输入的话会自动填进这里，题量、题型、学段、难度都以这句话为准"
+    },
+    {
+      "name": "grade",
+      "type": "string",
+      "required": false,
+      "description": "年级，如初三；不填时从需求里识别"
+    },
+    {
+      "name": "itemCount",
+      "type": "number",
+      "required": false,
+      "defaultValue": 15,
+      "description": "题目数量；需求里明确给了题量时以需求为准"
+    },
+    {
+      "name": "itemTypes",
+      "type": "string",
+      "required": false,
+      "defaultValue": "选择题、填空题、判断题",
+      "description": "题型组合；需求里明确给了题型时以需求为准"
+    },
+    {
       "name": "stage",
       "type": "string",
       "required": true,
@@ -72,7 +98,7 @@
       "title": "课标检索",
       "tool": "knowledge.search",
       "args": {
-        "query": "${input.subject} ${input.scope} 课程标准 知识点 认知要求",
+        "query": "${input.question} ${input.subject} ${input.scope} 课程标准 知识点 认知要求",
         "knowledgeBaseIds": "${input.knowledgeBaseIds}",
         "topK": 6
       }
@@ -83,7 +109,7 @@
       "title": "教学资源检索",
       "tool": "mcp.teaching-resources.teaching_resource_search",
       "args": {
-        "query": "${input.scope} 例题 典型题",
+        "query": "${input.question} ${input.scope} 例题 典型题",
         "subject": "${input.subject}",
         "limit": 3
       }
@@ -94,6 +120,10 @@
       "title": "细目表子流程",
       "workflowId": "exam-blueprint-v1",
       "inputs": {
+        "question": "${input.question}",
+        "grade": "${input.grade}",
+        "itemCount": "${input.itemCount}",
+        "itemTypes": "${input.itemTypes}",
         "stage": "${input.stage}",
         "subject": "${input.subject}",
         "textbook": "${input.textbook}",
@@ -126,11 +156,14 @@
           "inputs": {
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
+            "question": "${input.question}",
+            "itemCount": "${input.itemCount}",
+            "itemTypes": "${input.itemTypes}",
             "stage": "${input.stage}",
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制基础题：选择题与填空题，覆盖细目表里识记与理解层级的知识点，不得越级考查应用与综合。 严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或解答步骤、答案、评分标准、知识点、层级、满分），不写解析。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制基础层级的题：覆盖细目表里识记与理解层级的知识点，不得越级考查应用与综合。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就全用这几种，不要出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分），不写解析。",
           "stubOutput": {
             "items": [
               {
@@ -180,11 +213,14 @@
           "inputs": {
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
+            "question": "${input.question}",
+            "itemCount": "${input.itemCount}",
+            "itemTypes": "${input.itemTypes}",
             "stage": "${input.stage}",
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制应用题：需要建模或多步计算的主观题，覆盖细目表里应用层级的知识点，情境贴近该学段学生的真实经验。严格按细目表里应用层级的题号逐题命制，题号一一对应、不多不少。解答题只写题干、最终答案和评分点（每点一行，标出分值），不要展开完整解题过程，不要写解析。输出紧凑 JSON（题干、答案、评分标准、知识点、层级、满分）。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制应用层级的题：覆盖细目表里应用层级的知识点，情境贴近该学段学生的真实经验。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就用这几种，哪怕是应用层级也不出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里应用层级的题号逐题命制，题号一一对应、不多不少。选择题给出选项，填空/判断题只写题干与答案，不展开完整解题过程，不要写解析。输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分）。",
           "stubOutput": {
             "items": [
               {
@@ -219,11 +255,14 @@
           "inputs": {
             "matrix": "${blueprint-flow.matrix}",
             "citations": "${retrieve.citations}",
+            "question": "${input.question}",
+            "itemCount": "${input.itemCount}",
+            "itemTypes": "${input.itemTypes}",
             "stage": "${input.stage}",
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "只命制压轴题：跨两个以上知识点、需三步以上推理，设递进小问，作为全卷最高区分点。 严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或解答步骤、答案、评分标准、知识点、层级、满分），不写解析。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制综合（压轴）层级的题：跨两个以上知识点、需三步以上推理，作为全卷最高区分点。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就用这几种做出区分度，哪怕是压轴层级也不出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分），不写解析。",
           "stubOutput": {
             "items": [
               {
@@ -255,11 +294,14 @@
         "basic": "${items-basic.output}",
         "apply": "${items-apply.output}",
         "challenge": "${items-challenge.output}",
+        "question": "${input.question}",
+        "itemCount": "${input.itemCount}",
+        "itemTypes": "${input.itemTypes}",
         "totalScore": "${input.totalScore}",
         "duration": "${input.duration}"
       },
       "system": "你是组卷编辑，负责把分路命制的试题合并成一份规范试卷。",
-      "prompt": "把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号；每题原文照抄，保留题干、答案与评分标准；每题用一行标注知识点与认知层级。三路分值合计必须等于 ${input.totalScore}，不等时只调整最后一题的分值使其吻合，不要解释。",
+      "prompt": "【命题需求，最高优先级】${input.question}\n把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号；每题原文照抄，保留题干、答案与评分标准；每题用一行标注知识点、认知层级与题型。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种。三路分值合计必须等于 ${input.totalScore}，不等时在保持题数不变的前提下调整末几题分值使其吻合，不要解释。",
       "maxTokens": 8000,
       "errorPolicy": {
         "timeoutMs": 300000
@@ -834,7 +876,7 @@
       "id": "final",
       "kind": "template",
       "title": "组卷定稿",
-      "template": "# ${input.stage}${input.subject} 试卷（${input.scope}）\n\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n- 细目表校验分：${blueprint-flow.score}\n- 审题可信度：${audit.score}\n- 质量门禁分：${verify-quality.score}\n\n## 试卷与评分标准\n${assemble.output}",
+      "template": "# ${input.stage}${input.subject} 小测（${input.scope}）\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n- 细目表校验分：${blueprint-flow.score}\n- 审题可信度：${audit.score}\n- 质量门禁分：${verify-quality.score}\n\n## 试卷与评分标准\n${assemble.output}",
       "inputs": {
         "stage": "${input.stage}",
         "subject": "${input.subject}",
