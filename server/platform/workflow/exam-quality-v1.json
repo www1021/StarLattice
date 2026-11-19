@@ -1,7 +1,7 @@
 {
   "id": "exam-quality-v1",
   "name": "命题与考试质量工程全链路",
-  "version": 5,
+  "version": 8,
   "description": "从考试范围到成卷的质量闭环：细目表子流程定考什么 → 三路命题 Agent 并行出题 → 合卷编号 → 审题子流程与三档学力仿真作答两条支线并行 → 测量 Agent 调工具算难度与区分度 → 质量门禁 → 不达标进改题自愈循环并重新施测 → 组卷定稿与质量分析报告。",
   "inputs": [
     {
@@ -296,7 +296,7 @@
     {
       "id": "assemble",
       "kind": "llm",
-      "title": "合卷与编号",
+      "title": "合卷与定稿",
       "emitOutput": true,
       "streamOutput": true,
       "temperature": 0.2,
@@ -907,7 +907,11 @@
     {
       "id": "end",
       "kind": "end",
-      "title": "结束"
+      "title": "结束",
+      "inputs": {
+        "text": "${assemble.output}",
+        "report": "${report.output}"
+      }
     }
   ],
   "edges": [
@@ -959,7 +963,7 @@
     },
     {
       "from": "assemble",
-      "to": "final",
+      "to": "end",
       "when": "${input.qualityMode} == quick"
     },
     {
@@ -987,11 +991,6 @@
       "from": "final",
       "to": "report",
       "when": "${input.qualityMode} == full"
-    },
-    {
-      "from": "final",
-      "to": "end",
-      "when": "${input.qualityMode} == quick"
     },
     {
       "from": "report",
