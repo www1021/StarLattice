@@ -57,6 +57,7 @@ import type {
   NodeKind,
   NodeOutputProperty,
   NodePortSource,
+  NodePortSpec,
   NodePortType,
   NodeTypeSpec,
   WorkflowDefinition,
@@ -226,7 +227,7 @@ export function NodeInspector({
    */
   const selfInputGroups = useMemo<RefGroup[]>(() => {
     const fields: RefField[] = [];
-    for (const row of currentInputBindings(definition, spec)) {
+    for (const row of currentInputBindings(definition)) {
       const name = row.name?.trim();
       if (!name) {
         continue;
@@ -996,14 +997,19 @@ function InputSection({
   workflowInputs?: WorkflowVariable[];
   onChange: (next: WorkflowNode) => void;
 }) {
-  const rows = currentInputBindings(node, spec);
+  const rows = currentInputBindings(node);
   const [refIndex, setRefIndex] = useState<number | null>(null);
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const [presetOpen, setPresetOpen] = useState(false);
   /** 引用面板挂在这一行的「数据来源」格子上，向下弹出，不会把行撑高。 */
   const cellRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  /** 预设端口：这类节点推荐的入参，节点里还没用到的那几个。 */
+  const presetPorts = (spec?.ports.inputs ?? []).filter(
+    (port) => !(node.kind === "template" && port.name === "template") && !rows.some((row) => row.name === port.name)
+  );
 
   const setRows = (next: NodeInputBinding[]) => {
-    const prevNames = new Set((node.inputBindings ?? currentInputBindings(node, spec)).map((item) => item.name));
+    const prevNames = new Set((node.inputBindings ?? currentInputBindings(node)).map((item) => item.name));
     const nextNames = new Set(next.map((item) => item.name));
     // template 节点的正文由 node.template 承载，执行器按作用域插值；
     // 把「模板变量」端口里看到的正文写回 inputs，只会让面板把引用显示成写死的输入值。
@@ -1036,11 +1042,11 @@ function InputSection({
     setRefIndex(null);
   };
 
-  const fillDefaults = () => {
-    const existing = new Set(rows.map((item) => item.name));
-    const additions: NodeInputBinding[] = (spec?.ports.inputs ?? [])
-      .filter((port) => !existing.has(port.name))
-      .map((port) => ({
+  /** 把某个预设端口变成一行真实入参；值留空等用户填。 */
+  const addPresetPort = (port: NodePortSpec) => {
+    setRows([
+      ...rows,
+      {
         name: port.name,
         type: port.type,
         required: port.required,
@@ -1048,10 +1054,27 @@ function InputSection({
         defaultValue: port.defaultValue as string | number | boolean | undefined,
         source: "literal",
         value: undefined
-      }));
-    if (additions.length > 0) {
-      setRows([...rows, ...additions]);
+      }
+    ]);
+    setRefIndex(null);
+  };
+
+  const fillDefaults = () => {
+    if (presetPorts.length === 0) {
+      return;
     }
+    setRows([
+      ...rows,
+      ...presetPorts.map((port) => ({
+        name: port.name,
+        type: port.type,
+        required: port.required,
+        description: port.description,
+        defaultValue: port.defaultValue as string | number | boolean | undefined,
+        source: "literal" as const,
+        value: undefined
+      }))
+    ]);
   };
 
   return (
@@ -1060,13 +1083,18 @@ function InputSection({
       info={
         node.kind === "start"
           ? "这里是本次运行的用户问题入口。工作流声明的输入会原样进入画布，下游节点用 ${input.变量名} 引用即可，开始节点不需要输出变量。"
-          : "每行一个入参。数据来源可以选固定值或引用工作流输入 / 上游节点输出；保存时会同步写入节点 inputs，运行时真的会解析。"
+          : "每行一个入参。数据来源可以选固定值或引用工作流输入 / 上游节点输出；保存时会同步写入节点 inputs，运行时真的会解析。预设参数只是这类节点的推荐入参，不用全部填。"
       }
       actions={
         node.kind === "start" ? undefined : (
           <>
-            {spec?.ports.inputs?.length ? (
-              <button type="button" className="ni-text-btn" onClick={fillDefaults} title="补上这类节点的预设入参">
+            {presetPorts.length ? (
+              <button
+                type="button"
+                className="ni-text-btn"
+                onClick={fillDefaults}
+                title="把这类节点推荐的入参一次性插进来"
+              >
                 预设
               </button>
             ) : null}
@@ -1107,7 +1135,13 @@ function InputSection({
         </div>
       )}
 
-      {rows.length === 0 && node.kind !== "start" && <p className="ni-empty">暂无输入参数，点右上角 + 添加。</p>}
+      {rows.length === 0 && node.kind !== "start" && (
+        <p className="ni-empty">
+          {presetPorts.length > 0
+            ? "没有额外入参。这类节点的主要参数在「节点参数」里填，需要额外变量时点右上角 + 或从下面插入预设。"
+            : "暂无输入参数，点右上角 + 添加。"}
+        </p>
+      )}
 
       {rows.map((row, index) => {
         const isRef =
@@ -1266,6 +1300,43 @@ function InputSection({
             setRefIndex(null);
           }}
         />
+      )}
+
+      {node.kind !== "start" && presetPorts.length > 0 && (
+        <div className={`ni-preset${presetOpen ? " is-open" : ""}`}>
+          <button
+            type="button"
+            className="ni-preset-head"
+            aria-expanded={presetOpen}
+            onClick={() => setPresetOpen((current) => !current)}
+          >
+            <ChevronDown size={12} />
+            <span>预设参数</span>
+            <em>{presetPorts.length}</em>
+            <small>这类节点推荐的入参，用不到可以不管</small>
+          </button>
+          {presetOpen && (
+            <ul className="ni-preset-list">
+              {presetPorts.map((port) => (
+                <li key={port.name}>
+                  <code>{port.name}</code>
+                  <span className="ni-preset-label">{port.label}</span>
+                  <span className="ni-preset-type">{TYPE_LABEL[port.type]}</span>
+                  <button
+                    type="button"
+                    className="ni-preset-add"
+                    title={`把 ${port.name} 加成一行输入变量`}
+                    onClick={() => addPresetPort(port)}
+                  >
+                    <Plus size={11} />
+                    插入
+                  </button>
+                  {port.description ? <p>{port.description}</p> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </Section>
   );
@@ -3242,30 +3313,25 @@ function RefPicker({ options, onPick }: { options: RefOption[]; onPick: (token: 
 
 /* ---------------- 数据辅助 ---------------- */
 
-function currentInputBindings(node: WorkflowNode, spec?: NodeTypeSpec): NodeInputBinding[] {
-  if (node.inputBindings) {
-    return node.inputBindings;
-  }
-  const rows: NodeInputBinding[] = Object.entries(node.inputs ?? {}).map(([name, value]) => ({
+/**
+ * 面板里的行只放 DSL 里真实存在的入参。
+ * 节点类型的预设端口是「推荐参数」，真实值大多写在节点参数字段里（工具走 args、
+ * 模板走 template、条件走 when、检索走 query），铺成空行只会让人以为必填项没填；
+ * 它们在下面的「预设参数」区里按需插入。
+ */
+function currentInputBindings(node: WorkflowNode): NodeInputBinding[] {
+  const fromInputs: NodeInputBinding[] = Object.entries(node.inputs ?? {}).map(([name, value]) => ({
     name,
     type: inferPortType(value),
     value: toEditable(value),
     source: typeof value === "string" && value.includes("${") ? "reference" : "literal"
   }));
-  for (const port of spec?.ports.inputs ?? []) {
-    if (!rows.some((row) => row.name === port.name)) {
-      rows.push({
-        name: port.name,
-        type: port.type,
-        required: port.required,
-        description: port.description,
-        defaultValue: port.defaultValue as string | number | boolean | undefined,
-        source: "literal",
-        value: undefined
-      });
-    }
+  if (!node.inputBindings) {
+    return fromInputs;
   }
-  return rows;
+  // 已保存的行排在前面；inputs 里有、但没登记成行的键补在后面，避免真值在面板上看不见。
+  const known = new Set(node.inputBindings.map((item) => item.name));
+  return [...node.inputBindings, ...fromInputs.filter((row) => !known.has(row.name))];
 }
 
 function inferPortType(value: unknown): NodePortType {

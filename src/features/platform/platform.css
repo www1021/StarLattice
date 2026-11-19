@@ -10996,6 +10996,126 @@
   border-color: var(--accent);
 }
 
+/* 预设参数：这类节点推荐的入参，默认收起，按需插成真行。
+   直接铺成空输入框会让人误以为必填项没填，所以单独一块、虚线弱化处理。 */
+.ni-preset {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line-92);
+}
+
+.ni-preset-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--n-42);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ni-preset-head svg {
+  flex: none;
+  transition: transform 140ms ease;
+}
+
+.ni-preset.is-open .ni-preset-head svg {
+  transform: rotate(180deg);
+}
+
+.ni-preset-head span {
+  color: var(--n-30);
+  font-weight: 500;
+}
+
+.ni-preset-head em {
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--surf-94);
+  color: var(--n-42);
+  font-size: 10.5px;
+  font-style: normal;
+  line-height: 16px;
+}
+
+.ni-preset-head small {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--n-57);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ni-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ni-preset-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line-90);
+  border-radius: 8px;
+  background: var(--surf-97);
+}
+
+.ni-preset-list code {
+  color: var(--n-30);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.ni-preset-label {
+  overflow: hidden;
+  color: var(--n-48);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ni-preset-type {
+  color: var(--n-60);
+  font-size: 11px;
+}
+
+.ni-preset-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border: 1px solid var(--line-84);
+  border-radius: 6px;
+  background: var(--surf-99);
+  color: var(--n-30);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ni-preset-add:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.ni-preset-list li p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--n-57);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 /* ===== 检查器：输出字段树 ===== */
 .ni-out-item {
   border-bottom: 1px solid var(--a-f5efe5);
