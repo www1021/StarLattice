@@ -199,6 +199,16 @@
   background: var(--surf-98);
 }
 
+.platform-button.is-danger {
+  background: var(--a-b03a2a);
+  color: var(--n-99);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--a-b03a2a) 22%, transparent);
+}
+
+.platform-button.is-danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--a-b03a2a) 88%, var(--n-12));
+}
+
 .platform-banner {
   display: flex;
   flex-direction: column;
@@ -2131,6 +2141,73 @@
   border: 1px solid var(--line-84);
   background: var(--surf-99);
   box-shadow: 0 30px 80px rgba(var(--rgb-shadow), 0.24);
+}
+
+/* 危险操作确认：窄面板 + 图标抬头，动作按钮跟正文分栏，避免原生 confirm 的割裂感。 */
+.platform-confirm-backdrop {
+  z-index: 90;
+}
+
+.platform-confirm-panel {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  column-gap: 13px;
+  width: min(430px, 100%);
+  padding: 20px 20px 16px;
+  border: 1px solid var(--line-84);
+  border-radius: 18px;
+  background: var(--surf-99);
+  box-shadow: 0 26px 70px rgba(var(--rgb-shadow), 0.24);
+  animation: platform-modal-in 160ms ease-out;
+}
+
+.platform-confirm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--n-24);
+}
+
+.platform-confirm-icon.is-danger {
+  background: var(--a-fbeee6);
+  color: var(--a-b03a2a);
+}
+
+.platform-confirm-body {
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.platform-confirm-body h2 {
+  margin: 0 0 6px;
+  color: var(--n-12);
+  font-size: 15px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.platform-confirm-body p {
+  margin: 0;
+  color: var(--n-36);
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.platform-confirm-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+:root[data-theme="dark"] .platform-button.is-danger {
+  color: hsl(220 12% 10%);
 }
 
 .platform-inputs-panel {

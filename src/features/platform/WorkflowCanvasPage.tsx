@@ -171,6 +171,11 @@ type Banner = {
   issues?: PlatformIssue[];
 };
 
+/** 危险操作的二次确认：统一走页内弹层，不用浏览器原生 confirm。 */
+type ConfirmRequest =
+  | { kind: "delete-workflow"; workflow: WorkflowSummary }
+  | { kind: "apply-template"; template: WorkflowTemplate };
+
 type WorkflowCanvasPageProps = {
   newTaskToken?: number;
   openWorkflowId?: string;
@@ -232,6 +237,7 @@ function PlatformWorkspace({
   const [inputsOpen, setInputsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest>();
   const [subflowPreview, setSubflowPreview] = useState<{ workflowId: string; version?: number }>();
   const [layouting, setLayouting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1357,7 +1363,16 @@ function PlatformWorkspace({
     if (!current) {
       return;
     }
-    if (current.nodes.length > 0 && !window.confirm(`应用「${template.name}」会覆盖当前画布的节点与连线，确定继续？`)) {
+    if (current.nodes.length > 0) {
+      setConfirmRequest({ kind: "apply-template", template });
+      return;
+    }
+    applyTemplateToCanvas(template);
+  }
+
+  function applyTemplateToCanvas(template: WorkflowTemplate) {
+    const current = definitionRef.current;
+    if (!current) {
       return;
     }
     const next = applyTemplate(current, template);
@@ -1657,13 +1672,14 @@ function PlatformWorkspace({
     ? definition.nodes.find((node) => node.id === resultNodeId)?.title ?? resultNodeId
     : "";
 
-  async function handleDeleteWorkflow(workflow: WorkflowSummary) {
+  function handleDeleteWorkflow(workflow: WorkflowSummary) {
     if (workflow.source !== "custom") {
       return;
     }
-    if (!window.confirm(`删除工作流「${workflow.name}」？该流程的所有版本都会被移除，运行记录会保留。`)) {
-      return;
-    }
+    setConfirmRequest({ kind: "delete-workflow", workflow });
+  }
+
+  async function runDeleteWorkflow(workflow: WorkflowSummary) {
     try {
       await platformApi.deleteWorkflow(workflow.id);
       const remaining = workflows.filter((item) => item.id !== workflow.id);
@@ -1677,6 +1693,15 @@ function PlatformWorkspace({
     } catch (error) {
       setBanner({ tone: "error", text: describe(error) });
     }
+  }
+
+  function handleConfirmRequest(request: ConfirmRequest) {
+    setConfirmRequest(undefined);
+    if (request.kind === "delete-workflow") {
+      void runDeleteWorkflow(request.workflow);
+      return;
+    }
+    applyTemplateToCanvas(request.template);
   }
 
   function renderFlowItem(workflow: WorkflowSummary) {
@@ -2363,7 +2388,74 @@ function PlatformWorkspace({
           </div>
         </div>
       )}
+
+      {confirmRequest && (
+        <div
+          className="platform-modal-backdrop platform-confirm-backdrop"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setConfirmRequest(undefined)}
+        >
+          <ConfirmDialog
+            request={confirmRequest}
+            onConfirm={() => handleConfirmRequest(confirmRequest)}
+            onClose={() => setConfirmRequest(undefined)}
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+type ConfirmDialogProps = {
+  request: ConfirmRequest;
+  onConfirm: () => void;
+  onClose: () => void;
+};
+
+function ConfirmDialog({ request, onConfirm, onClose }: ConfirmDialogProps) {
+  const isDelete = request.kind === "delete-workflow";
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <aside
+      className="platform-confirm-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="platform-confirm-title"
+    >
+      <span className={`platform-confirm-icon${isDelete ? " is-danger" : ""}`} aria-hidden="true">
+        {isDelete ? <Trash2 size={17} /> : <Sparkles size={17} />}
+      </span>
+      <div className="platform-confirm-body">
+        <h2 id="platform-confirm-title">{isDelete ? "删除工作流" : "覆盖当前画布"}</h2>
+        <p>
+          {isDelete
+            ? `「${request.workflow.name}」的所有版本都会移除，运行记录会保留，此操作无法撤销。`
+            : `应用「${request.template.name}」会替换画布上现有的节点与连线，未保存的改动将丢失。`}
+        </p>
+      </div>
+      <div className="platform-confirm-actions">
+        <button type="button" className="platform-button is-ghost" onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className={`platform-button ${isDelete ? "is-danger" : "is-primary"}`}
+          onClick={onConfirm}
+        >
+          {isDelete ? "删除" : "覆盖并应用"}
+        </button>
+      </div>
+    </aside>
   );
 }
 
