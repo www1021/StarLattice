@@ -12330,6 +12330,25 @@ function App() {
   }, [activeSection]);
 
   const hasMessages = messages.length > 0;
+  // 欢迎语短的当标题，长的是自我介绍，套 h1 的大字重会把整段压成一坨。
+  const agentWelcome = activeAgent?.chatConfig?.welcome?.trim() ?? "";
+  const welcomeAsIntro = agentWelcome.length > 60 || agentWelcome.includes("\n");
+  // 「备课——写教案…」这类逐条能力，抽成词条 + 说明，标题位留给智能体名。
+  const agentCapabilities = welcomeAsIntro
+    ? agentWelcome.split(/\n{2,}/).flatMap((paragraph) => {
+        const lines = paragraph.split("\n");
+        const matched = lines.map((line) => line.match(/^([^—\n]{2,6})——\s*(.+)$/));
+        return lines.length > 1 && matched.every(Boolean)
+          ? matched.map((item) => ({ key: item![1], text: item![2] }))
+          : [];
+      })
+    : [];
+  // 有清单时说明用简介；散文式欢迎语本身就是那句说明，别再让简介跟它抢位置。
+  const agentLead = activeAgent
+    ? agentCapabilities.length > 0
+      ? activeAgent.description?.trim() || activeAgent.role || ""
+      : agentWelcome || activeAgent.description?.trim() || activeAgent.role || ""
+    : "";
   // 右侧面板只在对话页可用；离开对话页时自动收起，免得在别的页面露出呼出条。
   const isChatView = activeSection === "chat";
   useEffect(() => {
@@ -12728,27 +12747,38 @@ function App() {
                 <div className="app-photo-cutout" aria-hidden="true" />
               ) : null}
               <header className="hero">
-                <h1>
+                {welcomeAsIntro ? (
+                  <h1 className="hero-agent-title">{activeAgent?.name ?? "智能体"}</h1>
+                ) : (
+                  <h1>
+                    {activeAgent
+                      ? activeAgent.chatConfig?.welcome?.trim() ||
+                        `和「${activeAgent.name}」聊聊`
+                      : chatMode === "office"
+                        ? "今天想完成什么办公任务？"
+                        : chatMode === "workflow"
+                          ? "这条工作流能帮你做什么？"
+                          : "今天想完成什么教学任务？"}
+                  </h1>
+                )}
+                <p className={welcomeAsIntro ? "hero-agent-lead" : undefined}>
                   {activeAgent
-                    ? activeAgent.chatConfig?.welcome?.trim() ||
-                      `和「${activeAgent.name}」聊聊`
-                    : chatMode === "office"
-                      ? "今天想完成什么办公任务？"
-                      : chatMode === "workflow"
-                        ? "这条工作流能帮你做什么？"
-                        : "今天想完成什么教学任务？"}
-                </h1>
-                <p>
-                  {activeAgent
-                    ? activeAgent.description?.trim() ||
-                      activeAgent.role ||
-                      "它按你设定的角色和提示词回答"
+                    ? agentLead || "它按你设定的角色和提示词回答"
                     : chatMode === "office"
                       ? "写作、总结、翻译、会议纪要、表格整理，都可以直接对话完成"
                       : chatMode === "workflow"
                         ? "直接问教学问题会流式回答；给出明确任务时才会跑一遍工作流，并把最终交付的内容讲给你听"
                         : "说清学段、学科和想要的结果就行，需要跑流程时会自动切过去"}
                 </p>
+                {agentCapabilities.length > 0 ? (
+                  <ul className="hero-capability-row" aria-label="能做的事">
+                    {agentCapabilities.map((item) => (
+                      <li key={item.key} title={item.text}>
+                        {item.key}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </header>
               {agentVariableDefs.length > 0 ? (
                 <div className="agent-variable-fill" aria-label="填写智能体变量">
