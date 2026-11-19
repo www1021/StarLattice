@@ -223,7 +223,7 @@ function normalizeMethod(value: unknown): HttpMethod {
 
 function normalizeHeaders(value: unknown): Record<string, string> {
   const headers: Record<string, string> = {
-    "user-agent": "YiJiaoXun-AgentPlatform/0.2"
+    "user-agent": "StarLattice-AgentPlatform/0.2"
   };
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return headers;

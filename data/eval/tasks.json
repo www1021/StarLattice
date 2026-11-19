@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "易师训平台三基线评测集：教育场景 20 条 + 选题评审 10 条。promptfoo 用例由 benchmarks/build-cases.mjs 生成，不手工维护第二份。",
+  "description": "StarLattice 平台三基线评测集：教育场景 20 条 + 选题评审 10 条。promptfoo 用例由 benchmarks/build-cases.mjs 生成，不手工维护第二份。",
   "categories": {
     "education": [
       "normal",

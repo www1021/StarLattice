@@ -5,7 +5,7 @@ import type { McpToolInfo, McpTransport } from "../types.js";
 
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 20_000;
-const CLIENT_INFO = { name: "yijiaoxun-platform", version: "1.0.0" };
+const CLIENT_INFO = { name: "starlattice-platform", version: "1.0.0" };
 
 export type McpClientConfig = {
   transport: McpTransport;

@@ -70,8 +70,8 @@
 
 成长档案导出：
 
-- Word：易师训成长档案.docx
-- Markdown：易师训成长档案.md
+- Word：StarLattice成长档案.docx
+- Markdown：StarLattice成长档案.md
 
 ## 测试数据入表结论
 

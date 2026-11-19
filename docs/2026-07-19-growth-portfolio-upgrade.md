@@ -28,5 +28,5 @@
 - `/api/demo/seed-agent-records` 返回 `seeded: 20`。
 - `/api/growth/summary` 返回 4 类训练覆盖：教案诊断、说课陪练、模拟课堂、实习反思均为“已覆盖”。
 - 成长档案接口返回 `growthTimeline: 10`、`representativeArtifacts: 4`、`capabilityMatrix: 6`。
-- `/api/growth/report` 成功生成 `易师训成长档案.md` 和 `易师训成长档案.docx`。
+- `/api/growth/report` 成功生成 `StarLattice成长档案.md` 和 `StarLattice成长档案.docx`。
 - 浏览器核查确认成长档案页展示“已覆盖 4/4 类训练”，并保留导出 MD、导出 Word 入口。

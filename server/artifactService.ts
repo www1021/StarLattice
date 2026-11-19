@@ -185,10 +185,10 @@ async function renderDocx(request: ArtifactRequest) {
 async function renderPptx(request: ArtifactRequest, outputPath: string) {
   const pptx = new pptxgen();
   pptx.layout = "LAYOUT_WIDE";
-  pptx.author = "YiJiaoXun";
+  pptx.author = "StarLattice";
   pptx.subject = request.title || stripExtension(request.name);
   pptx.title = request.title || stripExtension(request.name);
-  pptx.company = "YiJiaoXun";
+  pptx.company = "StarLattice";
   pptx.theme = {
     headFontFace: "Microsoft YaHei",
     bodyFontFace: "Microsoft YaHei"

@@ -7,7 +7,7 @@ import test from "node:test";
 import { LocalKnowledgeProvider } from "./knowledgeService.js";
 
 test("local teaching resource library preserves metadata and removes its FTS entries", async () => {
-  const folder = path.join(os.tmpdir(), `yijiaoxun-kb-${randomUUID()}`);
+  const folder = path.join(os.tmpdir(), `starlattice-kb-${randomUUID()}`);
   const provider = new LocalKnowledgeProvider(path.join(folder, "knowledge.db"));
   const base = provider.createBase("数学课例资料");
 
@@ -43,7 +43,7 @@ test("local teaching resource library preserves metadata and removes its FTS ent
 });
 
 test("imports GBK text uploads without mojibake", async () => {
-  const folder = path.join(os.tmpdir(), `yijiaoxun-kb-${randomUUID()}`);
+  const folder = path.join(os.tmpdir(), `starlattice-kb-${randomUUID()}`);
   const provider = new LocalKnowledgeProvider(path.join(folder, "knowledge.db"));
   const base = provider.createBase("编码测试");
   const gbk = Buffer.from([
@@ -75,7 +75,7 @@ test("imports GBK text uploads without mojibake", async () => {
 });
 
 test("ranks Chinese documents by bigram idf instead of common-character overlap", async () => {
-  const folder = path.join(os.tmpdir(), `yijiaoxun-kb-${randomUUID()}`);
+  const folder = path.join(os.tmpdir(), `starlattice-kb-${randomUUID()}`);
   const provider = new LocalKnowledgeProvider(path.join(folder, "knowledge.db"));
   const base = provider.createBase("检索排序验证库");
   const add = (name: string, content: string) =>
@@ -111,7 +111,7 @@ test("ranks Chinese documents by bigram idf instead of common-character overlap"
 });
 
 test("long topic queries keep recall across multiple relevant documents", async () => {
-  const folder = path.join(os.tmpdir(), `yijiaoxun-kb-${randomUUID()}`);
+  const folder = path.join(os.tmpdir(), `starlattice-kb-${randomUUID()}`);
   const provider = new LocalKnowledgeProvider(path.join(folder, "knowledge.db"));
   const base = provider.createBase("选题检索验证库");
   const add = (name: string, content: string) =>

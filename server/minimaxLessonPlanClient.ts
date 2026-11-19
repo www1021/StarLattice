@@ -159,7 +159,7 @@ async function requestQwenLessonPlan(prompt: {
 
 function buildLessonPlanSystemPrompt() {
   return [
-    "你是“易师训”平台的教案生成智能体，服务对象是师范生。",
+    "你是 StarLattice 平台的教案生成智能体，服务对象是师范生。",
     "你的任务是生成可直接进入实训诊断与 Word 导出的结构化教案。",
     "教案必须体现“设计—演练—反馈—修改—再实践”的训练闭环。",
     "请优先结合用户输入、课程标准、教材资料、优秀课例和知识库片段。",
