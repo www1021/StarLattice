@@ -1,7 +1,7 @@
 {
   "id": "exam-blueprint-v1",
   "name": "命题细目表生成",
-  "version": 1,
+  "version": 3,
   "description": "把考试范围拆成知识点与认知层级的双向细目表：检索课标 → 范围拆解 → 细目表 Agent 出矩阵 → 校验知识点覆盖、层级分布、分值合计与时长匹配 → 不达标自动重排。可单独运行，也被组卷主流程作为子流程复用。",
   "inputs": [
     {
@@ -9,6 +9,13 @@
       "type": "string",
       "required": false,
       "description": "老师原始命题需求，决定题量、题型与难度；由命题主流程传入"
+    },
+    {
+      "name": "qualityMode",
+      "type": "string",
+      "required": false,
+      "defaultValue": "quick",
+      "description": "quick=跳过范围拆解预处理，直接由细目表 Agent 依据需求出题；full=完整拆解"
     },
     {
       "name": "grade",
@@ -209,7 +216,7 @@
         "分值合计等于总分",
         "时长与题量匹配"
       ],
-      "threshold": 0.8,
+      "threshold": 0.6,
       "expectedKeywords": [
         "知识点",
         "层级",
@@ -225,7 +232,7 @@
       "id": "gate",
       "kind": "condition",
       "title": "达标分流",
-      "when": "${verify-blueprint.score} < 0.8",
+      "when": "${verify-blueprint.score} < 0.6",
       "then": [
         {
           "id": "redo-loop",
@@ -347,11 +354,18 @@
     },
     {
       "from": "retrieve",
-      "to": "brief"
+      "to": "brief",
+      "when": "${input.qualityMode} == full"
+    },
+    {
+      "from": "retrieve",
+      "to": "blueprint",
+      "when": "${input.qualityMode} == quick"
     },
     {
       "from": "brief",
-      "to": "blueprint"
+      "to": "blueprint",
+      "when": "${input.qualityMode} == full"
     },
     {
       "from": "blueprint",

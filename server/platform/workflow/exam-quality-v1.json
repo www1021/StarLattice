@@ -1,7 +1,7 @@
 {
   "id": "exam-quality-v1",
   "name": "命题与考试质量工程全链路",
-  "version": 1,
+  "version": 3,
   "description": "从考试范围到成卷的质量闭环：细目表子流程定考什么 → 三路命题 Agent 并行出题 → 合卷编号 → 审题子流程与三档学力仿真作答两条支线并行 → 测量 Agent 调工具算难度与区分度 → 质量门禁 → 不达标进改题自愈循环并重新施测 → 组卷定稿与质量分析报告。",
   "inputs": [
     {
@@ -9,6 +9,13 @@
       "type": "string",
       "required": true,
       "description": "老师完整需求；调试时聊天框输入的话会自动填进这里，题量、题型、学段、难度都以这句话为准"
+    },
+    {
+      "name": "qualityMode",
+      "type": "string",
+      "required": false,
+      "defaultValue": "quick",
+      "description": "出卷模式：quick=快速出卷（细目表→命题→合卷→定稿，约 1 分钟）；full=完整质量工程（追加审题、三档仿真、难度测量与改题循环，数分钟）。默认 quick。"
     },
     {
       "name": "grade",
@@ -121,6 +128,7 @@
       "workflowId": "exam-blueprint-v1",
       "inputs": {
         "question": "${input.question}",
+        "qualityMode": "${input.qualityMode}",
         "grade": "${input.grade}",
         "itemCount": "${input.itemCount}",
         "itemTypes": "${input.itemTypes}",
@@ -163,7 +171,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制基础层级的题：覆盖细目表里识记与理解层级的知识点，不得越级考查应用与综合。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就全用这几种，不要出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分），不写解析。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制基础层级（识记与理解）的题，不出应用与综合题。题型只用【题型要求】里那几种，不出解答题；细目表题型与要求冲突时以要求为准。\n【硬性约束】最多出 5 题，三路合计由总流程控制在 15 题左右，你这一路不要贪多。数学式子一律用普通文字（如 x^2、Δ、根号用 sqrt），禁止使用美元符号 $ 或反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"1\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":3}]}。填空题与判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等其它字段，不要解析。必须以 ]} 结尾，不要在 JSON 前后写任何其它文字或代码块标记。",
           "stubOutput": {
             "items": [
               {
@@ -194,7 +202,7 @@
               }
             ]
           },
-          "maxTokens": 8192,
+          "maxTokens": 18000,
           "errorPolicy": {
             "timeoutMs": 300000
           }
@@ -220,7 +228,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制应用层级的题：覆盖细目表里应用层级的知识点，情境贴近该学段学生的真实经验。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就用这几种，哪怕是应用层级也不出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里应用层级的题号逐题命制，题号一一对应、不多不少。选择题给出选项，填空/判断题只写题干与答案，不展开完整解题过程，不要写解析。输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分）。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制应用层级的题：情境贴近该学段学生真实经验，但题型只用【题型要求】里那几种，即使是应用层级也不出解答题。\n【硬性约束】最多出 5 题，不要贪多。数学式子用普通文字（x^2、Δ、sqrt），禁止美元符号 $ 和反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"6\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":4}]}。填空/判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等字段，不要解析。必须以 ]} 结尾，JSON 前后不要写任何其它文字或代码块标记。",
           "stubOutput": {
             "items": [
               {
@@ -236,7 +244,7 @@
               }
             ]
           },
-          "maxTokens": 8192,
+          "maxTokens": 18000,
           "errorPolicy": {
             "timeoutMs": 300000
           }
@@ -262,7 +270,7 @@
             "subject": "${input.subject}",
             "scope": "${input.scope}"
           },
-          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制综合（压轴）层级的题：跨两个以上知识点、需三步以上推理，作为全卷最高区分点。题型严格按【题型要求】来定：老师要选择题、填空题、判断题，就用这几种做出区分度，哪怕是压轴层级也不出解答题；细目表里的题型若与【题型要求】冲突，以【题型要求】为准。严格按细目表里属于该层级的题号逐题命制，题号一一对应、不多不少；输出紧凑 JSON（题干、选项或答案、评分标准、知识点、层级、题型、满分），不写解析。",
+          "prompt": "【命题需求，最高优先级】${input.question}\n【题型要求】${input.itemTypes}\n只命制综合（压轴）层级的题：跨两个以上知识点、需多步推理，作为全卷最高区分点；题型只用【题型要求】里那几种，不出解答题。\n【硬性约束】最多出 5 题。数学式子用普通文字（x^2、Δ、sqrt），禁止美元符号 $ 和反斜杠 LaTeX，避免破坏 JSON。\n输出一个完整、可解析的 JSON 对象，格式固定为 {\"items\":[{\"id\":\"11\",\"type\":\"选择题\",\"stem\":\"题干\",\"options\":[\"A. ...\",\"B. ...\"],\"answer\":\"A\",\"fullScore\":5}]}。填空/判断题可省略 options。每题只保留 id/type/stem/options/answer/fullScore 六个字段，不要 scoring、knowledgePoint、level 等字段，不要解析。必须以 ]} 结尾，JSON 前后不要写任何其它文字或代码块标记。",
           "stubOutput": {
             "items": [
               {
@@ -278,7 +286,7 @@
               }
             ]
           },
-          "maxTokens": 8192,
+          "maxTokens": 18000,
           "errorPolicy": {
             "timeoutMs": 300000
           }
@@ -301,7 +309,7 @@
         "duration": "${input.duration}"
       },
       "system": "你是组卷编辑，负责把分路命制的试题合并成一份规范试卷。",
-      "prompt": "【命题需求，最高优先级】${input.question}\n把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号；每题原文照抄，保留题干、答案与评分标准；每题用一行标注知识点、认知层级与题型。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种。三路分值合计必须等于 ${input.totalScore}，不等时在保持题数不变的前提下调整末几题分值使其吻合，不要解释。",
+      "prompt": "【命题需求，最高优先级】${input.question}\n把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号（从 1 连续编号）；每题照抄题干、选项与答案，答案统一写在题后；不要把题干里的数学式子渲染成图片链接。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种，不要新增解答题。三路分值合计若不等于 ${input.totalScore}，在保持题数不变的前提下微调末几题分值使其吻合，不要解释。",
       "maxTokens": 8000,
       "errorPolicy": {
         "timeoutMs": 300000
@@ -876,7 +884,7 @@
       "id": "final",
       "kind": "template",
       "title": "组卷定稿",
-      "template": "# ${input.stage}${input.subject} 小测（${input.scope}）\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n- 细目表校验分：${blueprint-flow.score}\n- 审题可信度：${audit.score}\n- 质量门禁分：${verify-quality.score}\n\n## 试卷与评分标准\n${assemble.output}",
+      "template": "# ${input.stage}${input.subject} 小测（${input.scope}）\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n- 细目表校验分：${blueprint-flow.score}\n\n## 试卷与评分标准\n${assemble.output}",
       "inputs": {
         "stage": "${input.stage}",
         "subject": "${input.subject}",
@@ -925,11 +933,18 @@
     },
     {
       "from": "assemble",
-      "to": "audit"
+      "to": "audit",
+      "when": "${input.qualityMode} == full"
     },
     {
       "from": "assemble",
-      "to": "simulate"
+      "to": "simulate",
+      "when": "${input.qualityMode} == full"
+    },
+    {
+      "from": "assemble",
+      "to": "final",
+      "when": "${input.qualityMode} == quick"
     },
     {
       "from": "audit",
@@ -949,11 +964,18 @@
     },
     {
       "from": "gate",
-      "to": "final"
+      "to": "final",
+      "when": "${input.qualityMode} == full"
     },
     {
       "from": "final",
-      "to": "report"
+      "to": "report",
+      "when": "${input.qualityMode} == full"
+    },
+    {
+      "from": "final",
+      "to": "end",
+      "when": "${input.qualityMode} == quick"
     },
     {
       "from": "report",

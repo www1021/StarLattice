@@ -1,7 +1,7 @@
 {
   "id": "teacher-workbench-master-v1",
   "name": "师者工作台 · 六线协同总调度流",
-  "version": 1,
+  "version": 3,
   "description": "师者工作台的顶层总流：一次输入识别意图，按备课、答疑、命题、安全、心理、观课六线分流。五条线各自调用已有工作流子流程，心理线由引导节点承接（真正的谈心谈话在对话页的谈心聊天室走 counseling-session-v1），通用问题走兜底回答，最后汇总成一段回复。对应总控智能体 teacher-guide 的六路 agent:// 委派结构。",
   "inputs": [
     { "name": "question", "type": "string", "required": true, "description": "老师本轮要办的事；调试时聊天框输入的话会自动填进这里" },
