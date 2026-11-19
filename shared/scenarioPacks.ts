@@ -237,6 +237,8 @@ export const SCENARIO_PACK_ITEMS: Record<ScenarioPackId, ScenarioPackItems> = {
     ],
     tools: ["td.student-profile", "td.risk-classify"],
     workflows: [
+      // 顶层总流放第一位：画布里挑这条路就能看到六线分流与五条子流展开。
+      "teacher-workbench-master-v1",
       "lesson-prep-v1",
       "qa-tutor-v1",
       "safety-health-v1",

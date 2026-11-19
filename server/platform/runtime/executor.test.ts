@@ -3927,3 +3927,33 @@ test("参数提取：允许缺参放行时标记 complete=false，下游照常�
     dispose();
   }
 });
+
+test("师者工作台总流按意图只跑命中的那条线", async () => {
+  const { store, dispose } = createStore();
+  const workflows = loadBuiltinWorkflows();
+  const master = workflows.find((item) => item.id === "teacher-workbench-master-v1");
+  assert.ok(master);
+  for (const workflow of workflows) {
+    store.saveWorkflow(workflow);
+  }
+  try {
+    const { run, steps } = await new WorkflowExecutor(store).run(master, {
+      question: "给五年级数学备一节分数的意义",
+      grade: "五年级",
+      subject: "数学",
+      topic: "分数的意义"
+    });
+    assert.equal(run.status, "succeeded");
+    const status = new Map(steps.map((step) => [step.nodeId, step.status]));
+    // 同时锁住两处：DSL 必须解析 llm.stubOutput，stubLlm 必须认它；
+    // 任一处丢掉桩输出，条件边就全落空、兜底边会被误触发。
+    assert.equal(status.get("prep-flow"), "succeeded");
+    assert.equal(status.get("qa-flow"), "skipped");
+    assert.equal(status.get("exam-flow"), "skipped");
+    assert.equal(status.get("mind-guide"), "skipped");
+    assert.equal(status.get("general-llm"), "skipped");
+    assert.equal(status.get("synthesize"), "succeeded");
+  } finally {
+    dispose();
+  }
+});

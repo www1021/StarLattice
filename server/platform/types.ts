@@ -188,6 +188,8 @@ export type LlmNode = NodeBase & {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
+  /** 离线桩模式的产物；意图识别这类节点靠它走条件分支。 */
+  stubOutput?: Record<string, unknown>;
 };
 
 export type ClarifyImpact = "high" | "medium" | "low";

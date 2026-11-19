@@ -360,7 +360,11 @@ function parseNode(value: unknown, location: string): WorkflowNode {
         maxTokens:
           record.maxTokens === undefined
             ? undefined
-            : requireInteger(record.maxTokens, `${location}.maxTokens`)
+            : requireInteger(record.maxTokens, `${location}.maxTokens`),
+        stubOutput:
+          record.stubOutput === undefined
+            ? undefined
+            : asRecord(record.stubOutput, `${location}.stubOutput`)
       };
     case "clarify": {
       const clarifyOn = optionalString(record.clarifyOn, `${location}.clarifyOn`);

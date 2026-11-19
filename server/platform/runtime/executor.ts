@@ -3573,13 +3573,16 @@ function stubLlm(node: LlmNode, input: Record<string, unknown>) {
     "步骤：① 识别任务约束与输出格式 → ② 从上游产物提取关键事实 → ③ 组织结构化答复 → ④ 自查遗漏与风险。",
     "自查：结论需与输入一致，不确定信息显式标注，不编造数字与引用。"
   ].join("\n");
+  // 意图识别这类节点靠输出文本走条件边，配了字符串桩输出就得照它分流；
+  // 没配的仍用固定占位文本，保证离线演示里「这一步是桩」看得出来。
+  const stubText = isRecord(node.stubOutput) ? node.stubOutput.output : undefined;
   return {
     mode: "stub",
     kind: "llm",
     model: node.model ?? "platform-default",
     summary: `[stub] ${node.title ?? node.id} 已完成模型思考`,
     thinking: node.thinking === false ? undefined : thinking,
-    output: `[stub:llm] ${node.title ?? node.id} 的输出`,
+    output: typeof stubText === "string" ? stubText : `[stub:llm] ${node.title ?? node.id} 的输出`,
     inputs: input
   };
 }

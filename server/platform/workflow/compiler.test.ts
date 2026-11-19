@@ -750,3 +750,46 @@ test("参数提取节点：参数表原样解析，重名与非法轮次在编�
     )
   );
 });
+
+test("师者工作台总流能展开五条业务子流，六线分流齐全", () => {
+  const workflows = loadBuiltinWorkflows();
+  const master = workflows.find((item) => item.id === "teacher-workbench-master-v1");
+  assert.ok(master, "teacher-workbench-master-v1.json 应存在");
+
+  const latest = new Map<string, WorkflowDefinition>();
+  for (const workflow of workflows) {
+    const current = latest.get(workflow.id);
+    if (!current || current.version < workflow.version) latest.set(workflow.id, workflow);
+  }
+  const resolveWorkflow: CompileOptions["resolveWorkflow"] = (id, version) =>
+    version === undefined
+      ? latest.get(id)
+      : workflows.find((item) => item.id === id && item.version === version);
+
+  const plan = compileWorkflow(master, { resolveWorkflow });
+  // 总流自身一层，加上子流内的「循环 → 条件 → 循环」正好用满 5 层上限。
+  // 再往子流里加深容器会编译失败，这条断言用来提醒别把余量吃光。
+  assert.equal(plan.stats.maxDepth, 5);
+
+  const flowRefs = master.nodes
+    .filter((node) => node.kind === "subworkflow")
+    .map((node) => (node as { workflowId?: string }).workflowId ?? "");
+  assert.deepEqual(flowRefs, [
+    "lesson-prep-v1",
+    "qa-tutor-v1",
+    "exam-quality-v1",
+    "safety-health-v1",
+    "cd-master-v1"
+  ]);
+
+  const routed = master.edges.filter((edge) => edge.when).map((edge) => edge.to);
+  assert.deepEqual(routed, [
+    "prep-flow",
+    "qa-flow",
+    "exam-flow",
+    "safety-flow",
+    "observe-flow",
+    "mind-guide"
+  ]);
+  assert.equal(master.edges.filter((edge) => !edge.when && edge.from === "classify").length, 1);
+});

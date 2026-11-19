@@ -16,7 +16,10 @@ import {
   type WorkflowNode
 } from "../types.js";
 
-const MAX_DEPTH = 4;
+// 容器嵌套上限。子流程展开时会带上父流的层级（baseDepth: depth + 1），
+// 顶层总流再挂一层子流后，子流内部原有的「循环 → 条件 → 循环」会多占一层。
+// 留到 5 才能容纳总流 + 四层业务容器；再深仍有 MAX_SUBWORKFLOW_DEPTH 兜底。
+const MAX_DEPTH = 5;
 const MAX_SUBWORKFLOW_DEPTH = 5;
 const MAX_ROOT_NODES = 64;
 const MAX_LOOP_ITERATIONS = 20;
