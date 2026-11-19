@@ -1647,6 +1647,8 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
         return typeof candidate === "string" ? plain(candidate) : "";
       };
       let lastProgressSequence = 0;
+      /** 每个步骤上一次推给画布的状态；running 也要推，否则长耗时节点看起来像卡住。 */
+      const seenStepStatus = new Map<string, string>();
       let printedCount = 0;
       let settled = false;
       let disconnected = false;
@@ -1668,8 +1670,22 @@ export function registerPlatform(app: Express, options: PlatformOptions = {}) {
             step.sequence > lastProgressSequence &&
             (step.status === "succeeded" || step.status === "failed" || step.status === "skipped")
         );
+        /**
+         * 光看「跑完」不够：合卷这类流式节点要跑二三十秒，期间画布收不到
+         * progress，连线会一直停在上一根，看起来像卡死。这里按步骤状态变化
+         * 推送，节点一进入 running 就把焦点移过去。
+         */
+        let statusChanged = false;
+        for (const step of liveSteps) {
+          if (seenStepStatus.get(step.id) !== step.status) {
+            seenStepStatus.set(step.id, step.status);
+            statusChanged = true;
+          }
+        }
         if (finished.length > 0) {
           lastProgressSequence = Math.max(...finished.map((step) => step.sequence));
+        }
+        if (finished.length > 0 || statusChanged) {
           write("progress", {
             runId: startedRunId,
             nodes: summarizeNodes(liveSteps as unknown as DebugStep[])
