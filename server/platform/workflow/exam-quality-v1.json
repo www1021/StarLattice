@@ -1,7 +1,7 @@
 {
   "id": "exam-quality-v1",
   "name": "命题与考试质量工程全链路",
-  "version": 3,
+  "version": 5,
   "description": "从考试范围到成卷的质量闭环：细目表子流程定考什么 → 三路命题 Agent 并行出题 → 合卷编号 → 审题子流程与三档学力仿真作答两条支线并行 → 测量 Agent 调工具算难度与区分度 → 质量门禁 → 不达标进改题自愈循环并重新施测 → 组卷定稿与质量分析报告。",
   "inputs": [
     {
@@ -297,6 +297,8 @@
       "id": "assemble",
       "kind": "llm",
       "title": "合卷与编号",
+      "emitOutput": true,
+      "streamOutput": true,
       "temperature": 0.2,
       "inputs": {
         "basic": "${items-basic.output}",
@@ -309,7 +311,7 @@
         "duration": "${input.duration}"
       },
       "system": "你是组卷编辑，负责把分路命制的试题合并成一份规范试卷。",
-      "prompt": "【命题需求，最高优先级】${input.question}\n把三路试题合并成一份完整试卷，直接输出卷面，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号（从 1 连续编号）；每题照抄题干、选项与答案，答案统一写在题后；不要把题干里的数学式子渲染成图片链接。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种，不要新增解答题。三路分值合计若不等于 ${input.totalScore}，在保持题数不变的前提下微调末几题分值使其吻合，不要解释。",
+      "prompt": "【命题需求，最高优先级】${input.question}\n第一行输出试卷标题：# ${input.stage}${input.subject} 小测；第二行输出：总分 ${input.totalScore} 分 · 时长 ${input.duration} 分钟 · 共 N 题；随后空一行写试卷正文，不要前言、说明或核对表。按基础题、应用题、压轴题顺序统一编号（从 1 连续编号）；每题照抄题干、选项与答案，答案统一写在题后；不要把题干里的数学式子渲染成图片链接。总题数以【命题需求】为准（需求说 15 题就出 15 题），题型只用需求指定的那几种，不要新增解答题。三路分值合计若不等于 ${input.totalScore}，在保持题数不变的前提下微调末几题分值使其吻合，不要解释。",
       "maxTokens": 8000,
       "errorPolicy": {
         "timeoutMs": 300000
@@ -884,7 +886,7 @@
       "id": "final",
       "kind": "template",
       "title": "组卷定稿",
-      "template": "# ${input.stage}${input.subject} 小测（${input.scope}）\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n- 细目表校验分：${blueprint-flow.score}\n\n## 试卷与评分标准\n${assemble.output}",
+      "template": "# ${input.stage}${input.subject} 小测\n\n- 命题需求：${input.question}\n- 题量：需求指定题数　题型：${input.itemTypes}\n- 总分：${input.totalScore} 分　时长：${input.duration} 分钟\n\n## 试卷与评分标准\n${assemble.output}",
       "inputs": {
         "stage": "${input.stage}",
         "subject": "${input.subject}",
@@ -897,6 +899,8 @@
       "id": "report",
       "kind": "template",
       "title": "质量分析报告",
+      "emitOutput": true,
+      "streamOutput": true,
       "template": "# 试卷质量分析报告\n\n## 测量结论\n${measure.output}\n\n## 审题结论\n${audit.report}\n\n## 说明\n难度 P 值为全体平均得分与满分之比，越大表示越容易；区分度 D 值为高分组得分率与低分组得分率之差，越大表示越能拉开学力差距。以上数值由 exam.psychometrics 工具按教育测量口径计算，非模型估计。",
       "inputs": {}
     },
@@ -917,11 +921,23 @@
     },
     {
       "from": "retrieve",
-      "to": "blueprint-flow"
+      "to": "blueprint-flow",
+      "when": "${input.qualityMode} == full"
     },
     {
       "from": "resources",
-      "to": "blueprint-flow"
+      "to": "blueprint-flow",
+      "when": "${input.qualityMode} == full"
+    },
+    {
+      "from": "retrieve",
+      "to": "compose",
+      "when": "${input.qualityMode} == quick"
+    },
+    {
+      "from": "resources",
+      "to": "compose",
+      "when": "${input.qualityMode} == quick"
     },
     {
       "from": "blueprint-flow",
