@@ -10528,8 +10528,12 @@
   border: 0;
   border-radius: 6px;
   background: none;
-  color: var(--n-60);
+  color: var(--n-39);
   cursor: pointer;
+}
+
+.platform-flow-menu-list .platform-flow-item:hover .platform-flow-delete {
+  color: var(--a-b03a2a);
 }
 
 .platform-flow-menu-list .platform-flow-select:hover {
@@ -10537,8 +10541,8 @@
 }
 
 .platform-flow-menu-list .platform-flow-delete:hover {
-  background: var(--danger-soft, rgba(220, 53, 69, 0.12));
-  color: var(--danger, #d64545);
+  background: var(--a-fbeee6);
+  color: var(--a-b03a2a);
 }
 
 .platform-flow-menu-list .platform-flow-select.is-current {
@@ -10605,6 +10609,14 @@
 .platform-more-menu button:disabled {
   opacity: 0.42;
   cursor: not-allowed;
+}
+
+.platform-more-menu button.is-danger {
+  color: var(--a-b03a2a);
+}
+
+.platform-more-menu button.is-danger:hover:not(:disabled) {
+  background: var(--a-fbeee6);
 }
 
 .platform-more-sep {

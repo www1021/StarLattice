@@ -1665,6 +1665,8 @@ function PlatformWorkspace({
     );
   }
 
+  const activeWorkflow = workflows.find((item) => item.id === definition.id);
+
   const resultStep = resultNodeId
     ? [...(trace?.steps ?? [])].reverse().find((step) => step.nodeId === resultNodeId)
     : undefined;
@@ -1903,6 +1905,26 @@ function PlatformWorkspace({
                   <Redo2 size={13} />
                   重做
                 </button>
+                <span className="platform-more-sep" />
+                {activeWorkflow?.source === "custom" ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="is-danger"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      handleDeleteWorkflow(activeWorkflow);
+                    }}
+                  >
+                    <Trash2 size={13} />
+                    删除这条工作流
+                  </button>
+                ) : (
+                  <button type="button" role="menuitem" disabled title="内置流程随版本分发，不能删除">
+                    <ShieldCheck size={13} />
+                    内置流程不可删除
+                  </button>
+                )}
               </div>
             )}
           </div>
