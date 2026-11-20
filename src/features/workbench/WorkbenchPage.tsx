@@ -199,7 +199,7 @@ export function WorkbenchPage({
           <strong>自己搭工作流</strong>
           <span className="wb-act-desc">从空白画布开始，连节点、配参数、跑通全流程</span>
           <div className="wb-act-tags">
-            <span className="wb-tag">16 类节点</span>
+            <span className="wb-tag">17 类节点</span>
             <span className="wb-tag">支持引用上游</span>
           </div>
           <span className="wb-act-link">
