@@ -3,13 +3,13 @@
 面向多 Agent 协作的 **Agent Harness**：把任务写成可编译、可调度、可验证、可回滚的工作流 DSL，而不是把 Prompt 写死在应用里。
 
 > 2026 第五届“未来杯”创新大赛 · 赛道一「Agent 编排创新应用」
-> 内置场景：教育实训（教案、课堂、学情、选题）与经营数据分析（销售指标、毛利口径、报告验证）
+> 内置 8 个场景包：教育场景（教案、课堂、学情、选题）、经营分析（销售指标、毛利口径、报告验证）、师者工作台、命题工坊、观课磨课工坊、科研成长、星枢领航、通用
 
 ## 平台解决什么问题
 
 - **编排不是拖拽壳**：工作流先经过编译器校验依赖、循环、作用域和子流程引用，再进入执行器；错误在运行前暴露。
 - **调度有依据**：每个 Agent 节点在运行前生成调度计划，按能力匹配、可用度和优先级打分；任务声明模型标签时追加模型匹配权重，决策与理由写入 trace。
-- **多模型协同**：逻辑模型目录把「角色」和「上游模型」解耦，Agent、节点、验证器可分别选 fast / reasoning / verifier；模型解析结果、回退与预算降级都写入步骤 trace。
+- **多模型协同**：逻辑模型目录把「角色」和「上游模型」解耦，Agent、节点、验证器可分别选 fast / reasoning / verifier / vision；模型解析结果、回退与预算降级都写入步骤 trace。
 - **结果可验证**：规则校验 → 多 Agent 交叉验证 → 基准比对，输出分数、置信度和问题清单；支持人工审批暂停/恢复。
 - **优化有闭环**：Self-Loop 根据分数、提升幅度和预算决定继续或停止，并保留历史最优产物。
 - **工具真接入**：内置 MCP 客户端，支持 stdio 与 Streamable HTTP，可发现并调用外部工具。
@@ -20,52 +20,76 @@
 
 | 场景包 | 内置内容 | 用途 |
 |---|---|---|
-| 通用 | 6 个 Agent、1 条工作流、2 套模板、4 个基础工具 | 跨行业任务：规划、检索、执行、复核、报告 |
-| 教育场景 | 17 个 Agent、8 条工作流、3 套模板、6 个工具 | 比赛深度验证：教案、课堂、学情、选题 |
+| 通用 | 6 个 Agent、2 条工作流、2 套模板、4 个基础工具 | 跨行业任务：规划、检索、执行、复核、报告 |
+| 教育场景 | 17 个 Agent、11 条工作流、3 套模板、14 个工具 | 比赛深度验证：教案、课堂、学情、选题 |
 | 经营分析 | 7 个 Agent、2 条工作流、1 套模板、5 个数据工具、1 个指标口径知识包 | 第二场景：销售概况 → 区域/品类并行分析 → 毛利口径验证 → 修正报告 |
+| 科研成长 | 6 个对话智能体、4 条工作流 | 研途引航：科研规划、文献阅读、实验设计、模拟答辩 |
+| 星枢领航 | 6 个 Agent、1 条工作流 | 平台能力全景：六个专项 Agent + 一条总调度流 |
+| 命题工坊 | 8 个 Agent、3 条工作流、1 个测量工具 | 细目表、三路并行命题、仿真施测、难度区分度、改题自愈 |
+| 观课磨课工坊 | 10 个 Agent、4 条工作流、2 个工具 | 五路并行观察、证据核验、量表仲裁、红线下线、多轮改课 |
+| 师者工作台 | 13 个 Agent、7 条工作流、2 个工具 | 六线协同：备课、答疑、命题、安全、心理、观课 |
 
-注册中心与模板库顶部都提供场景筛选；未登记在清单中的自建内容归入“自定义”。新增场景只需注册 Agent / 工具、保存工作流与选择验证规则，不需要改引擎代码。
+「Agent」与「工作流」列表顶部都提供场景筛选；未登记在清单中的自建内容归入“自定义”。新增场景只需注册 Agent / 工具、保存工作流与选择验证规则，不需要改引擎代码。
 
 ## 覆盖的官方能力
 
 | 能力 | 平台实现 | 界面入口 |
 |---|---|---|
-| Agent 团队与版本 | 角色 / 技能 / 工具集 / 记忆（可选跨运行保留与召回）；版本快照、历史、回滚；节点可钉 `agentVersion` | 注册中心 |
-| 知识库定义与集成 | 建库、上传、召回测试、绑定团队/工作流；绑定为已有 `knowledge.search` 节点提供默认检索范围（不会凭空添加节点） | 知识库管理 |
-| 工作流编排 | 顺序、并行、条件、循环、验证、审批；**子工作流引用、编译期展开、环检测、父子 trace** | 编排画布 |
-| 智能调度 | 能力匹配 0.5 + 可用度 0.3 + 优先级 0.2；节点可声明能力要求覆盖 Agent 标签；Agent 调用失败后按剩余候选运行中重调度；支持成本上限 | 运行监控 |
-| 多模型协同 | 逻辑模型目录（provider / model / baseUrlEnv / apiKeyEnv / tags / costTier）；节点 → Agent → 全局默认的解析顺序；未知模型显式回退；验证器独立模型 | 注册中心 / 节点配置 |
+| Agent 团队与版本 | 角色 / 技能 / 工具集 / 记忆（可选跨运行保留与召回）；版本快照、历史、回滚；节点可钉 `agentVersion` | Agent |
+| 知识库定义与集成 | 建库、上传、召回测试、绑定团队/工作流；绑定为已有 `knowledge.search` 节点提供默认检索范围（不会凭空添加节点） | 知识库 |
+| 工作流编排 | 顺序、并行、条件、循环、验证、审批；**子工作流引用、编译期展开、环检测、父子 trace**；自建流程可删除，内置流程受保护 | 工作流 |
+| 智能调度 | 能力匹配 0.5 + 可用度 0.3 + 优先级 0.2；节点可声明能力要求覆盖 Agent 标签；Agent 调用失败后按剩余候选运行中重调度；支持成本上限 | 运行记录 |
+| 多模型协同 | 逻辑模型目录（provider / model / baseUrl / tags / costTier）；节点 → Agent → 全局默认的解析顺序；未知模型显式回退；验证器独立模型 | 设置 · 模型与密钥 / 节点配置 |
 | 工具与外部系统 | MCP stdio / Streamable HTTP、工具发现、调用超时、示例 MCP server | MCP 连接 |
-| 监控与验证 | 步骤时间线、输入输出、错误堆栈、单步/整单重跑；三层验证、确定性硬规则、验证器独立性与置信度上限；失败突增 / 延迟突增 / 评分漂移异常告警 | 运行监控 / 验证报告 |
-| 反馈与自我优化 | Self-Loop 修订、最优保留、停止原因、Agent 替换、换模型与 Prompt 修正 | 运行监控 |
+| 监控与验证 | 步骤时间线、输入输出、错误堆栈、单步/整单重跑；三层验证、确定性硬规则、验证器独立性与置信度上限；失败突增 / 延迟突增 / 评分漂移异常告警 | 运行记录 / 验证报告 |
+| 反馈与自我优化 | Self-Loop 修订、最优保留、停止原因、Agent 替换、换模型与 Prompt 修正 | 运行记录 |
 
 ## 节点与内置工作流
 
-平台支持 16 类节点：
+平台支持 17 类节点：
 
-`start` · `end` · `agent` · `llm`（模型思考）· `clarify`（意图澄清与 Prompt 改写）· `knowledge`（知识库检索）· `tool` · `http` · `template`（文本模板）· `subworkflow` · `parallel` · `condition` · `loop` · `verify` · `approve`（人工审批）· `human`（人工交互）
+`start` · `end` · `agent` · `llm`（模型思考）· `clarify`（意图澄清与 Prompt 改写）· `extract`（结构化抽取）· `knowledge`（知识库检索）· `tool` · `http` · `template`（文本模板）· `subworkflow` · `parallel` · `condition` · `loop` · `verify` · `approve`（人工审批）· `human`（人工交互）
 
-启动时会自动注册 30 个 Agent（通用 6 + 经营分析 7 + 教育 17）与 15 条内置工作流：
+启动时会自动注册 96 个 Agent（67 个可调度 Agent + 29 个对话智能体）与 34 条内置工作流：
 
 | 工作流 | 说明 |
 |---|---|
-| `task-report-v1` | 通用任务链路：检索 → 规划 → 起草 → 独立验证 |
-| `intent-clarify-v1` | 意图澄清：意图分析 → 仅关键歧义时暂停确认 → 结构化 Prompt 改写 → 起草 → 验证；运行面板并排展示原始需求与改写稿 |
-| `business-analysis-v1` | 经营分析：销售概况 → 区域/品类并行 → 毛利初稿 → 关键指标验证 → 诊断 Agent 自主调用知识库/MCP 查证 → 输出修正补丁 → 按模型口径重算 → 修订报告 → 有效补丁晋升 Agent v2 |
-| `classroom-map-v1` | 教育场景旗舰地图：双源检索 → 教学设计子流程 → 教师 + 五类学生并行演练 → 验证分流 → 学情报告 → 可选交付审批 |
-| `business-map-v1` | 经营分析旗舰地图：规划 → 数据画像 → 多口径校准 → 终稿验证 |
+| `task-report-v1` | 通用任务链路：检索 → 规划 → 起草 → 独立验证 → 自循环修订 → 定稿 |
+| `intent-clarify-v1` | 意图澄清：仅关键歧义时暂停确认 → 结构化 Prompt 改写 → 起草 → 验证 |
+| `platform-showcase-v1` | 多 Agent 联调样板：意图识别后分派给六个平台能力专项 Agent |
+| `business-analysis-v1` | 经营分析自愈链路：口径选择 → 并行分析 → 数值验证拦截 → 诊断补丁 → 重算重写 → 补丁晋升 Agent 新版本 |
+| `business-map-v1` | 经营分析旗舰地图：六路并行取数 → 口径核算 → 数值一致性验证 → 未达标自动重算 → 终稿验证 → 可选审批 |
+| `classroom-map-v1` | 教育场景旗舰地图：双源检索 → 教学设计 → 师生并行演练 → 验证分流 → 学情报告 → 可选审批 |
 | `classroom-v1` | 师范生课堂训练主链路 |
-| `classroom-session-v1` | 虚拟课堂交互会话：每个教师回合暂停等待真实输入，结束后生成课堂报告 |
-| `counseling-session-v1` | 谈心谈话交互会话：逐轮人工输入 → 学生反馈 → 会话总结 |
+| `classroom-session-v1` | 虚拟课堂交互会话：教师回合暂停等待人工输入 → 学生反应 → 点评 → 诊断报告 |
+| `counseling-session-v1` | 谈心谈话交互会话：逐轮人工输入 → 学生回应 → 督导提示 → 复盘 |
 | `lesson-approval-v1` | 教案人工审核发布链路（approve 暂停/恢复） |
-| `mcp-resources-v1` | MCP 教学资源工具链 |
-| `topic-review-v1` | 论文选题评审链路 |
 | `lesson-design-v1` | 教学设计子流程（可被主流程引用） |
-| `classroom-rehearsal-v1` | 课堂演练子流程 |
-| `learning-report-v1` | 学情报告子流程 |
-| `teaching-pipeline-v1` | 教研全链路：模型思考 → 知识库检索 → 三个子流程 → 全局验证 → 交付模板，共 19 步 |
+| `teacher-workbench-master-v1` | 师者工作台六线协同总调度流：判线 → 交给备课/答疑/命题/安全/观课任一专项，心理线走轻量引导 |
+| `lesson-prep-v1` | 师者工作台备课线：学情档案 → 目标/活动/评价三路并行 → 交付校验 → 不合格回环重写 |
+| `classroom-rehearsal-v1` | 课堂演练子流程：三名学生并行模拟 → 观察员归纳 → 验证互动覆盖 |
+| `learning-report-v1` | 学情报告子流程：洞察 → 模板拼装 → 结构完整性验证 |
+| `teaching-pipeline-v1` | 教研全链路：模型思考 → 知识库检索 → 三个子流程 → 全局验证 → 交付模板 |
+| `mcp-resources-v1` | MCP 教学资源工具链：真实工具检索 → 课时校验 → 课堂反馈 |
+| `topic-review-v1` | 论文选题评审：三评审并行 → 汇总 → 三层验证 → Self-Loop → 报告终验 |
+| `exam-blueprint-v1` | 组卷子流：课标检索 → 双向细目表 → 覆盖/分布/分值校验 → 不达标自动重排 |
+| `exam-audit-v1` | 试卷审查：科学性/规范性/课标范围/可解性四项逐题定位并分级 |
+| `exam-quality-v1` | 组卷质量闭环：细目表 → 三路并行命题 → 审题与学力仿真 → 难度区分度测量 → 改题自愈 |
+| `td-class-profile-v1` | 学情子流：画像召回 → 分层筛选（数字由工具算）→ 三档分层与跟进建议 |
+| `td-misconception-v1` | 错因子流：题意解析 → 错因诊断 → 校验 → 不合格重做，不给答案 |
+| `td-risk-grade-v1` | 风险分级子流：原话保留 → 工具硬规则分级 → 复核，红线一票否决 |
+| `qa-tutor-v1` | 答疑线：错因诊断 → 三级启发提示 → 校验泄题/超纲 → 不合格重写 |
+| `safety-health-v1` | 安全线：风险分级 → 按等级分支处置，红线只出上报模板 |
+| `cd-observe-v1` | 观课磨课·观察子流：实录结构化 → 话语证据统计 → 五路观察员并行打分 → 一致性检验 → 分歧仲裁 |
+| `cd-improve-v1` | 观课磨课·改进子流：带证据问题清单 → 逐条修订 → 逐条核验 → 未关闭则循环（最多三轮） |
+| `cd-report-v1` | 观课磨课·报告子流：诊断/对比/复核结论合成教师报告，并核查编造数字 |
+| `cd-master-v1` | 观课磨课·顶层调度：意图识别后四路分派 → 汇总回复 |
+| `ytz-master-v1` | 科研成长总流：意图识别后分派给五个科研专项 Agent |
+| `ytz-defense-material-v1` | 开题答辩：材料解析 → 分层生成评委问题 → 多轮问答与点评 |
+| `ytz-defense-title-v1` | 答辩问答子流：循环调用实现多轮问答直至终止 |
+| `ytz-defense-training-v1` | 本科开题答辩模拟：自动生成导师提问 → 评分 → 反馈 |
 
-子工作流在编译期递归展开，内部步骤以 `父节点/子节点` 路径进入同一条 trace；最大嵌套深度 5，直接/间接环都会被拒绝。
+子工作流在编译期递归展开，内部步骤以 `父节点/子节点` 路径进入同一条 trace；最大嵌套深度 8，直接/间接环都会被拒绝。
 
 ## 架构
 
@@ -83,7 +107,7 @@ Express 5 API
 ```
 
 - **stub 模式**：不需要任何模型 Key，所有 Agent/LLM/验证返回确定性结果，适合评审复现和单测。
-- **live 模式**：显式设置 `PLATFORM_LIVE_AGENTS=1` 后才调用真实模型；失败不会静默降级。
+- **live 模式**：显式设置 `PLATFORM_LIVE_AGENTS=1`、且设置面板里已有带 Key 的模型后才会调用真实模型；失败不会静默降级。
 
 ## 快速开始
 
@@ -98,40 +122,41 @@ npm run dev
 - 前端：http://127.0.0.1:5173（端口被占用时 Vite 会自动换端口，以终端输出为准）
 - 后端：http://127.0.0.1:8787
 - 默认 stub 模式，无需填写任何 API Key；首次启动自动建库并写入 Agent / 工作流种子数据。
+- 第一次打开是登录页：库为空时开放注册，第一个注册的账号自动成为所有者。
 
 启用真实模型：
+
+1. 账号菜单 →「模型与密钥」：预置 qwen-plus、qwen-flash、deepseek-flash 三条，把 API Key 填进去并设为默认；也可以自行添加任意 OpenAI 兼容模型。
+2. `.env` 里设置：
 
 ```bash
 # .env
 PLATFORM_LIVE_AGENTS=1
-PLATFORM_LIVE_MODEL=qwen3.8-flash
-QWEN_API_KEY=你的Key
 ```
+
+密钥用 AES-256-GCM 加密后存 `data/settings/<账号>/models.json`，密钥文件 `data/settings/model-key` 首次使用时自动生成（权限 0600），接口只返回字段名不返回值。
 
 验证层要调用真实评审模型时再设 `PLATFORM_LIVE_VERIFY=1`。上游单次请求默认 180 秒超时，可用 `PLATFORM_MODEL_TIMEOUT_MS` 调整；超时会按节点失败处理，由执行器重调度，不会无限挂起。
 
 ### 多模型配置
 
-Agent 注册记录和节点里的 `model` 填**逻辑 id**，执行器再把它解析成上游模型与供应商：
+Agent 注册记录和节点里的 `model` 填**角色 id**，执行器再把它解析成上游模型：
 
-| 逻辑 id | 默认来源 | 建议角色 |
+| 角色 id | 默认来源 | 建议角色 |
 |---|---|---|
-| `platform-default` | `PLATFORM_LIVE_MODEL` / `QWEN_MODEL` | 通用交付、报告 |
+| `platform-default` | 设置面板里选中的默认模型 | 通用交付、报告 |
 | `fast` | `PLATFORM_MODEL_FAST`，缺省跟随默认 | 规划、检索、初稿、学生模拟 |
-| `reasoning` | `PLATFORM_MODEL_REASONING` / `PLATFORM_MODEL_STRONG` | 诊断、修订、教研分析 |
+| `reasoning` | `PLATFORM_MODEL_REASONING` | 诊断、修订、教研分析 |
 | `verifier` | `PLATFORM_VERIFY_MODEL`，缺省跟随默认 | 独立评审与打分 |
-| `minimax` | `MINIMAX_MODEL` / `MINIMAX_BASE_URL` / `MINIMAX_API_KEY` | 跨供应商快速模型 |
+| `vision` | `PLATFORM_MODEL_VISION` | 图文理解 |
 
 ```bash
-# 示例：执行用 Qwen，诊断/验证换成 MiniMax，形成真实的异构分工
-PLATFORM_LIVE_MODEL=qwen3.8-flash
-PLATFORM_MODEL_FAST=qwen3.8-flash
-PLATFORM_MODEL_REASONING=MiniMax-M3
-PLATFORM_VERIFY_MODEL=minimax
-MINIMAX_API_KEY=你的Key
+# 示例：默认模型在界面里选 qwen-plus，再把「快速」与「校验」分到别的模型上
+PLATFORM_MODEL_FAST=qwen-flash
+PLATFORM_VERIFY_MODEL=qwen-plus
 ```
 
-只有把不同逻辑 id 指向不同上游模型（或不同供应商）时才是真正的多模型；否则只是逻辑分层。其它 OpenAI 兼容模型可通过 `PLATFORM_MODEL_CATALOG` 注册。解析结果会写入步骤 trace：`requestedModel`、`resolvedModel`、`modelProfile`、`modelSource`，未知模型带 `modelFallback`，预算降级带 `modelDowngraded`。设置 `PLATFORM_RUN_TOKEN_BUDGET` 后，超预算的高成本模型会自动降级到 `fast`。
+只有把不同角色 id 指向不同上游模型（或不同供应商）时才是真正的多模型；否则只是逻辑分层。其它 OpenAI 兼容模型可在「模型与密钥」里自行添加。解析结果会写入步骤 trace：`requestedModel`、`resolvedModel`、`modelProfile`、`modelSource`，未知模型带 `modelFallback`，预算降级带 `modelDowngraded`。设置 `PLATFORM_RUN_TOKEN_BUDGET` 后，超预算的高成本模型会自动降级到 `fast`。
 
 ### 验证器独立性与硬规则
 
@@ -173,19 +198,19 @@ live 审计需要 `PLATFORM_LIVE_AGENTS=1`、`PLATFORM_LIVE_VERIFY=1` 与模型 
 ## 5 分钟演示路径（通用内核 + 教育场景包）
 
 1. **新建**：侧边栏顶部「新建」展开菜单——选「新对话」进入通用办公助手（写作、总结、翻译、会议纪要、表格整理，独立于教育场景）；选「新建任务」打开任务参数面板（默认流程为通用「任务报告流水线」）。填写 `topic=Q3 客户反馈汇总`、`audience=管理层`，运行后看节点着色与验证结论。
-2. **展开场景包**：侧边栏「场景包」默认折叠，展开后进入教育各页面（「场景对话」切回教学对话）；在流程下拉框选择「教研全链路（子流程编排）」，填写 `topic=分数的意义`、`subject=数学`、`grade=五年级`；同一套画布、trace 与验证规则。
-3. **运行监控**：时间线出现 `design/design-plan`、`rehearse/classroom/student-top`、`report/insight` 等嵌套路径和「子流程边界」标记；展开模型思考节点可看到 `thinking`。
-4. **注册中心**：查看团队、Agent 版本历史，回滚到旧版本；在工作流节点里钉住指定版本运行。
+2. **展开场景包**：侧边栏「场景实践」默认折叠，展开后进入教育各页面（「对话」切回教学对话）；在流程下拉框选择「教研全链路（子流程编排）」，填写 `topic=分数的意义`、`subject=数学`、`grade=五年级`；同一套画布、trace 与验证规则。
+3. **运行记录**：时间线出现 `design/design-plan`、`rehearse/classroom/student-top`、`report/insight` 等嵌套路径和「子流程边界」标记；展开模型思考节点可看到 `thinking`。
+4. **Agent**：查看团队、Agent 版本历史，回滚到旧版本；在工作流节点里钉住指定版本运行。
 5. **知识库**：新建知识库、上传文档、召回测试，再绑定到工作流；工作流里的 `knowledge.search` 节点未显式指定范围时会使用该绑定。绑定只提供默认检索范围，不会新增节点。团队绑定用于限定调度池；Agent 的 memory 与 tools 清单会注入 live prompt 并写入 trace。
 6. **MCP 连接**：启动示例服务器 `node scripts/mcp-demo-server.mjs`，在页面选择 `stdio`、命令 `node`、参数填 `scripts/mcp-demo-server.mjs`，保存并刷新即可看到 3 个工具；运行 `mcp-resources-v1` 查看真实调用耗时。
-7. **人工审批**：运行 `lesson-approval-v1`，在运行监控页通过或驳回；通过后从审批节点原地续跑，不重放已执行的模型调用。
+7. **人工审批**：运行 `lesson-approval-v1`，在运行记录页通过或驳回；通过后从审批节点原地续跑，不重放已执行的模型调用。
 8. **验证报告**：查看各次运行的评分、置信度、维度问题和 Verifier 分歧。验证结论独立于运行状态：执行成功但验证未通过时，运行仍可能显示 `succeeded`，同时在标题旁显示「验证未通过」徽标。
 
 ## 经营分析场景演示（第二场景）
 
 数据固定为 `data/demo/sales.csv`（24 单、净销售额 113,400.00、退款 3,700.00、销货成本 71,110.00），MCP 工具做确定性计算，不依赖模型算术。
 
-1. 侧边栏「场景包」切到「经营分析」，在工作流下拉框选择「经营数据分析流水线」，`question` 填「本月各区域与品类的毛利表现如何？」。
+1. 侧边栏顶部场景切换切到「经营分析」，在工作流下拉框选择「经营数据分析流水线」，`question` 填「本月各区域与品类的毛利表现如何？」。
 2. 首轮规划 Agent 按用户问法选择 `gross`，`number_match` 以关键指标锚点拦截：销售额基准 `117,100.00`、毛利额 `45,990.00`、毛利率 `39.27%` 与净额对照值不一致，live 实测首验 **0.5395** 未通过。
 3. 诊断 Agent 开启 `toolCalling`：自主调用 `knowledge_search` 检索口径规则、`profile` 读取数据概况、`metric_calc` 分别复算 `gross` 与 `net`，再把工具返回的事实写入 `evidence`，输出 `rootCause` / `action` / `revenueBasis` / `promptPatch`。平台按模型选择的口径重算并重写报告，复核 **0.95 ≥ 0.70** 通过，补丁晋升为 `business-planner` v2。
 4. 第二次运行直接采用 v2 规则：规划首轮即选择 `net`，**0 轮循环、首验 0.9166 通过**。完整 run id、工具 trace 与晋升记录见 [`docs/2026-11-06-自愈B工具调用报告.md`](docs/2026-11-06-自愈B工具调用报告.md)，A+C 阶段记录见 [`docs/2026-11-06-自愈A+C实现报告.md`](docs/2026-11-06-自愈A+C实现报告.md)。
@@ -200,7 +225,7 @@ npm run test:counseling # 谈心谈话
 npm run build           # tsc + vite 生产构建
 ```
 
-当前平台单测 **190/190**、知识库 **10/10**、基准脚本 **20/20** 通过；验证器构造样本 50/50；生产构建通过。
+当前平台单测 **495/495**（49 个测试文件）、知识库 **10/10**、谈心谈话 **12/12**、基准脚本 **21/21** 通过；验证器构造样本 50/50；生产构建通过。
 
 ## 量化实验
 
@@ -216,7 +241,7 @@ npm run bench:verifier                              # 验证器构造样本准�
 BENCH_CONCURRENCY=1,5,20 node benchmarks/concurrency.mjs
 ```
 
-- 默认继承当前运行模式；live 需要 `PLATFORM_LIVE_AGENTS=1` 与 `QWEN_API_KEY`，不设置时是 stub。
+- 默认继承当前运行模式；live 需要 `PLATFORM_LIVE_AGENTS=1` 且设置面板里已有带 Key 的模型，否则是 stub。
 - **当前可引用的 live 证据：30 例 × 5 臂 × 1 次（150/150 成功）**：[合并报告](benchmarks/results/bench-merged-2026-11-08T02-55-02-172Z.md)。A0 达标 3.3% / 均分 0.595，A1 86.7% / 0.935，B 100.0% / 0.955，C 90.0% / 0.941，C−loop 100.0% / 0.960。配对差值：A1 − A0 = +0.340 [+0.310, +0.368]，B − A1 = +0.020 [+0.005, +0.040]，C−loop − B = +0.004 [−0.004, +0.014]，C − C−loop = −0.019 [−0.051, +0.004]；Self-Loop 触发 0/30，未触发时 C 与 C−loop 的差异只反映采样波动。检索 Recall@5 = 0.958，Precision@5 = 0.567。
 - **报告由两批 live 运行合并**：教育 20 例取自 2026-11-07 批次（零失败），选题 10 例于 2026-11-08 重跑（50 次零失败，墙钟 22 分 37 秒，并发 3）。两批工作流、提示词、裁判与模型一致；期间只增加了模型请求超时与修了用例过滤，不影响口径。墙钟不合并推算。首批选题运行因上游请求挂起与账户欠费（HTTP 400 Arrearage）失效，[旧全量报告](benchmarks/results/bench-2026-11-07T17-52-16-749Z-p8790.md)已标为不可引用。
 - **压力臂（Self-Loop 失败输入，小样本）**：[6 例 × 2 臂 = 12 次](benchmarks/results/bench-2026-11-08T03-04-44-999Z-p8792.md)，当前代码、零失败。S（保留循环）100% / 0.963，SN（去循环）83.3% / 0.916；配对 S − SN = +0.047（95% CI [+0.006, +0.119]），5 胜 1 负；循环触发 5/6，平均 1.0 轮，触发子集 +0.053（95% CI [+0.003, +0.140]，n=5）。代价是 Tokens 约 1.9 倍、P50 约 2.1 倍。样本 n=6、非随机，只能说明这批失败输入上有可测增益。旧批次（验证器修复前）为 S − SN = −0.045，已作为历史保留。
@@ -239,7 +264,7 @@ server/platform/
   knowledge/    平台知识库
   mcp/          MCP 客户端与管理器
   metrics/      指标采集
-src/features/platform/   画布、监控台、注册中心、知识库、MCP、验证报告
+src/features/platform/   工作流、运行记录、Agent、知识库、MCP、验证报告
 benchmarks/     promptfoo 五臂 / 压力臂、澄清 A/B、验证器准确率、并发压测、结果
 scripts/        MCP 示例服务器、语音资源准备
 docs/           验收记录与设计说明
@@ -261,7 +286,6 @@ data/eval/      评测集（其余 data/ 运行时数据库已忽略）
 - [可信评测执行记录（含欠费中断说明）](docs/2026-11-07-硬伤6-最小可信实验方案.md)
 - [教育子集五臂报告](benchmarks/results/bench-2026-11-07T17-52-16-749Z-p8790-education-only.md)
 - [验证器构造样本准确率](benchmarks/results/verifier-accuracy.md)
-- [验证器硬规则灵敏度（rule-only，无需 Key）](benchmarks/results/verify-rule-sensitivity-latest.md)
 - [验证器灵敏度实验（live，历史结果）](benchmarks/results/verify-sensitivity-latest.md)：旧脚本使用未登记模型 id，可能静默回退启发式；现已改为 strict 模式，失败直接中断，不再产生这类结果。
 - [评测用例与工作流](benchmarks/workflows)
 
