@@ -1035,7 +1035,7 @@ const revealedReplyIds = new Set<string>();
  * 节奏照主流 agent 的「平滑流式」来做：首字延迟相当于 TTFT，之后按词块匀速释放，
  * 标点后稍微停一下。不用缓动、也不把整篇硬压进一两秒——那样前段哗哗出、
  * 后段一下补齐，正是现在看着「突然全部显示」的原因。
- * 26 字/秒约合 30~40 token/s，落在 ChatGPT / Claude 读起来舒服的区间。
+ * 26 字/秒约合 30~40 token/s，接近人正常阅读的速度。
  */
 const REVEAL_CHARS_PER_SECOND = 26;
 const REVEAL_FIRST_DELAY_MS = 220;

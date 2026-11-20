@@ -41,7 +41,7 @@ type NodeVisual = {
 /**
  * 一类节点一个颜色，同类同色、不同类不同色，靠图标区分具体节点。
  * 六个色相彼此拉开（绿 / 紫 / 蓝 / 橙 / 青 / 玫红），
- * 图标块是同色 13% 的浅底 + 同色描边，跟腾讯云那个侧栏是一个路子。
+ * 图标块是同色 13% 的浅底 + 同色描边。
  */
 export const CATEGORY_TINT: Record<NodeCategory, string> = {
   entry: "#2f7a4f",

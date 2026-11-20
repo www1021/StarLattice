@@ -191,8 +191,8 @@ export function EditableNodeTitle({
 }
 
 /**
- * 画布卡片按腾讯云工作流的形态排：一行标题（图标 + 名称），
- * 下面最多三行「键：值」浅底信息条，不再堆端口胶囊和徽标。
+ * 画布卡片：一行标题（图标 + 名称），下面最多三行「键：值」浅底信息条，
+ * 不再堆端口胶囊和徽标。
  */
 export function PlatformNodeCard({ data, selected }: NodeProps<PlatformFlowNode>) {
   const { definition, status, durationMs, issues } = data;

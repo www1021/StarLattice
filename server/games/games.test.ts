@@ -204,7 +204,7 @@ test("24 点算式：只认四则运算，用错数字或算出别的数都要�
 });
 
 test("选项是裸 LaTeX 时要补上 $，纯数字选项不补", () => {
-  // 出题器给的是 \frac{4}{2}，不带 $ 就原样显示成一串反斜杠（截图里那个 bug）。
+  // 出题器给的是 \frac{4}{2}，不带 $ 就原样显示成一串反斜杠。
   assert.equal(ensureMathDelimiters("\\frac{4}{2}"), "$\\frac{4}{2}$");
   assert.equal(ensureMathDelimiters("\\sqrt{9}"), "$\\sqrt{9}$");
   assert.equal(ensureMathDelimiters("2"), "2");

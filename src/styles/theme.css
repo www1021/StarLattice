@@ -118,7 +118,7 @@
   --app-bg: #ffffff;
   --app-sidebar: #f7f7f8;
   --app-line: #ececec;
-  /* 选中态＝一层中性压色，不掺品牌橙：跟 WorkBuddy 那类侧栏一致 */
+  /* 选中态＝一层中性压色，不掺品牌橙 */
   --nav-hover-bg: rgba(17, 17, 19, 0.045);
   --nav-active-bg: rgba(17, 17, 19, 0.075);
   --nav-active-fg: var(--n-12);
@@ -821,8 +821,8 @@ html[data-photo="on"] :is(
    这样既没有整幅薄纱，也没有整块白底，画面是通透的，字也压得住。 */
 
 /* 侧栏：在照片自己的色系上盖一层膜，把左右分开。
-   不再用主题给的灰实底，也不做「整幅压暗」；膜是半透明同色，
-   右侧留一道淡边，跟 IDEA 那种背景图 + 半透明工具窗一个意思。 */
+   不用主题给的灰实底，也不做「整幅压暗」；膜是半透明同色，
+   右侧留一道淡边。 */
 html[data-photo="on"] .sidebar {
   border-right: 1px solid rgba(var(--photo-tint), 0.42);
   background: linear-gradient(

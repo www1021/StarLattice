@@ -34,7 +34,7 @@ type AgentEditorProps = {
   onSaved: (agent: AgentRecord) => void;
 };
 
-/** 面板宽度对齐截图：名称 30、功能描述 200、提示词 20000。 */
+/** 面板宽度：名称 30、功能描述 200、提示词 20000。 */
 const MAX_NAME = 30;
 const MAX_DESCRIPTION = 200;
 const MAX_PROMPT = 20000;
@@ -110,7 +110,7 @@ const TOOL_GROUP_LABELS = ["平台插件", "自定义插件", "平台工作流",
 /** 委派工具的写法：agent://<智能体 id>。 */
 const DELEGATION_PREFIX = "agent://";
 
-/** 字数计数：和截图一样贴着输入框右下角。 */
+/** 字数计数：贴着输入框右下角。 */
 function FieldCounter({ value, max }: { value: number; max: number }) {
   return (
     <span className={`agent-counter ${value > max ? "is-over" : ""}`}>

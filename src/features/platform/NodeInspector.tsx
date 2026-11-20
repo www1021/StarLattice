@@ -145,7 +145,7 @@ const TYPE_SHORT: Record<NodePortType, string> = {
   array: "arr",
   file: "file"
 };
-/** 类型列展示完整类型名，与腾讯云工作流一致。 */
+/** 类型列展示完整类型名。 */
 const TYPE_LABEL: Record<NodePortType, string> = {
   string: "string",
   number: "int",

@@ -9078,7 +9078,7 @@
   word-break: break-word;
 }
 
-/* ---- 节点属性面板：分区式参数布局（对齐 Coze / 腾讯云 ADP 的节点配置面板） ---- */
+/* ---- 节点属性面板：分区式参数布局 ---- */
 .platform-side {
   width: 400px;
 }
@@ -9719,7 +9719,7 @@
   提示词 / 回复内容编辑器：
   底下铺一层「和正文完全同排版的镜像」，字由它来画，${...} 直接画成紫色；
   上面的 textarea 字设成透明，只负责光标、选中和输入法，两层永远重叠。
-  这样既不换 contenteditable（中文输入法保持原生），变量也能像腾讯云那样有颜色。
+  这样既不换 contenteditable（中文输入法保持原生），变量也能按语法上色。
   拼字期间反过来：镜像让位、textarea 显字，见 .is-composing。
 */
 .ni-prompt-mirror {
@@ -11719,7 +11719,7 @@
   color: color-mix(in srgb, var(--node-tint, #9aa3b2) 52%, white);
 }
 
-/* ===== 画布节点卡片：对齐腾讯云工作流的紧凑形态 ===== */
+/* ===== 画布节点卡片：紧凑形态 ===== */
 .platform-node {
   width: 252px;
   padding: 9px 10px 10px;
@@ -11948,7 +11948,7 @@ body.is-linking * {
   transform: none;
 }
 
-/* ===== 检查器：腾讯云式分区标题与表格 ===== */
+/* ===== 检查器：分区标题与表格 ===== */
 .ni-section-toggle > span:not(.ni-info) {
   position: relative;
   padding-left: 9px;
@@ -12179,7 +12179,7 @@ body.is-linking * {
   white-space: nowrap;
 }
 
-/* ===== 输出变量：Output / Error 两棵固定分支（对齐腾讯云） ===== */
+/* ===== 输出变量：Output / Error 两棵固定分支 ===== */
 .ni-var-thead.is-out {
   grid-template-columns: 14px minmax(70px, 0.9fr) 62px minmax(0, 1.25fr) 18px 18px;
   gap: 6px;

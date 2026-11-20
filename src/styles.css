@@ -13853,8 +13853,7 @@ button {
   color: var(--n-12);
 }
 
-/* 选中＝一层薄中性底 + 略亮的字，不用品牌色。
-   跟 WorkBuddy 那种侧栏一致：只有被点中的那一条浮起来，其余保持安静。 */
+/* 选中＝一层薄中性底 + 略亮的字，不用品牌色。 */
 .nav-item-active {
   border: 0;
   background: var(--nav-active-bg, var(--surf-94));
